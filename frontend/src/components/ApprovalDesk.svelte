@@ -293,7 +293,7 @@
 </script>
 
 <section class="approval-desk" data-testid="approval-desk" aria-label={$t('desk.region.ariaLabel')}>
-  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} context="desk" {onStat} />
+  <InstrumentBand managed={bandManaged} drift={bandDrift} {awaiting} {onStat} />
 
   <div class="approval-desk__deskwrap" data-testid="approval-desk-state" data-state={model.kind}>
     {#if model.kind === 'unknown'}

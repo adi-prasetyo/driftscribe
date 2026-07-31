@@ -22,37 +22,34 @@ export const desk = {
     'desk.band.managedLabel': 'Managed by IaC',
     'desk.band.driftLabel': 'Drift detected',
     'desk.band.awaitingLabel': 'Awaiting your approval',
-    'desk.band.managedAria': '{n} managed by IaC',
-    'desk.band.driftAria': '{n} drift detected',
+    // awaiting is the band's one inert figure (ds-s61 — the queue it counts is
+    // directly below it), so it is the one stat whose name promises nothing.
+    // managed/drift have no plain variant at all: they are always controls, and
+    // a control's name must say where it leads (see the next block).
     'desk.band.awaitingAria': '{n} awaiting your approval',
     // ds-7ag.2 — an INTERACTIVE stat names its destination, because the
     // aria-label overrides all descendant text: the visible hover hint is
     // invisible to a screen reader, so the accessible name has to make the same
-    // promise. Naming rule: `<stat>Aria` is the plain figure (used for an inert
-    // one, which promises nothing) and `<stat>Aria<Context>` adds the
-    // destination for the context named by the suffix — so awaiting reads
-    // "the queue below" on the desk and "on desk" from the estate, and
-    // managed/drift have no Estate variant because they are inert there.
+    // promise. The `Desk` suffix is vestigial: it named the CONTEXT that
+    // selected this variant back when the band also rendered on a standalone
+    // estate view. The 2026-07-31 merge left one page and one variant; the
+    // keys keep their names because renaming them across every locale buys
+    // nothing an operator can see.
     'desk.band.managedAriaDesk': '{n} managed by IaC — view infrastructure map',
     'desk.band.driftAriaDesk': '{n} drift detected — view infrastructure map',
-    'desk.band.awaitingAriaEstate': '{n} awaiting your approval — view on desk',
     // The VISIBLE hover/focus hint on an interactive numeral (plan Task 3). The
     // numerals read as figures, so nothing said a click went anywhere. Keyed by
-    // DESTINATION, not by context, so each string's wording and its key agree.
-    // (A third hint, "to the queue below", went with ds-s61's retirement of the
-    // desk's awaiting jump — the queue was already on screen beneath it.)
+    // DESTINATION so the string's wording and its key agree. (Two siblings are
+    // gone: "to the queue below" went with ds-s61's retirement of the awaiting
+    // jump, and "View on desk" with the estate view itself.)
     'desk.band.statHintEstate': 'View infrastructure →',
-    'desk.band.statHintDesk': 'View on desk →',
     // Read instead of the *Aria keys above when a figure is not yet known
     // (ds-eh6). The visible numeral becomes an em dash, which a screen reader
     // announces as nothing at all, so these carry the state in words.
-    'desk.band.managedUnknownAria': 'Managed by IaC: not yet known',
-    'desk.band.driftUnknownAria': 'Drift detected: not yet known',
     'desk.band.awaitingUnknownAria': 'Awaiting your approval: not yet known',
     // Unknown AND still a control: managed/drift stay clickable while unknown
     // (the map is where you go to find out), so their accessible name carries
-    // the destination as well. awaiting has no such pair — it is inert whenever
-    // it is unknown, so it promises nothing.
+    // the destination as well.
     'desk.band.managedUnknownAriaDesk':
       'Managed by IaC: not yet known — view infrastructure map',
     'desk.band.driftUnknownAriaDesk': 'Drift detected: not yet known — view infrastructure map',
@@ -210,17 +207,13 @@ export const desk = {
     'desk.band.managedLabel': 'IaC 管理下',
     'desk.band.driftLabel': 'ドリフト検出',
     'desk.band.awaitingLabel': 'あなたの承認待ち',
-    'desk.band.managedAria': '{n}件、IaC 管理下',
-    'desk.band.driftAria': '{n}件、ドリフト検出',
+    // 承認待ちだけが操作できない数値（ds-s61 — 対象のキューがすぐ下にあるため）。
     'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
     // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
+    // `Desk` サフィックスは名残：2026-07-31 の統合前は文脈を表していた。
     'desk.band.managedAriaDesk': '{n}件、IaC 管理下 — インフラを見る',
     'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
-    'desk.band.awaitingAriaEstate': '{n}件、あなたの承認待ち — デスクで見る',
     'desk.band.statHintEstate': 'インフラを見る →',
-    'desk.band.statHintDesk': 'デスクで見る →',
-    'desk.band.managedUnknownAria': 'IaC 管理下：未取得',
-    'desk.band.driftUnknownAria': 'ドリフト検出：未取得',
     'desk.band.awaitingUnknownAria': 'あなたの承認待ち：未取得',
     'desk.band.managedUnknownAriaDesk': 'IaC 管理下：未取得 — インフラを見る',
     'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',

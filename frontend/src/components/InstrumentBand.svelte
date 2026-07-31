@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * InstrumentBand — the three big numbers across the top of the desk/estate
+   * InstrumentBand — the three big numbers across the top of the desk
    * (docs/plans/2026-07-28-composite-mockup.html "instrument band"): managed
    * / drift / awaiting, plus a thin proportional meter underneath. This is
    * the demo's visible pulse — drift lands and the drift numeral ticks
@@ -21,38 +21,41 @@
    * DESK. Clicking the number that says "you have work" walked away from the
    * work, and that is the wayfinding failure the judges hit.
    *
-   * So the band no longer decides destinations at all: it emits
-   * `onStat(stat)` and the CONSUMER routes it. `context` is the part a
-   * callback cannot express — which stats are interactive at all here, and
-   * how their accessible names read:
+   * So the band no longer decides destinations at all: it emits `onStat(stat)`
+   * and the CONSUMER routes it. Which stats are interactive at all, and how
+   * their accessible names read, is `STATS` below — one flat table, because
+   * the desk+estate merge (2026-07-31) left exactly one page to render on:
    *
-   *   stat      | context 'desk'              | context 'estate'
-   *   ----------|-----------------------------|---------------------------
-   *   managed   | → estate map                | inert figure
-   *   drift     | → estate map                | inert figure
-   *   awaiting  | inert figure                | → the desk
+   *   managed   → the estate section further down this page
+   *   drift     → the same
+   *   awaiting  inert figure
    *
-   * with awaiting also inert on the ESTATE when it is 0 or unknown — there is
-   * nothing to land on, and a control that goes nowhere is worse than a figure.
-   * An inert stat renders as a `<span>`, never a disabled `<button>`: a disabled
-   * button drops out of keyboard navigation and helps nobody.
+   * That table used to have a second column for the standalone estate view,
+   * where managed/drift were inert and awaiting led back to the desk. With the
+   * estate merged in as a section, neither of those situations exists: you are
+   * always on the page that holds all three subjects, so the only question left
+   * is whether a stat's subject is on screen or below the fold.
    *
-   * ds-s61 made awaiting inert on the DESK too. ds-7ag.2 had pointed it at this
-   * page's own pending card via scrollIntoView, but that card sits ~270px below
-   * the numeral on the same screen — already fully visible. The "jump" had
-   * nowhere to go, so all it did was spend whatever scroll happened to exist
-   * (38px of it, from a stale viewport calc) and stop, which read as an
-   * unexplained twitch. A number whose subject is directly beneath it does not
-   * need to be a control; on the estate, where the queue is a page away, it
-   * still does.
+   * ds-s61 is why awaiting is the one that isn't a control. ds-7ag.2 had
+   * pointed it at this page's own pending card via scrollIntoView, but that
+   * card sits ~270px below the numeral on the same screen — already fully
+   * visible. The "jump" had nowhere to go, so all it did was spend whatever
+   * scroll happened to exist (38px of it, from a stale viewport calc) and stop,
+   * which read as an unexplained twitch. A number whose subject is directly
+   * beneath it does not need to be a control.
+   *
+   * An inert stat renders as a `<span>`, never a disabled `<button>`: a
+   * disabled button drops out of keyboard navigation and helps nobody.
    *
    * Each stat's accessible name is a dedicated *Aria catalog key (not the
    * concatenated visible text) so a screen reader always pairs the figure with
    * what it counts — a bare "7" read aloud is meaningless. An INTERACTIVE stat
    * also names its destination there, because the aria-label overrides all
    * descendant text: the visible hover hint below is invisible to a screen
-   * reader, so the label has to carry the same promise. Inert figures and
-   * not-yet-known figures keep the plain wording — they promise nothing.
+   * reader, so the label has to carry the same promise. The inert figure keeps
+   * the plain wording — it promises nothing. Both live in the same `STATS`
+   * entry as the `interactive` flag itself, so a stat cannot become a control
+   * while keeping a name that names nowhere (that WAS the ds-7ag.2 defect).
    *
    * The meter is two flex segments sized directly off `managed`/`drift`
    * (mockup: `.meter i { flex: <managed> }` / `.meter u { flex: <drift> }`).
@@ -70,14 +73,11 @@
 
   /** Which numeral was activated. The consumer owns what that means. */
   export type BandStat = 'managed' | 'drift' | 'awaiting';
-  /** Which view is rendering the band — see the routing table above. */
-  export type BandContext = 'desk' | 'estate';
 
   let {
     managed,
     drift,
     awaiting,
-    context,
     onStat,
   }: {
     /** `null` = NOT YET KNOWN, and it renders as a placeholder rather than a
@@ -90,7 +90,6 @@
     managed: number | null;
     drift: number | null;
     awaiting: number | null;
-    context: BandContext;
     onStat: (stat: BandStat) => void;
   } = $props();
 
@@ -111,83 +110,74 @@
   // deleted key and only surface it as a missing translation at runtime.
   type CatalogKey = Parameters<TranslateFn>[0];
 
-  const LABEL: Record<BandStat, CatalogKey> = {
-    managed: 'desk.band.managedLabel',
-    drift: 'desk.band.driftLabel',
-    awaiting: 'desk.band.awaitingLabel',
-  };
-  /** Plain "{n} <what it counts>" — for an inert figure, which promises nothing. */
-  const PLAIN_ARIA: Record<BandStat, CatalogKey> = {
-    managed: 'desk.band.managedAria',
-    drift: 'desk.band.driftAria',
-    awaiting: 'desk.band.awaitingAria',
-  };
-  /** The same, plus where activating it goes. Keyed by the CONTEXT the band is
-   *  rendered in; a missing entry means that stat is never interactive there. */
-  const DEST_ARIA: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
-    managed: { desk: 'desk.band.managedAriaDesk' },
-    drift: { desk: 'desk.band.driftAriaDesk' },
-    awaiting: { estate: 'desk.band.awaitingAriaEstate' },
-  };
-  /** The VISIBLE hover/focus hint, keyed by the context. Sugar only — the
-   *  accessible destination lives in DEST_ARIA above, because the button's
-   *  aria-label overrides this text entirely. Keys are named for the
-   *  DESTINATION so each string's wording and its key agree: "the queue below"
-   *  is only true from the desk, so the estate's awaiting hint is its own key
-   *  rather than a reused one that would lie about where the queue is. */
-  const HINT: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
-    managed: { desk: 'desk.band.statHintEstate' },
-    drift: { desk: 'desk.band.statHintEstate' },
-    awaiting: { estate: 'desk.band.statHintDesk' },
-  };
-  const UNKNOWN_ARIA: Record<BandStat, CatalogKey> = {
-    managed: 'desk.band.managedUnknownAria',
-    drift: 'desk.band.driftUnknownAria',
-    awaiting: 'desk.band.awaitingUnknownAria',
-  };
-  /** Unknown AND still a control. managed/drift stay clickable while unknown —
-   *  the map is where you go to find out — so their accessible name has to carry
-   *  the destination too, or a screen-reader user hears a button that never says
-   *  what it opens while the sighted hint (aria-hidden) does. awaiting has no
-   *  entry: it is inert whenever it is unknown, so it promises nothing. */
-  const UNKNOWN_DEST_ARIA: Record<BandStat, Partial<Record<BandContext, CatalogKey>>> = {
-    managed: { desk: 'desk.band.managedUnknownAriaDesk' },
-    drift: { desk: 'desk.band.driftUnknownAriaDesk' },
-    awaiting: {},
+  type StatSpec = {
+    key: BandStat;
+    /** The small caption under the numeral. */
+    label: CatalogKey;
+    /** Whether this stat is a control. Everything a control has to promise —
+     *  the destination clause in its `aria` and its visible `hint` — sits in
+     *  this same entry, so the flag and the promise cannot drift apart. */
+    interactive: boolean;
+    /** The accessible name in both ds-eh6 states. `known` is interpolated with
+     *  `{n}`; `unknown` carries the state in words, because the visible em dash
+     *  a screen reader would otherwise meet announces as nothing at all. Both
+     *  are required — the compiler will not let a stat exist without a name. */
+    aria: { known: CatalogKey; unknown: CatalogKey };
+    /** The VISIBLE hover/focus hint. Sugar only, and only for a control: the
+     *  aria-label overrides this text entirely, which is why the destination
+     *  clause is duplicated into `aria` above rather than read from here. */
+    hint?: CatalogKey;
+    extraClass: string;
   };
 
-  function statAria(stat: BandStat, n: number | null, interactive: boolean, tf: TranslateFn): string {
-    if (n === null) {
-      const dest = interactive ? UNKNOWN_DEST_ARIA[stat][context] : undefined;
-      return tf(dest ?? UNKNOWN_ARIA[stat]);
-    }
-    const dest = interactive ? DEST_ARIA[stat][context] : undefined;
-    return tf(dest ?? PLAIN_ARIA[stat], { n });
-  }
-
-  // Which stats are live, per the routing table in the header comment. awaiting
-  // is the one that depends on its own VALUE rather than only on the context:
-  // with nothing pending there is no card to land on.
-  const stats = $derived([
+  // The whole routing table (see the header comment). Vestigial naming: the
+  // `*AriaDesk` keys were named for the context that selected them back when
+  // there were two. There is one now, so the suffix means nothing — renaming
+  // the catalog keys would touch every locale for no operator-visible gain.
+  const STATS: readonly StatSpec[] = [
     {
-      key: 'managed' as BandStat,
-      value: managed,
-      interactive: context === 'desk',
+      key: 'managed',
+      label: 'desk.band.managedLabel',
+      interactive: true,
+      aria: {
+        known: 'desk.band.managedAriaDesk',
+        unknown: 'desk.band.managedUnknownAriaDesk',
+      },
+      hint: 'desk.band.statHintEstate',
       extraClass: '',
     },
     {
-      key: 'drift' as BandStat,
-      value: drift,
-      interactive: context === 'desk',
+      key: 'drift',
+      label: 'desk.band.driftLabel',
+      interactive: true,
+      aria: {
+        known: 'desk.band.driftAriaDesk',
+        unknown: 'desk.band.driftUnknownAriaDesk',
+      },
+      hint: 'desk.band.statHintEstate',
       extraClass: 'instrument-band__stat--drift',
     },
     {
-      key: 'awaiting' as BandStat,
-      value: awaiting,
-      interactive: context === 'estate' && awaiting !== null && awaiting > 0,
+      // Inert regardless of value (ds-s61): the queue it counts is directly
+      // below it on this same page. No `hint`, and the plain wording — a
+      // figure promises nothing.
+      key: 'awaiting',
+      label: 'desk.band.awaitingLabel',
+      interactive: false,
+      aria: {
+        known: 'desk.band.awaitingAria',
+        unknown: 'desk.band.awaitingUnknownAria',
+      },
       extraClass: 'instrument-band__stat--wait',
     },
-  ]);
+  ];
+
+  function statAria(spec: StatSpec, n: number | null, tf: TranslateFn): string {
+    return n === null ? tf(spec.aria.unknown) : tf(spec.aria.known, { n });
+  }
+
+  const value = $derived<Record<BandStat, number | null>>({ managed, drift, awaiting });
+  const stats = $derived(STATS.map((spec) => ({ spec, value: value[spec.key] })));
 
   // Defensive clamp for the meter only: scopeTotals() guarantees non-negative
   // finite sums, but this component doesn't re-derive or trust that upstream
@@ -214,34 +204,33 @@
          reader hears "9 managed by IaC" rather than the numeral and its label
          read twice — and, for an unknown figure, hears the "not yet known"
          wording instead of an em dash that announces as nothing at all. -->
-    {#each stats as s (s.key)}
-      {@const hint = s.interactive ? HINT[s.key][context] : undefined}
+    {#each stats as { spec, value: n } (spec.key)}
       <svelte:element
-        this={s.interactive ? 'button' : 'span'}
-        type={s.interactive ? 'button' : undefined}
-        role={s.interactive ? undefined : 'img'}
-        class="instrument-band__stat {s.extraClass}"
-        class:instrument-band__stat--static={!s.interactive}
-        data-testid="instrument-band-{s.key}"
-        aria-label={statAria(s.key, s.value, s.interactive, $t)}
-        data-unknown={s.value === null ? 'true' : null}
-        onclick={s.interactive ? () => onStat(s.key) : undefined}
+        this={spec.interactive ? 'button' : 'span'}
+        type={spec.interactive ? 'button' : undefined}
+        role={spec.interactive ? undefined : 'img'}
+        class="instrument-band__stat {spec.extraClass}"
+        class:instrument-band__stat--static={!spec.interactive}
+        data-testid="instrument-band-{spec.key}"
+        aria-label={statAria(spec, n, $t)}
+        data-unknown={n === null ? 'true' : null}
+        onclick={spec.interactive ? () => onStat(spec.key) : undefined}
       >
-        <span class="instrument-band__num">{statText(s.value)}</span>
+        <span class="instrument-band__num">{statText(n)}</span>
         <!-- The label and its hint share one positioned box so the hint lands
              exactly on the label rather than at the stat's padding edge (an
              abspos child is placed against the PADDING box, and stats 2-3 carry
              a 28px padding-left for their divider rule). The wrapper renders
              unconditionally, so an inert figure keeps identical layout. -->
-        <span class="instrument-band__meta" class:instrument-band__meta--hinted={hint}>
-          <span class="instrument-band__label">{$t(LABEL[s.key])}</span>
-          {#if hint}
+        <span class="instrument-band__meta" class:instrument-band__meta--hinted={spec.hint}>
+          <span class="instrument-band__label">{$t(spec.label)}</span>
+          {#if spec.hint}
             <!-- Fades in over the label on hover/focus, so the resting band
                  stays the mockup's calm three numerals while still saying what
                  a click does before you make it. aria-hidden because the
                  aria-label already carries the destination — announcing it
                  twice would be worse than not showing it at all. -->
-            <span class="instrument-band__hint" aria-hidden="true">{$t(hint)}</span>
+            <span class="instrument-band__hint" aria-hidden="true">{$t(spec.hint)}</span>
           {/if}
         </span>
       </svelte:element>
