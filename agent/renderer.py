@@ -460,10 +460,15 @@ _TILDE_FENCE = re.compile(r"~{3,}")
 # Types 6 and 7 end at a BLANK LINE, and the omission marker supplies blank
 # lines on both sides, so they terminate on their own and are left alone.
 #
-# ``<`` is neutralized rather than the whole construct so the surrounding text
-# survives, and the pattern cannot touch ``<https://…>`` — an autolink is none
-# of these start conditions, which matters because that autolink IS the
-# approval link.
+# Only the ``<`` is matched, so the surrounding text survives, and the pattern
+# provably cannot touch ``<https://…>`` — an autolink is none of these start
+# conditions, which matters because that autolink IS the approval link.
+#
+# It is DELETED, not escaped to ``&lt;``. Escaping replaced one character with
+# four and made neutralization grow the string: ``"<!--" * 3000`` came out at
+# 17 460 characters against a 10 000 cap — this bead's own bug class, recreated
+# a third time inside its own fix. Every transform on this path must be
+# shrink-only, and the cheapest way to guarantee that is to only ever remove.
 _HTML_SWALLOWER = re.compile(
     r"<(?=!--|\?|!\[CDATA\[|![A-Za-z]|/?(?:script|pre|style|textarea)\b)",
     re.IGNORECASE,
@@ -521,7 +526,12 @@ def _neutralize_fences(fragment: str) -> str:
     # Last, and only after the fences are gone: what was inert inside a code
     # block is live now, so the HTML swallowers have to be defused on the
     # POST-removal text, not the original.
-    return _HTML_SWALLOWER.sub("&lt;", without_code)
+    out = _HTML_SWALLOWER.sub("", without_code)
+    # The one property every caller depends on. Asserted rather than trusted
+    # because "this transform only removes" has now been believed and been
+    # wrong once (the ``&lt;`` escape), and the consequence is a 422.
+    assert len(out) <= len(fragment)  # noqa: S101 — invariant, not input validation
+    return out
 
 
 def normalize_notifier_body(body: str) -> str:
@@ -771,28 +781,20 @@ def render_drift_issue_body(p: DecisionProposal) -> str:
 """
 
 
-def render_rollback_body(p: DecisionProposal, approval_url: str) -> str:
-    """Render the operator-facing approval body for a ROLLBACK decision.
+#: Fallback evidence line when not even one table row fits the budget. Says
+#: what is missing and where to get it, rather than rendering a headerless
+#: table that reads as "no drift found".
+_EVIDENCE_OMITTED = (
+    "_The change evidence did not fit this notification. Open the approval "
+    "link below to see it in full._"
+)
 
-    Delivered by the Notifier worker (severity="approval"). The body surfaces
-    the approval URL minted by the Rollback Worker's ``/propose`` response so
-    the operator can click through to ``{COORDINATOR_URL}/approvals/{id}`` and
-    Approve / Reject the proposed traffic shift.
 
-    ``approval_url`` is passed in (not derived) because the renderer is a pure
-    function — it has no access to Firestore or the HMAC key, and the worker
-    response is the only place the URL is minted. The caller (Task 13.3) reads
-    ``result["approval_url"]`` from the worker response and threads it here.
-
-    Markdown discipline:
-    - The approval URL is wrapped in ``<...>`` (markdown autolink form) so
-      long URLs don't line-break in some renderers.
-    - ``target_revision`` is shown inside an inline code span — Cloud Run
-      revision names are alphanumeric + hyphens, so they don't break tables.
-    - The rationale is scrubbed via :func:`_scrub_secret_values_from_rationale`
-      so an LLM that quoted a secret value in prose doesn't leak it here.
-    """
-    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
+def _rollback_body(
+    p: DecisionProposal, approval_url: str, rationale: str, evidence: str
+) -> str:
+    """The template. Split out so the budget can be measured against the REAL
+    fixed text rather than an estimate that drifts as the copy is edited."""
     return f"""\
 ## DriftScribe — rollback proposed (approval required)
 
@@ -807,7 +809,7 @@ def render_rollback_body(p: DecisionProposal, approval_url: str) -> str:
 
 ### Evidence
 
-{_evidence_table(p)}
+{evidence}
 
 ### Operator approval required
 
@@ -822,6 +824,118 @@ re-propose to mint a fresh token.
 > to revision `{p.target_revision}`. Rejecting leaves traffic on the current
 > revision and DriftScribe will not retry automatically.
 """
+
+
+def _bounded_evidence(p: DecisionProposal, budget: int) -> str:
+    """Fit the evidence table to ``budget`` by dropping WHOLE ROWS.
+
+    Never a character cut. Half a table row is malformed Markdown — the pipes
+    stop matching the header and the whole table degrades to prose, which on an
+    approval page reads as though the evidence were something other than a
+    table. Dropping rows keeps every surviving row exact and says how many went.
+    """
+    header = "| Var | Expected | Live | Status | Recent PR | /debug/config |\n|---|---|---|---|---|---|"
+    rows = [_diff_row(d) for d in p.env_diffs]
+    kept: list[str] = []
+    used = len(header)
+    for row in rows:
+        # +1 for the newline joining it on.
+        note_len = len(_row_omission_note(len(rows) - len(kept) - 1))
+        if used + 1 + len(row) + note_len > budget:
+            break
+        kept.append(row)
+        used += 1 + len(row)
+    if not kept:
+        return _EVIDENCE_OMITTED if len(_EVIDENCE_OMITTED) <= budget else ""
+    out = header + "\n" + "\n".join(kept)
+    dropped = len(rows) - len(kept)
+    if dropped:
+        out += _row_omission_note(dropped)
+    return out
+
+
+def _row_omission_note(dropped: int) -> str:
+    if dropped <= 0:
+        return ""
+    return f"\n\n_{dropped} further changed variable(s) omitted from this notification._"
+
+
+def render_rollback_body(
+    p: DecisionProposal, approval_url: str, *, max_chars: int | None = None
+) -> str:
+    """Render the operator-facing approval body for a ROLLBACK decision.
+
+    Delivered by the Notifier worker (severity="approval"). The body surfaces
+    the approval URL minted by the Rollback Worker's ``/propose`` response so
+    the operator can click through to ``{COORDINATOR_URL}/approvals/{id}`` and
+    Approve / Reject the proposed traffic shift.
+
+    ``approval_url`` is passed in (not derived) because the renderer is a pure
+    function — it has no access to Firestore or the HMAC key, and the worker
+    response is the only place the URL is minted.
+
+    ``max_chars`` bounds the OUTPUT, and how it does so is the point (ds-thm).
+
+    The first six attempts at this clamped the ASSEMBLED body and then tried to
+    repair the Markdown the cut had broken, so the approval link stayed
+    reachable. Each was wrong in a new way — fence parity, delimiter length,
+    inline spans mistaken for fences, a second fence alphabet, a substitution
+    that manufactured the delimiter it removed, and markup that was inert
+    inside a code block waking up once the fence around it was deleted. That is
+    not a run of bad luck; "cut arbitrary Markdown and guarantee one specific
+    element still renders" is an open-ended sanitization problem, and the sixth
+    fix reintroduced this bead's own bug class by growing the string it was
+    supposed to bound.
+
+    So the budget is spent BEFORE assembly instead. The variable sections — the
+    model's rationale and the evidence table — are bounded to fit whatever the
+    fixed template leaves over; the template itself, including the approval URL
+    and the traffic warning, is never cut, never sanitized, and cannot be
+    truncated away. The invariant is structural rather than inferred.
+
+    The rationale is still neutralized WHEN TRUNCATED, because a cut can strand
+    a fence or an ``<!--`` inside it that would swallow everything below —
+    including the link. That neutralization is shrink-only, so it cannot push
+    the assembled body back over the cap.
+
+    Markdown discipline (unchanged):
+    - The approval URL is wrapped in ``<...>`` (markdown autolink form) so
+      long URLs don't line-break in some renderers.
+    - ``target_revision`` is shown inside an inline code span — Cloud Run
+      revision names are alphanumeric + hyphens, so they don't break tables.
+    - The rationale is scrubbed via :func:`_scrub_secret_values_from_rationale`
+      so an LLM that quoted a secret value in prose doesn't leak it here.
+    """
+    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
+    if max_chars is None:
+        return _rollback_body(p, approval_url, rationale, _evidence_table(p))
+
+    # Measure the real template, so editing the copy above can never silently
+    # invalidate the arithmetic here.
+    overhead = len(_rollback_body(p, approval_url, "", ""))
+    available = max_chars - overhead
+    if available <= 0:
+        # Pathological (an absurd approval_url or revision name). Everything
+        # except the link is expendable; the link is the reason the message
+        # exists, so it is what survives.
+        return (
+            "## DriftScribe — rollback proposed (approval required)\n\n"
+            f"Roll back `payment-demo` to `{p.target_revision}`. The details "
+            "did not fit this notification — approve or reject here:\n\n"
+            f"<{approval_url}>\n"
+        )
+
+    # Rationale first, at up to half; whatever it leaves goes to the evidence.
+    parts = clamp_middle_out(rationale, max(1, available // 2))
+    if parts is not None:
+        head, marker, tail = parts
+        rationale = _neutralize_fences(head) + marker + _neutralize_fences(tail)
+    evidence = _bounded_evidence(p, available - len(rationale))
+    body = _rollback_body(p, approval_url, rationale, evidence)
+    # Belt and braces: the arithmetic above is measured, not estimated, but a
+    # 422 here is the outage this whole bead is about. A final hard bound costs
+    # nothing and cannot be reasoned wrong.
+    return body if len(body) <= max_chars else body[:max_chars]
 
 
 def render_escalation_issue_body(p: DecisionProposal) -> str:

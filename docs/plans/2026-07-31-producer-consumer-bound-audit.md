@@ -428,13 +428,42 @@ its own bug.
    shipped one. Before the rebuild, three of the four then-existing attempts
    passed.
 
-   **What this cost, and what it bought.** Six wrong implementations and two
-   rounds of invalid fixtures on a path that fires only when a model writes a
-   ~9400-character rationale. Worth stating plainly: without the clamp that
-   path is a guaranteed 422 and *no* notification, so every version here was an
-   improvement on the status quo — but four of them would have shipped a
-   notification whose link silently did not work, which is the worse failure
-   because it looks like success.
+   7. *Escape the swallowers to `&lt;`.* Wrong because it replaced one
+      character with four, so neutralization stopped being shrink-only and the
+      output could exceed the cap: `"<!--" * 3000` came out at 17 460 against
+      10 000. **This bead's own bug class, recreated inside its own fix.**
+
+   **DESIGN CHANGED — the string surgery is gone.** Seven wrong attempts is not
+   bad luck; "cut arbitrary Markdown and guarantee one element still renders"
+   is an open-ended sanitization problem, and attempt 7 proved it could
+   reintroduce the very defect being fixed. So the budget is now spent **before
+   assembly**: `render_rollback_body(..., max_chars=...)` fits the rationale and
+   the evidence table into whatever the fixed template leaves over, measured
+   against the real template rather than an estimate. The template — approval
+   URL, expiry note, traffic warning — is never cut and never sanitized.
+
+   The evidence table is bounded by **dropping whole rows**, never by a
+   character cut: half a row is malformed Markdown that degrades the table to
+   prose, which on an approval page reads as though the evidence were something
+   other than a table.
+
+   Neutralization survives, but only over the truncated *rationale*, and only
+   because a stranded fence there can still swallow the link below it. Its
+   scope is now one paragraph of prose instead of an assembled document.
+
+   **The two claims are now tested separately**, which is the clearest way to
+   see what each mechanism actually buys: disable `_neutralize_fences`
+   entirely and all ten hostile-rationale *structural* assertions still pass
+   (footer present verbatim, cap held, schema valid) while seven *rendering*
+   assertions fail. Structural guarantees do not depend on the sanitizer being
+   right — that is the point of moving the budget.
+
+   **What this cost.** Seven wrong implementations and two rounds of invalid
+   fixtures, on a path that fires only when a model writes a ~9400-character
+   rationale. Without any clamp that path is a guaranteed 422 and *no*
+   notification, so every version was an improvement on the status quo — but
+   five of them would have shipped a notification whose link silently did not
+   work, which is the worse failure because it looks like success.
 
    The test oracle is now **`markdown-it`**, declared as a dev dependency. Each
    broken repair had shipped with a hand-rolled assertion that shared its blind

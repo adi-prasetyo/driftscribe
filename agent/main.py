@@ -73,6 +73,7 @@ from agent.github_actions import (
 from agent.mcp.developer_knowledge import MissingDeveloperKnowledgeApiKeyError
 from agent.models import DecisionAction, DecisionProposal
 from agent.renderer import (
+    NOTIFIER_BODY_MAX_CHARS,
     attach_iac_pr_link,
     normalize_notifier_body,
     normalize_rollback_reason,
@@ -1626,12 +1627,11 @@ def _notify_rollback_approval(rendered: str) -> dict[str, Any]:
             {
                 "channel": "approval",
                 "severity": "high",
-                # ds-thm: the rendered body carries an unbounded model rationale
-                # and an unbounded evidence table against the Notifier's
-                # 10000-char cap. Over it, the request 422s and the operator's
-                # only PUSH surface for a pending rollback goes silent — and
-                # only for the messy drift that produces a long body, i.e.
-                # exactly when they want the page.
+                # ds-thm: ``rendered`` is already bounded at render time (see
+                # _do_rollback), which is the guarantee that matters. This is a
+                # second, independent bound for the OTHER callers of this
+                # helper and for any future one that forgets — it is a no-op on
+                # an already-conforming body.
                 "body": normalize_notifier_body(rendered),
             },
         )
@@ -1926,7 +1926,15 @@ def _do_rollback(
     # path that does, we must release the claim. Without this, a renderer
     # exception would leave the event claimed and perma-409 subsequent retries.
     try:
-        rendered = render_rollback_body(proposal, approval_url)
+        # ds-thm: bounded to the Notifier's declared ``body`` cap AT RENDER, so
+        # the fixed template — the approval URL and the traffic warning — is
+        # never part of any text that gets cut. Clamping the assembled body
+        # instead meant repairing whatever Markdown the cut had broken, which
+        # took six wrong attempts and still could not be made sound; see
+        # render_rollback_body's docstring.
+        rendered = render_rollback_body(
+            proposal, approval_url, max_chars=NOTIFIER_BODY_MAX_CHARS
+        )
     except Exception as e:
         state.release_event(event_key)
         raise HTTPException(

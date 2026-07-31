@@ -68,6 +68,7 @@ _APPROVAL_URL = (
 # proves the case it chose for itself.
 _MAX_REALISTIC_RATIONALE = 8000
 _OVER_THE_SCHEMA_CAP = 30_000
+_CAP = NotifyRequest.model_fields["body"].metadata[-1].max_length
 
 
 def _proposal(rationale: str) -> DecisionProposal:
@@ -195,6 +196,83 @@ def test_a_tilde_fenced_rationale_also_keeps_the_link_clickable():
     notification that arrives, looks fine, and cannot be acted on.
     """
     _assert_link_survives_the_whole_path("Observed:\n~~~yaml\n" + "k: v\n" * _OVER_THE_SCHEMA_CAP)
+
+
+# The rationales that defeated one or more of the six string-surgery attempts.
+# They are kept as a set because the structural fix has to hold for ALL of them
+# without knowing anything about Markdown — that is the whole claim.
+_HOSTILE = {
+    "plain": "R" * 40_000,
+    "unclosed_fence": "Observed:\n```yaml\n" + "k: v\n" * 8000,
+    "long_fence": "Observed:\n" + "`" * 12 + "\n```\n" + "k: v\n" * 8000,
+    "tilde_fence": "Observed:\n~~~yaml\n" + "k: v\n" * 8000,
+    "inline_spans": ("prose with ` a stray span " * 2000),
+    "coalescing": "~~`~" * 5000,
+    "html_comment": "```html\n<!--\n" + "k: v\n" * 8000,
+    "cdata": "<![CDATA[\n" + "k: v\n" * 8000,
+    "script": "<script>\n" + "k: v\n" * 8000,
+    "quotes_the_marker": "[… 42 characters omitted by DriftScribe …]\n" * 900,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_HOSTILE))
+def test_the_approval_footer_survives_every_hostile_rationale(name: str):
+    """ds-thm's STRUCTURAL claim, isolated from the sanitizing one.
+
+    The body is bounded at RENDER — the variable sections are fitted to what
+    the fixed template leaves over — so the template is never part of any text
+    that gets cut. The approval URL, the expiry note and the traffic warning
+    are therefore present verbatim no matter what the model wrote, and no
+    Markdown reasoning is involved in making that true.
+
+    Deliberately kept separate from the rendering assertion below. Disable
+    ``_neutralize_fences`` entirely and THIS test still passes for all ten
+    rationales while the rendering one fails for seven — which is the precise
+    statement of what each mechanism buys, and it is worth being able to see
+    that at a glance after six attempts at conflating them.
+    """
+    body = render_rollback_body(
+        _proposal(_HOSTILE[name]), _APPROVAL_URL, max_chars=_CAP
+    )
+    assert len(body) <= _CAP
+    NotifyRequest(channel="approval", severity="high", body=body)
+    assert f"<{_APPROVAL_URL}>" in body
+    assert "This approval link expires in 15 minutes." in body
+    assert "swing **100% of traffic**" in body
+
+
+@pytest.mark.parametrize("name", sorted(_HOSTILE))
+def test_the_approval_link_still_RENDERS_for_every_hostile_rationale(name: str):
+    """The sanitizing claim: present is not the same as clickable.
+
+    This is what ``_neutralize_fences`` is for, and unlike the footer it is not
+    structural — a truncated rationale can strand a fence or an ``<!--`` that
+    swallows everything below it, link included. Each rationale here defeated
+    at least one of the six attempts that clamped the ASSEMBLED body.
+    """
+    from markdown_it import MarkdownIt
+
+    body = render_rollback_body(
+        _proposal(_HOSTILE[name]), _APPROVAL_URL, max_chars=_CAP
+    )
+    assert f'href="{_APPROVAL_URL}"' in MarkdownIt().render(body), (
+        "the link is present but does not render — something above it is still "
+        "swallowing it"
+    )
+
+
+def test_an_ordinary_rollback_body_is_not_abridged_at_all():
+    """The bounded path must not fire on real traffic. ds-j0i observed a
+    581-character rationale against this 10 000-char budget."""
+    body = render_rollback_body(
+        _proposal("PAYMENT_MODE drifted from 'mock' to 'live'. " * 12),
+        _APPROVAL_URL,
+        max_chars=_CAP,
+    )
+    assert "omitted" not in body
+    assert body == render_rollback_body(
+        _proposal("PAYMENT_MODE drifted from 'mock' to 'live'. " * 12), _APPROVAL_URL
+    ), "a body that fits must be byte-identical to the unbounded render"
 
 
 def _assert_link_survives_the_whole_path(rationale: str) -> None:
