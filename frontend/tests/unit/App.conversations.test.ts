@@ -3,7 +3,7 @@
 // echoes a conversation_id. The SSE transport is covered by the smoke; here we
 // drive the JSON fallback path, which runs the same settle logic.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, cleanup, fireEvent, waitFor, within } from '@testing-library/svelte';
 import App from '../../src/App.svelte';
 
 function okJson(body: unknown, headers: Record<string, string> = {}): Response {
@@ -276,7 +276,9 @@ describe('App — a chat turn settles into the thread', () => {
   it('does NOT settle a paused refusal that echoes conversation_id (no turn persisted)', async () => {
     // The kill-switch reply carries conversation_id for crew-lock symmetry but
     // persists nothing; settling it would append a bubble that vanishes on
-    // reload. The reply must stay in the standalone hero, with no thread.
+    // reload. Since ds-jns it renders as an EPHEMERAL turn instead — in the
+    // thread, so the page keeps its shape, but never folded into
+    // conversationTurns and never given a ?conversation param.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -303,13 +305,13 @@ describe('App — a chat turn settles into the thread', () => {
     await fireEvent.input(input, { target: { value: 'anything' } });
     await fireEvent.submit(document.getElementById('chat-form')!);
 
-    // The paused reply stays in the hero; no thread is created.
     await waitFor(() => {
-      const hero = getByTestId('final-response');
-      expect(hero.hasAttribute('hidden')).toBe(false);
-      expect(hero.textContent).toContain('paused');
+      expect(getByTestId('conversation-thread').textContent).toContain('paused');
     });
-    expect(queryByTestId('conversation-thread')).toBeNull();
+    // Not settled: no ?conversation, and the standalone hero stays out of it.
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBeNull();
+    const hero = queryByTestId('final-response');
+    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
   });
 
   it('shows an optimistic thinking bubble while the reply is in flight, then settles it in place', async () => {
@@ -357,7 +359,11 @@ describe('App — a chat turn settles into the thread', () => {
         { 'X-Trace-Id': 'trace-xyz' },
       ),
     );
-    await findByTestId('thread-open-trace');
+    // ?conversation is written by settleConversation, so it is the honest
+    // post-settle signal now that the reasoning line renders pre-settle too.
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('conversation')).toBe('new-conv'),
+    );
     expect(getByText('because someone set it in the console')).toBeTruthy();
     expect(queryByTestId('thread-typing')).toBeNull();
     // The hero stayed out of the way throughout — present again post-settle but
@@ -437,16 +443,29 @@ describe('App — SSE chat turn releases the composer at the done frame', () => 
     await fireEvent.submit(document.getElementById('chat-form')!);
 
     await waitFor(() => {
-      const hero = getByTestId('final-response');
-      expect(hero.hasAttribute('hidden')).toBe(false);
-      expect(hero.textContent).toContain('The reasoning stream ended before a final reply arrived.');
+      const thread = getByTestId('conversation-thread');
+      expect(thread.textContent).toContain(
+        'The reasoning stream ended before a final reply arrived.',
+      );
     });
-    expect(queryByTestId('conversation-thread')).toBeNull();
+    // Unlike the paused case, this stream DID open with a meta frame, so the
+    // ephemeral turn keeps its trace — whatever reasoning arrived before the
+    // stream died is still reachable, and the line says the run was cut short.
+    expect(getByTestId('reasoning-disclosure')).toBeTruthy();
+    expect(getByTestId('reasoning-stream-error')).toBeTruthy();
+    expect(getByTestId('thread-turn-error')).toBeTruthy();
+    const hero = queryByTestId('final-response');
+    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
   });
 
-  it('paused refusal over SSE stays in the hero (no fast-path settle)', async () => {
+  it('paused refusal over SSE renders as an ephemeral turn with no reasoning line', async () => {
+    // FIXTURE CORRECTION (ds-jns): this used to open with a `meta` frame, which
+    // prod never sends for a paused refusal — `_paused_chat_response` returns a
+    // ONE-frame stream (a lone `done`, no meta, no X-Trace-Id) because no LLM
+    // ran and there is no trace. The old fixture handed the SPA a trace id for
+    // a turn that has none, hiding exactly the case the disclosure must not
+    // render: a test sharing its subject's blind spot.
     const frames =
-      'event: meta\ndata: {"trace_id":"trace-paused"}\n\n' +
       'event: done\ndata: {"reply":"DriftScribe is paused (operator kill switch active).","tool_calls":[],"paused":true,"conversation_id":"echoed"}\n\n';
     vi.stubGlobal(
       'fetch',
@@ -467,12 +486,15 @@ describe('App — SSE chat turn releases the composer at the done frame', () => 
     await fireEvent.input(input, { target: { value: 'anything' } });
     await fireEvent.submit(document.getElementById('chat-form')!);
 
+    // The refusal stays in the thread as an ephemeral turn — the page keeps its
+    // shape — but nothing is persisted and no reasoning line appears, because
+    // the turn genuinely has no trace.
     await waitFor(() => {
-      const hero = getByTestId('final-response');
-      expect(hero.hasAttribute('hidden')).toBe(false);
-      expect(hero.textContent).toContain('paused');
+      expect(getByTestId('conversation-thread').textContent).toContain('paused');
     });
-    expect(queryByTestId('conversation-thread')).toBeNull();
+    expect(queryByTestId('reasoning-disclosure')).toBeNull();
+    const hero = queryByTestId('final-response');
+    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
     expect(new URLSearchParams(window.location.search).get('conversation')).toBeNull();
   });
 
@@ -636,7 +658,7 @@ const HEX32 = 'eba334f9211d46cabc79e50ed200a5a1';
 // Same as stubResumeFetch, plus a generic /trace/ response — needed for tests
 // that open a reasoning replay (?reasoning=<id> boot, or "view reasoning" on a
 // thread turn) alongside the resumed thread.
-function stubResumeFetchWithTrace(graph: unknown = GRAPH) {
+function stubResumeFetchWithTrace(graph: unknown = GRAPH, decisions: unknown[] = []) {
   const { list, detail } = resumeFixtures();
   vi.stubGlobal(
     'fetch',
@@ -645,7 +667,7 @@ function stubResumeFetchWithTrace(graph: unknown = GRAPH) {
       if (url.includes('/trace/')) return okJson({ trace_id: HEX32, complete: true, events: [] });
       if (url.includes('/conversations/')) return okJson(detail);
       if (url.includes('/conversations')) return okJson(list);
-      if (url.includes('/decisions')) return okJson({ decisions: [] });
+      if (url.includes('/decisions')) return okJson({ decisions });
       if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
       if (url.includes('/infra/graph')) return okJson(graph);
       return okJson({});
@@ -771,7 +793,7 @@ describe('App — ?conversation boot deep-link', () => {
   });
 
   it('clears both ?conversation and ?reasoning on New chat, preserving unrelated params + hash', async () => {
-    stubResumeFetchWithTrace();
+    stubResumeFetchWithTrace(GRAPH, [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }]);
     // `view=chat` explicitly (post-Task-3.6 a bare url is the desk, which has
     // no conversations rail to click); `unrelated=1` + the hash are what this
     // test actually asserts survive the New-chat param sweep.
@@ -779,10 +801,12 @@ describe('App — ?conversation boot deep-link', () => {
     const { findByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    // Open a turn's reasoning too, so both params are live before New chat —
-    // this is the historical-replay New chat exit (the banner's "← new chat",
-    // NOT composer-new-chat, which hides itself in historical mode).
-    await fireEvent.click(await findByTestId('thread-open-trace'));
+    // Open a replay too, so both params are live before New chat — this is the
+    // historical-replay New chat exit (the banner's "← new chat", NOT
+    // composer-new-chat, which hides itself in historical mode). Driven from
+    // the decisions rail: since ds-jns the thread carries its reasoning inline
+    // and no longer opens replay at all.
+    await fireEvent.click(await findByTestId('open-trace-button'));
     await findByTestId('historical-banner');
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
@@ -874,12 +898,12 @@ describe('App — ?conversation boot deep-link', () => {
     expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
   });
 
-  it('openTrace on a thread turn keeps ?conversation alongside the new ?reasoning', async () => {
-    stubResumeFetchWithTrace();
+  it('openTrace with a thread open keeps ?conversation alongside the new ?reasoning', async () => {
+    stubResumeFetchWithTrace(GRAPH, [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }]);
     const { findByTestId } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('thread-open-trace'));
+    await fireEvent.click(await findByTestId('open-trace-button'));
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
       expect(p.get('conversation')).toBe('c1');
@@ -1038,5 +1062,349 @@ describe('App — ?conversation boot deep-link', () => {
     const exitBtn = document.querySelector('#new-chat-btn') as HTMLButtonElement;
     await fireEvent.click(exitBtn);
     await waitFor(() => expect(sendBtn.disabled).toBe(false));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-trace cache wiring (ds-jns Task 1.7).
+//
+// The disclosure reads a cache keyed by trace id, which App fills from the SSE
+// stream. What these pin is the ORDERING and the KEYING: the `meta` frame has
+// to create the entry before any timeline event, and a backfill has to land on
+// the trace it belongs to even when a newer turn has already superseded the
+// run that started it.
+// ---------------------------------------------------------------------------
+
+describe('App — the live stream fills the per-trace cache', () => {
+  beforeEach(() => {
+    history.replaceState(null, '', '/?view=chat');
+  });
+
+  it('attaches the disclosure from the meta frame, before any event, and never fetches /trace mid-stream', async () => {
+    // A stream held open after `meta`: the disclosure must already be there and
+    // expandable, and expanding it must NOT ask /trace for a trace that is
+    // still being produced (it is not in Cloud Logging yet).
+    let push!: (chunk: string) => void;
+    let close!: () => void;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        push = (chunk) => c.enqueue(new TextEncoder().encode(chunk));
+        close = () => c.close();
+      },
+    });
+    const traceCalls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') {
+          return new Response(stream as unknown as BodyInit, {
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        }
+        if (url.includes('/trace/')) {
+          traceCalls.push(url);
+          return okJson({ trace_id: 'trace-live', events: [], complete: true });
+        }
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { container, findByTestId, getByTestId, getAllByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'why did it drift?');
+
+    push('event: meta\ndata: {"trace_id":"trace-live"}\n\n');
+    // Present from `meta` alone — no timeline event has arrived yet.
+    const line = await findByTestId('reasoning-disclosure');
+    await fireEvent.click(line);
+    await findByTestId('trace-detail');
+    expect(traceCalls).toEqual([]);
+
+    // Events stream into the OPEN disclosure.
+    push('event: llm_thought\ndata: {"event":"llm_thought","trace_id":"trace-live","thought_text":"Reading the service"}\n\n');
+    await waitFor(() => expect(getAllByTestId('trace-row-thought')).toHaveLength(1));
+    expect(getByTestId('reasoning-subtitle').textContent).toBe('Reading the service');
+    expect(traceCalls).toEqual([]);
+
+    push('event: done\ndata: {"reply":"someone edited it in the console","tool_calls":[],"conversation_id":"c-live"}\n\n');
+    close();
+    // Only now — the post-`done` backfill — does /trace get asked.
+    await waitFor(() => expect(traceCalls.length).toBeGreaterThan(0));
+  });
+
+  it('mirrors llm_usage into the cache so the omitted-summaries note can appear', async () => {
+    // llm_usage renders no row, but omittedThoughtTokens reads it. Filtering it
+    // out at the stream boundary would silently retire the PR #241 note.
+    const frames =
+      'event: meta\ndata: {"trace_id":"trace-usage"}\n\n' +
+      'event: llm_usage\ndata: {"event":"llm_usage","trace_id":"trace-usage","thoughts_token_count":714}\n\n' +
+      'event: done\ndata: {"reply":"done","tool_calls":[],"conversation_id":"c1"}\n\n';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') return sseChatResponse(frames);
+        if (url.includes('/trace/')) return okJson({ trace_id: 'trace-usage', events: [], complete: true });
+        if (url.includes('/conversations/')) return okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { container, findByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container);
+    await fireEvent.click(await findByTestId('reasoning-disclosure'));
+    // Scoped INSIDE the expanded disclosure on purpose: PR 1 is additive, so
+    // the page-level Timeline panel is still mounted below and renders the same
+    // note from the same events. A document-wide query would be satisfied by
+    // that copy and would pass even if the disclosure never saw the usage event
+    // at all.
+    const detail = await findByTestId('trace-detail');
+    await waitFor(() =>
+      expect(within(detail).getByTestId('thought-omitted-note').textContent).toContain('714'),
+    );
+  });
+
+  it('settles the backfill onto the OLD trace after a fast follow-up turn supersedes it', async () => {
+    // The runSeq guard protects the GLOBAL timeline, which belongs to whatever
+    // run is on screen. The cache entry is keyed, so riding that same guard
+    // would orphan the previous trace — the one an operator scrolling back
+    // expands. Here turn 1's backfill is deliberately stalled until turn 2 has
+    // already bumped runSeq.
+    let releaseTrace1!: (r: Response) => void;
+    const trace1 = new Promise<Response>((r) => {
+      releaseTrace1 = r;
+    });
+    const sse = (tid: string, cid: string) =>
+      sseChatResponse(
+        `event: meta\ndata: {"trace_id":"${tid}"}\n\n` +
+          `event: llm_thought\ndata: {"event":"llm_thought","trace_id":"${tid}","thought_text":"streamed ${tid}"}\n\n` +
+          `event: done\ndata: {"reply":"reply ${tid}","tool_calls":[],"conversation_id":"${cid}"}\n\n`,
+      );
+    let chatPosts = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') {
+          chatPosts += 1;
+          return chatPosts === 1 ? sse('trace-one', 'c1') : sse('trace-two', 'c1');
+        }
+        if (url.includes('/trace/trace-one')) return trace1;
+        if (url.includes('/trace/')) return okJson({ trace_id: 'trace-two', events: [], complete: true });
+        if (url.includes('/conversations/')) return okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    const { container, findByTestId, getAllByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'first question');
+    await waitFor(() => expect(chatPosts).toBe(1));
+    // Turn 2 goes out while turn 1's backfill is still stalled → runSeq bumps.
+    await sendPrompt(container, 'second question');
+    await waitFor(() => expect(chatPosts).toBe(2));
+
+    // Turn 1's /trace finally answers, carrying the trace-only mcp side-channel.
+    releaseTrace1(
+      okJson({
+        trace_id: 'trace-one',
+        complete: true,
+        events: [
+          {
+            event: 'mcp_call',
+            trace_id: 'trace-one',
+            insert_id: 'm1',
+            mcp_server: 'developer_knowledge',
+            mcp_tool: 'search_documents',
+          },
+        ],
+      }),
+    );
+
+    // Expanding the FIRST turn's disclosure shows the streamed thought AND the
+    // backfilled mcp row — proof the settle landed on the superseded trace.
+    await waitFor(() => expect(getAllByTestId('reasoning-disclosure').length).toBeGreaterThan(1));
+    const first = getAllByTestId('reasoning-disclosure')[0];
+    await fireEvent.click(first);
+    await waitFor(() => expect(getAllByTestId('trace-row-mcp').length).toBe(1));
+    expect(getAllByTestId('trace-row-thought')[0].textContent).toContain('streamed trace-one');
+  });
+});
+
+describe('App — ephemeral (non-persisted) exchanges', () => {
+  beforeEach(() => {
+    history.replaceState(null, '', '/?view=chat');
+  });
+
+  it('renders a network failure as an error turn in the thread with no reasoning line', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') throw new Error('offline');
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { container, findByTestId, getByTestId, queryByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'anything');
+    await waitFor(() => expect(getByTestId('thread-turn-error')).toBeTruthy());
+    // The request never reached the coordinator, so there is no trace at all.
+    expect(queryByTestId('reasoning-disclosure')).toBeNull();
+    // The operator's own prompt stays on screen beside the failure.
+    expect(getByTestId('conversation-thread').textContent).toContain('anything');
+  });
+
+  it('clears the ephemeral turn on New chat', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') throw new Error('offline');
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { container, findByTestId, queryByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'anything');
+    await findByTestId('thread-turn-error');
+    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await waitFor(() => expect(queryByTestId('conversation-thread')).toBeNull());
+  });
+
+  it('clears the ephemeral turn when a conversation is opened from the rail', async () => {
+    let failChat = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') {
+          if (failChat) throw new Error('offline');
+          return okJson({ reply: 'ok', tool_calls: [] });
+        }
+        if (url.includes('/conversations/')) {
+          return okJson({
+            conversation_id: 'c1',
+            workload: 'drift',
+            title: 'earlier thread',
+            turns: [{ seq: 0, role: 'user', text: 'the persisted prompt' }],
+          });
+        }
+        if (url.includes('/conversations')) {
+          return okJson({
+            conversations: [{ conversation_id: 'c1', workload: 'drift', title: 'earlier thread' }],
+          });
+        }
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { container, findByTestId, getByTestId, queryByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'the failed prompt');
+    await findByTestId('thread-turn-error');
+    failChat = false;
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await waitFor(() =>
+      expect(getByTestId('conversation-thread').textContent).toContain('the persisted prompt'),
+    );
+    expect(queryByTestId('thread-turn-error')).toBeNull();
+    expect(getByTestId('conversation-thread').textContent).not.toContain('the failed prompt');
+  });
+
+  it('does not fold an ephemeral turn into the persisted thread on the next successful send', async () => {
+    // The whole reason these do not go through appendLocalTurns: a turn nobody
+    // stored must not be sitting in conversationTurns when a real one settles.
+    let failChat = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') {
+          if (failChat) return new Response('boom', { status: 500 });
+          return okJson({ reply: 'the real reply', tool_calls: [], conversation_id: 'c9' });
+        }
+        if (url.includes('/trace/')) return okJson({ trace_id: 't', events: [], complete: true });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { container, findByTestId, getByTestId, queryByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'the failed prompt');
+    await findByTestId('thread-turn-error');
+    failChat = false;
+    await sendPrompt(container, 'the good prompt');
+    await waitFor(() =>
+      expect(getByTestId('conversation-thread').textContent).toContain('the real reply'),
+    );
+    const thread = getByTestId('conversation-thread');
+    expect(queryByTestId('thread-turn-error')).toBeNull();
+    expect(thread.textContent).not.toContain('the failed prompt');
+    expect(thread.textContent).toContain('the good prompt');
+  });
+});
+
+describe('App — an ephemeral turn does not leak into historical replay', () => {
+  beforeEach(() => {
+    history.replaceState(null, '', '/?view=chat');
+  });
+
+  it('opening a past decision still renders its rationale after a failed exchange', async () => {
+    // The replay hero is gated on there being no ephemeral exchange (the two
+    // would otherwise say the same thing twice). openTrace therefore has to
+    // clear one, exactly as it already clears the optimistic overlay — or a
+    // network failure silently blanks every replay opened afterwards.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') throw new Error('offline');
+        if (url.includes('/trace/'))
+          return okJson({
+            trace_id: 't1',
+            complete: true,
+            events: [],
+            decision: { decision_id: 'd1', action: 'rollback', rationale: 'PORT drifted on the agent service' },
+          });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions'))
+          return okJson({ decisions: [{ decision_id: 'd1', action: 'rollback', trace_id: 't1' }] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { container, findByTestId, getByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'anything');
+    await findByTestId('thread-turn-error');
+
+    await fireEvent.click(await findByTestId('open-trace-button'));
+    await findByTestId('historical-banner');
+    await waitFor(() => {
+      const hero = getByTestId('final-response');
+      expect(hero.hasAttribute('hidden')).toBe(false);
+      expect(hero.textContent).toContain('PORT drifted on the agent service');
+    });
   });
 });

@@ -103,6 +103,30 @@ export const timeline = {
     'timeline.worker.answer_query': 'Developer Knowledge MCP · answer',
     'timeline.worker.search_documents': 'Developer Knowledge MCP · search',
     'timeline.worker.get_documents': 'Developer Knowledge MCP · get',
+
+    // --- Inline reasoning disclosure (ds-jns) ---
+    // The collapsed line under each crew reply, and the expanded detail it
+    // opens. Keys are `disclosure.*` rather than `timeline.disclosure.*`: the
+    // desk decision record (PR 2) mounts the same components off the chat view,
+    // so the namespace names the SURFACE, not where it first appeared.
+    'disclosure.showReasoning': 'View reasoning',
+    // Shown while the stream is live and no thought summary has arrived yet.
+    // Vertex can omit summaries entirely, so this can be the whole run's label.
+    'disclosure.thinking': 'Thinking…',
+    'disclosure.toggleAria': 'Reasoning for this reply',
+    // The run itself failed. Distinct from loadError below: whatever streamed
+    // before the failure is still shown.
+    'disclosure.streamError': 'The run was interrupted',
+    'disclosure.loading': 'Loading reasoning…',
+    'disclosure.loadError': "This reasoning couldn't be loaded.",
+    'disclosure.retry': 'Try again',
+    'disclosure.copyLink': 'Copy link',
+    'disclosure.copied': 'Copied',
+    'disclosure.copyTitle': 'Copy a link to this reasoning',
+    'disclosure.traceLabel': 'Trace',
+    // Fail-soft: the trace is complete, only the PR description is missing.
+    'disclosure.prBodyMissing': "The PR description couldn't be loaded.",
+    'disclosure.mcpLabel': 'MCP',
   },
   ja: {
     'timeline.group.coordinator': 'コーディネーターの推論',
@@ -171,5 +195,20 @@ export const timeline = {
     'timeline.worker.answer_query': 'Developer Knowledge MCP・回答',
     'timeline.worker.search_documents': 'Developer Knowledge MCP・検索',
     'timeline.worker.get_documents': 'Developer Knowledge MCP・取得',
+
+    // --- インライン推論ディスクロージャー (ds-jns) ---
+    'disclosure.showReasoning': '推論を表示',
+    'disclosure.thinking': '推論中…',
+    'disclosure.toggleAria': 'この返信の推論',
+    'disclosure.streamError': '実行が中断されました',
+    'disclosure.loading': '推論を読み込んでいます…',
+    'disclosure.loadError': 'この推論を読み込めませんでした。',
+    'disclosure.retry': '再試行',
+    'disclosure.copyLink': 'リンクをコピー',
+    'disclosure.copied': 'コピーしました',
+    'disclosure.copyTitle': 'この推論へのリンクをコピー',
+    'disclosure.traceLabel': 'トレース',
+    'disclosure.prBodyMissing': 'PR の説明を読み込めませんでした。',
+    'disclosure.mcpLabel': 'MCP',
   },
 };

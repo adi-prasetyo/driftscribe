@@ -207,6 +207,11 @@ export interface ConversationTurn {
   // reply is still streaming (renders a typing indicator instead of text).
   optimistic?: boolean;
   pending?: boolean;
+  /** Live/EPHEMERAL turns only. Marks a reply that is an error message rather
+   *  than a crew answer (network failure, refused request, interrupted
+   *  stream), so the thread can style it as one. A persisted turn is never an
+   *  error — the backend only writes turns for replies that happened. */
+  isError?: boolean;
 }
 
 /** One conversation's metadata row in the history rail (GET /conversations).

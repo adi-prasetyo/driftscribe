@@ -31,9 +31,11 @@ def test_transparency_spec_does_not_use_old_auth_header():
 def test_transparency_spec_uses_data_testid_selectors():
     body = Path("tests/e2e/ui/tests/transparency.spec.ts").read_text()
     # A live chat reply now lands in the conversation thread's crew bubble
-    # (chat-native), not the standalone "final-response" hero — the spec waits on
-    # conversation-thread + thread-open-trace instead.
+    # (chat-native), not the standalone "final-response" hero. Since ds-jns the
+    # crew turn carries its reasoning INLINE, so the spec waits on
+    # conversation-thread and then expands a reasoning-disclosure.
     for tid in ("chat-prompt", "chat-submit", "conversation-thread",
+                "reasoning-disclosure", "trace-detail",
                 "past-decisions-pane", "past-decision-item",
                 "open-trace-button", "historical-banner"):
         assert f'data-testid="{tid}"' in body, f"spec missing selector for {tid}"

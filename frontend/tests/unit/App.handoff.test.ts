@@ -830,3 +830,213 @@ describe('App — the client does not know what happened', () => {
     expect(await typeAndReadWorkload(container, 'second try')).toBe('provision');
   });
 });
+
+// ---------------------------------------------------------------------------
+// A committed redemption whose joining crew failed to run (ds-jns).
+//
+// The transition persisted; the joining crew's first reply did not. The thread
+// therefore refetches — and that refetch replaces every overlay in one
+// synchronous block, deliberately, because an overlay keyed against the OLD
+// turn count collides with the refetched rows. The explanation still has to
+// survive it, or the operator is left with a crew change and no account of the
+// missing reply.
+// ---------------------------------------------------------------------------
+describe('App — a committed handoff whose join failed keeps its explanation', () => {
+  it('re-seats the failure turn after the successful refetch', async () => {
+    let redeemed = false;
+    stubFetch((url, init) => {
+      if (url.includes('/chat/handoff') && init?.method === 'POST') {
+        redeemed = true;
+        return errJson(503, "workload 'provision' is not deployed", {
+          'X-Handoff-Redeemed': '1',
+        });
+      }
+      if (url.includes('/conversations/')) {
+        // The refetch SUCCEEDS — the branch where the old code lost the message.
+        return okJson(
+          redeemed
+            ? { ...JOINED_DETAIL, turns: JOINED_DETAIL.turns.slice(0, 3), pending_handoff: null }
+            : PENDING_DETAIL,
+        );
+      }
+      return undefined;
+    });
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // The confirmed transition is in the thread…
+    await findByTestId('thread-turn-crew-change');
+    // …and so is the reason the joining crew never answered.
+    await waitFor(() => expect(getByTestId('thread-turn-error')).toBeTruthy());
+    expect(getByTestId('conversation-thread').textContent).toContain(
+      'its first reply failed',
+    );
+  });
+});
+
+describe('App — the failure turn keeps its reasoning across the refetch', () => {
+  const TRACE = 'b'.repeat(32);
+
+  /** A /chat/handoff Response the App treats as SSE (see App.conversations.test.ts). */
+  function sseChat(frames: string): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(frames));
+        c.close();
+      },
+    });
+    return new Response(stream as unknown as BodyInit, {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  it('keeps an expanded disclosure open across the refetch', async () => {
+    // A trace-bearing failure turn (the joining crew streamed a meta frame, then
+    // errored) keeps BOTH halves of its explanation once the persisted rows land
+    // underneath it: the prose, and the trace the operator had already expanded.
+    //
+    // The disclosure's open state lives in the component, so it survives only if
+    // the turn keeps its {#each} key. It does: an `omitUserTurn` overlay renders
+    // at `baseSeq + 1` and leaves `baseSeq` free for the server's transition row,
+    // so the refetch lands in the gap the overlay reserved and the key is
+    // untouched. Re-basing on every refetch — even when nothing collides —
+    // remounts the bubble and drops the disclosure; `reseated()` moves the base
+    // only on a real collision.
+    let releaseRefetch!: () => void;
+    const refetchGate = new Promise<void>((r) => {
+      releaseRefetch = r;
+    });
+    let redeemed = false;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat/handoff') && init?.method === 'POST') {
+          redeemed = true;
+          return sseChat(
+            `event: meta\ndata: {"trace_id":"${TRACE}"}\n\n` +
+              'event: error\ndata: {"detail":"the provision crew crashed"}\n\n',
+          );
+        }
+        if (url.includes('/conversations/')) {
+          if (!redeemed) return okJson(PENDING_DETAIL);
+          // Held open so the operator can expand the disclosure mid-flight.
+          await refetchGate;
+          return okJson({
+            ...JOINED_DETAIL,
+            turns: JOINED_DETAIL.turns.slice(0, 3),
+            pending_handoff: null,
+          });
+        }
+        if (url.includes('/conversations')) return okJson(LIST);
+        if (url.includes('/trace/')) {
+          return okJson({
+            trace_id: TRACE,
+            events: [
+              {
+                event: 'llm_thought',
+                trace_id: TRACE,
+                insert_id: 'i1',
+                thought_text: '**Checking the provision crew**',
+              },
+            ],
+            complete: true,
+          });
+        }
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, queryByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // The failure turn is on screen, and its reasoning is reachable inline.
+    await findByTestId('thread-turn-error');
+    await fireEvent.click(await findByTestId('reasoning-disclosure'));
+    await findByTestId('trace-detail');
+
+    // …now the persisted rows land underneath it.
+    releaseRefetch();
+    await findByTestId('thread-turn-crew-change');
+
+    // The turn is still there, still carrying its prose explanation…
+    expect(getByTestId('thread-turn-error')).toBeTruthy();
+    // …and the trace is still OPEN — not merely re-openable.
+    const detail = queryByTestId('trace-detail');
+    expect(detail).toBeTruthy();
+    expect(detail!.textContent).toContain('Checking the provision crew');
+  });
+});
+
+describe('App — the overlay yields when the server actually claims its slot', () => {
+  const TRACE = 'c'.repeat(32);
+
+  function sseChat(frames: string): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(frames));
+        c.close();
+      },
+    });
+    return new Response(stream as unknown as BodyInit, {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  it('re-bases when the refetch persists a row at the overlay key', async () => {
+    // The other half of `reseated()`. Here the joining crew's reply DID persist,
+    // so the refetch returns seq 0..3 and the overlay's own key (baseSeq+1 = 3)
+    // is now taken. Holding the key would render two turns keyed 3 and Svelte
+    // would throw each_key_duplicate, so the base has to move.
+    let redeemed = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat/handoff') && init?.method === 'POST') {
+          redeemed = true;
+          return sseChat(
+            `event: meta\ndata: {"trace_id":"${TRACE}"}\n\n` +
+              'event: error\ndata: {"detail":"the provision crew crashed"}\n\n',
+          );
+        }
+        if (url.includes('/conversations/')) {
+          // All four rows — the transition AND the crew reply persisted.
+          return okJson(redeemed ? { ...JOINED_DETAIL, pending_handoff: null } : PENDING_DETAIL);
+        }
+        if (url.includes('/conversations')) return okJson(LIST);
+        if (url.includes('/trace/')) return okJson({ trace_id: TRACE, events: [], complete: true });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+
+    window.sessionStorage.setItem('ds.handoff.c1', JSON.stringify(OFFER));
+    const { findByTestId, getByTestId, getAllByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('handoff-chip');
+    await fireEvent.click(getByTestId('handoff-confirm'));
+
+    // Both the persisted reply and the overlay's failure note coexist…
+    await findByTestId('thread-turn-crew-change');
+    await waitFor(() => expect(getByTestId('thread-turn-error')).toBeTruthy());
+    expect(getByTestId('conversation-thread').textContent).toContain(
+      'opened PR #42 with the bucket',
+    );
+    // …and every rendered turn still has a distinct key (no duplicate crash).
+    const seqs = getAllByTestId(/^thread-turn/).length;
+    expect(seqs).toBeGreaterThanOrEqual(4);
+  });
+});

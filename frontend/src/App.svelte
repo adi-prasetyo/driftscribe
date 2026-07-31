@@ -66,6 +66,7 @@
   import AutonomyPill from './components/AutonomyPill.svelte';
   import { createAutonomyStore, autonomyNoteFor } from './lib/autonomyStore';
   import { createOverviewStore, NO_DECISIONS_YET } from './lib/overviewStore';
+  import { createTraceCache } from './lib/traceCache';
   import { prefersReducedMotion } from './lib/motion';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -304,6 +305,7 @@
     finalIsError = false;
     iacPr = null;
     liveExchange = null;
+    ephemeralExchange = null;
     status = 'pending';
   }
 
@@ -447,8 +449,8 @@
   // latency before settle is no longer visible (no blue→green swap, no upward
   // hop). Captured (not reactive) at submit time so the bubble keys/labels stay
   // stable for the whole run. Cleared the MOMENT a non-persistable outcome is
-  // known (paused / one-shot / error) so those fall back to the hero without
-  // flashing in a bubble first — see the clear points in submitChat.
+  // known (paused / one-shot / error), which since ds-jns hands the exchange to
+  // `ephemeralExchange` rather than to the standalone hero — see setEphemeral.
   type LiveExchange = {
     prompt: string;
     workload: Workload;
@@ -462,6 +464,83 @@
   };
   let liveExchange = $state<LiveExchange | null>(null);
 
+  // ---- ephemeral (non-persisted) exchanges ----
+  // A turn the backend did NOT persist — a paused refusal, a one-shot with no
+  // conversation, a network/transport failure. These used to fall out of the
+  // thread into the standalone hero, so the page changed shape at exactly the
+  // moment something went wrong. They now render as in-memory thread turns with
+  // the same anatomy (design §2).
+  //
+  // Deliberately NOT routed through appendLocalTurns: that function is
+  // documented "called ONLY when persistence succeeded", and its optimistic
+  // `seq` arithmetic plus reload semantics assume the server agrees the turn
+  // exists. Feeding it a turn nobody stored would put the local thread ahead of
+  // the store and survive into the next real settle.
+  //
+  // Mutually exclusive with `liveExchange` by construction: every branch that
+  // creates one clears the other, because they are the same exchange before and
+  // after its outcome is known.
+  type EphemeralExchange = {
+    prompt: string;
+    workload: Workload;
+    /** conversationTurns.length at creation — keeps the rendered keys stable
+     *  for the life of the exchange, exactly like LiveExchange.baseSeq. */
+    baseSeq: number;
+    reply: string | null;
+    isError: boolean;
+    /** Null whenever the outcome carried no trace: a network failure never
+     *  reached the coordinator, and a PAUSED stream emits a lone `done` frame
+     *  with no `meta` and no X-Trace-Id (agent/main.py `_paused_chat_response`).
+     *  A null id means the turn shows no reasoning line, because there is
+     *  genuinely no reasoning to show. */
+    traceId: string | null;
+    /** Client-side timestamp: nothing was persisted, so there is no server
+     *  `created_at` to render and the time would otherwise be blank. */
+    createdAt: string;
+    /** A confirmed handoff runs a turn the operator never typed. */
+    omitUserTurn?: boolean;
+  };
+  let ephemeralExchange = $state<EphemeralExchange | null>(null);
+
+  /** The carried ephemeral turn, re-based against the refetched rows ONLY if
+   *  they actually claim a slot it renders.
+   *
+   *  Re-basing unconditionally to `turns.length` looks harmless and is not:
+   *  `baseSeq` decides the turn's `seq`, `seq` is the keyed {#each}'s key
+   *  (ConversationThread.svelte), so moving it remounts the bubble — silently
+   *  collapsing any reasoning disclosure the operator had opened on it, on the
+   *  one turn whose whole job is to explain itself. It also leaves a hole in the
+   *  key sequence.
+   *
+   *  Usually there is nothing to avoid: an `omitUserTurn` overlay renders only
+   *  `baseSeq + 1` and deliberately leaves `baseSeq` free for the server's
+   *  transition row, so the refetch that adds that row lands exactly in the gap
+   *  the overlay reserved for it. Only a genuine collision forces a move. */
+  function reseated(
+    carry: EphemeralExchange,
+    turns: ConversationTurn[],
+  ): EphemeralExchange {
+    const taken = new Set(turns.map((t) => t.seq));
+    const rendered = carry.omitUserTurn
+      ? [carry.baseSeq + 1]
+      : [carry.baseSeq, carry.baseSeq + 1];
+    if (!rendered.some((s) => taken.has(s))) return carry;
+    return { ...carry, baseSeq: turns.length };
+  }
+
+  /** Record a non-persisted outcome as a thread turn. Always clears
+   *  `liveExchange` — the optimistic bubble and this are the same exchange. */
+  function setEphemeral(
+    e: Omit<EphemeralExchange, 'baseSeq' | 'createdAt'> & { baseSeq?: number },
+  ): void {
+    ephemeralExchange = {
+      baseSeq: e.baseSeq ?? conversationTurns.length,
+      createdAt: new Date().toISOString(),
+      ...e,
+    };
+    liveExchange = null;
+  }
+
   // The thread's rendered turns: the persisted turns plus, during a live run,
   // the optimistic exchange. `baseSeq` mirrors appendLocalTurns
   // (conversationTurns.length at submit), so when settle appends the real turns
@@ -469,7 +548,40 @@
   // remounting — the transient bubble becomes the persisted one with no visual
   // change.
   const displayTurns = $derived.by((): ConversationTurn[] => {
-    if (liveExchange == null) return conversationTurns;
+    if (liveExchange == null) {
+      if (ephemeralExchange == null) return conversationTurns;
+      // The exchange is over and nothing was stored. It stays in the thread
+      // until the next send / New chat / thread open rather than dropping the
+      // page into a different layout at the worst moment.
+      const { prompt, workload, baseSeq, reply, isError, traceId: etid, createdAt, omitUserTurn } =
+        ephemeralExchange;
+      return [
+        ...conversationTurns,
+        ...(omitUserTurn
+          ? []
+          : [
+              {
+                seq: baseSeq,
+                role: 'user',
+                text: prompt,
+                workload,
+                trace_id: etid,
+                created_at: createdAt,
+                optimistic: true,
+              } satisfies ConversationTurn,
+            ]),
+        {
+          seq: baseSeq + 1,
+          role: 'crew',
+          text: reply ?? '',
+          workload,
+          trace_id: etid,
+          created_at: createdAt,
+          optimistic: true,
+          isError,
+        } satisfies ConversationTurn,
+      ];
+    }
     const { prompt, workload, baseSeq, omitUserTurn } = liveExchange;
     return [
       ...conversationTurns,
@@ -504,8 +616,8 @@
   // The composer's New chat button shows whenever a clean slate would clear
   // something. displayTurns already unifies "persisted thread + optimistic
   // in-flight exchange" (reuse it — one source of thread visibility, no drift);
-  // finalReply/busy/events cover the hero + timeline-only states (a paused /
-  // one-shot / error reply persists no thread but still occupies the hero), and
+  // finalReply/busy/events cover the timeline-only states (a paused / one-shot
+  // / error reply persists no thread but still occupies the screen), and
   // conversationId is a belt for an open-but-empty thread edge. Hidden in
   // historical replay — the banner owns the exit there.
   const composerNewChat = $derived(
@@ -675,6 +787,12 @@
     return resp;
   }
 
+  // ---- per-trace cache (ds-jns, design §0) — the state the inline reasoning
+  // disclosures ride on. Created ONCE here and passed down, so a live stream
+  // and every expanded historical disclosure share one source of truth per
+  // trace id instead of fighting over the single global timeline below.
+  const traceCache = createTraceCache(call);
+
   // ---- pause kill-switch (one shared store → header PausePill + content
   // PauseBanner, so the two surfaces can never diverge or double-fetch) ----
   const pause = createPauseStore(call);
@@ -791,6 +909,7 @@
     finalIsError = false;
     iacPr = null;
     liveExchange = null; // cancel any in-flight optimistic exchange
+    ephemeralExchange = null; // the failed/paused turn belonged to the old screen
     status = 'pending';
     // Whatever chip was on screen belonged to the thread we're leaving. Drop
     // it from view WITHOUT forgetting its nonce (that proposal may still be
@@ -919,6 +1038,12 @@
     busy = true;
     events = [];
     traceId = null;
+    ephemeralExchange = null; // a new send retires the previous unstored turn
+    // THIS stream's trace id, captured locally. The global `traceId` is whatever
+    // run is on screen; a fast follow-up can null it while this run's backfill
+    // and cache writes are still outstanding, and those must still land on the
+    // trace they belong to.
+    let liveTraceId: string | null = null;
     finalReply = null;
     finalIsError = false;
     iacPr = null;
@@ -987,6 +1112,7 @@
         handoffOffer = doneHandoff;
         handoffError = null;
       }
+      ephemeralExchange = null; // it persisted after all
       appendLocalTurns(prompt, finalReply, traceId);
       // Clear the overlay right after the real turns are appended, BEFORE
       // clearing finalReply/iacPr, so a mid-settle read of displayTurns is never
@@ -1015,7 +1141,9 @@
         status = 'error';
         finalReply = $t('header.chatError.network');
         finalIsError = true;
-        liveExchange = null; // nothing persisted → the error belongs in the hero
+        // Never reached the coordinator, so there is no trace and no reasoning
+        // line — just the failed exchange, in the thread where it happened.
+        setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: null });
         return;
       }
       if (myRun !== runSeq) return;
@@ -1029,7 +1157,7 @@
             ? $t('header.chatError.rateLimit')
             : $t('header.chatError.requestFailed', { status: resp.status });
         finalIsError = true;
-        liveExchange = null; // nothing persisted → the error belongs in the hero
+        setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: null });
         // The crew lock refused this turn and said who holds the thread. Adopt
         // it. This is the LAST line of defence, not the usual route: every
         // path that moves a conversation already moves the composer with it,
@@ -1048,6 +1176,7 @@
           const body = await resp.json();
           if (myRun !== runSeq) return;
           traceId = resp.headers.get('X-Trace-Id');
+          liveTraceId = traceId;
           finalReply = typeof body?.reply === 'string' ? body.reply : JSON.stringify(body);
           // Best-effort: the JSON path mirrors the SSE done frame's iac_pr.
           const ip = body?.iac_pr;
@@ -1062,8 +1191,8 @@
           // Mirror the SSE done frame: the JSON path echoes conversation_id
           // when the turn persisted. Decide persistability NOW (a paused refusal
           // echoes conversation_id but persists nothing; a one-shot has none) so
-          // a non-persistable reply drops the optimistic bubble immediately and
-          // falls back to the hero, instead of flashing in a bubble across the
+          // a non-persistable reply becomes an ephemeral thread turn
+          // immediately, instead of sitting in an optimistic bubble across the
           // backfill/decisions round-trips that precede settle.
           const jsonRcid =
             !body?.paused &&
@@ -1071,9 +1200,17 @@
             body.conversation_id.length > 0
               ? body.conversation_id
               : undefined;
-          if (jsonRcid === undefined) liveExchange = null;
+          if (jsonRcid === undefined) {
+            setEphemeral({
+              prompt,
+              workload,
+              reply: finalReply,
+              isError: false,
+              traceId: liveTraceId,
+            });
+          }
           doneHandoff = readHandoffOffer(body?.handoff);
-          await backfillTrace(myRun);
+          await backfillTrace(myRun, liveTraceId);
           if (myRun !== runSeq) return;
           await overview.refresh('chat-turn');
           settleConversation(jsonRcid);
@@ -1083,58 +1220,101 @@
           status = 'error';
           finalReply = $t('header.chatError.malformed');
           finalIsError = true;
-          liveExchange = null; // nothing persisted → the error belongs in the hero
+          // liveTraceId is still null here: the header read happens AFTER
+          // resp.json(), so a malformed body means we never learned the trace.
+          setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: liveTraceId });
         }
-        await backfillTrace(myRun);
+        await backfillTrace(myRun, liveTraceId);
         if (myRun === runSeq) await overview.refresh('chat-turn');
         return;
       }
 
       let streamErrored = false;
+      let sawDone = false;
+      let sawErrorFrame = false;
       let doneConversationId: string | undefined;
       try {
         await consumeSse(resp, {
           onMeta: (m) => {
+            // The cache write is NOT runSeq-guarded, and that is the point: it
+            // is keyed by trace id, so it can only ever touch THIS trace's
+            // entry. A superseded run that skipped it would leave the entry
+            // absent (or later, stuck 'streaming' — and a streaming entry is
+            // never evicted). The GLOBAL writes below keep their guard.
+            liveTraceId = m.trace_id;
+            traceCache.beginLive(m.trace_id);
             if (myRun !== runSeq) return;
             traceId = m.trace_id;
             status = 'streaming';
           },
           onEvent: (e) => {
+            const te = e as unknown as TraceEvent;
+            // EVERY kind, llm_usage included — omittedThoughtTokens reads it,
+            // and interleaveTimeline drops what it doesn't render. Filtering
+            // here would throw the information away before either could look.
+            if (liveTraceId) traceCache.appendLive(liveTraceId, te);
             if (myRun !== runSeq) return;
-            events = [...events, e as unknown as TraceEvent];
+            events = [...events, te];
           },
           onDone: (d) => {
+            sawDone = true;
             if (myRun !== runSeq) return;
             finalReply = d.reply;
             finalIsError = false;
             iacPr = d.iac_pr ?? null;
             // A paused refusal echoes conversation_id for crew-lock symmetry but
-            // persists NO turn — never settle it into the thread (it would
-            // vanish on reload); leave the calm paused reply in the hero.
+            // persists NO turn — never settle it into conversationTurns (it
+            // would vanish on reload); it becomes an ephemeral turn below.
             doneConversationId = d.paused ? undefined : d.conversation_id;
             // Non-persistable (paused refusal or one-shot with no
-            // conversation_id): drop the optimistic bubble now so the reply
-            // lands in the hero and never flashes in a bubble during the
-            // post-stream backfill. The persistable case keeps the bubble (the
-            // reply fills it in place) until settle promotes it.
+            // conversation_id): convert the optimistic bubble into an ephemeral
+            // turn now, so the reply stops claiming it is about to persist. The
+            // persistable case keeps the bubble (the reply fills it in place)
+            // until settle promotes it.
             if (typeof doneConversationId !== 'string' || doneConversationId.length === 0) {
-              liveExchange = null;
+              // A PAUSED refusal arrives here with liveTraceId still null: the
+              // backend answers it with a lone `done` frame and no `meta`, so
+              // the turn genuinely has no reasoning to offer.
+              setEphemeral({
+                prompt,
+                workload,
+                reply: d.reply,
+                isError: false,
+                traceId: liveTraceId,
+              });
             }
             doneHandoff = readHandoffOffer(d.handoff);
             status = 'complete';
           },
           onError: (er) => {
+            sawErrorFrame = true;
             if (myRun !== runSeq) return;
             finalReply = er.detail || $t('header.chatError.coordinatorError');
             finalIsError = true;
             status = 'error';
-            liveExchange = null; // errored turn persists nothing → hero
+            setEphemeral({
+              prompt,
+              workload,
+              reply: finalReply,
+              isError: true,
+              traceId: liveTraceId,
+            });
           },
         });
       } catch {
         // Stream transport error (reader threw / body errored mid-stream).
-        if (myRun !== runSeq) return;
         streamErrored = true;
+        if (myRun !== runSeq) {
+          if (liveTraceId) traceCache.endLive(liveTraceId, 'error');
+          return;
+        }
+      }
+      // Close the cache entry whatever happened, and unguarded for the same
+      // reason as beginLive: a 'streaming' entry left open never settles and is
+      // never evicted. A `done` frame that arrived before the transport died
+      // still counts as an interrupted RUN — some reasoning may be missing.
+      if (liveTraceId) {
+        traceCache.endLive(liveTraceId, streamErrored || sawErrorFrame || !sawDone ? 'error' : 'complete');
       }
 
       // FAST PATH — a clean, persistable `done` frame (a real reply the backend
@@ -1165,7 +1345,7 @@
         // backfill no-op cleanly; the only cost is this turn's side-channel
         // mcp_call rows not filling inline if the operator leaves immediately —
         // the persisted trace survives and reopening refetches it.
-        void backfillTrace(myRun);
+        void backfillTrace(myRun, liveTraceId);
         void overview.refresh('chat-turn');
         return; // → finally clears busy (guarded), so the composer releases now
       }
@@ -1175,7 +1355,7 @@
       // the transport-error recovery path (the "Showing the recovered reasoning"
       // message wants events already populated); then the recovery guard, then
       // decisions, then settle (a no-op when doneConversationId is undefined).
-      await backfillTrace(myRun);
+      await backfillTrace(myRun, liveTraceId);
       if (myRun !== runSeq) return;
       if (finalReply == null) {
         status = 'error';
@@ -1183,7 +1363,9 @@
           ? $t('header.chatError.streamInterrupted')
           : $t('header.chatError.streamEnded');
         finalIsError = true;
-        liveExchange = null; // interrupted stream persists nothing → hero
+        // The stream may still have carried reasoning before it died, so this
+        // ephemeral turn keeps its trace id and its disclosure.
+        setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: liveTraceId });
       }
       await overview.refresh('chat-turn');
       settleConversation(doneConversationId);
@@ -1269,7 +1451,19 @@
   // attributed to the crew that JOINED. Refetching is one round-trip and gets
   // the sequence, attribution and roles right by construction. The reply is
   // already on screen in the live bubble throughout, so nothing stalls.
-  async function reloadConversationTurns(id: string, myRun: number) {
+  //
+  // `carry` is an ephemeral turn the caller wants to KEEP across the refetch —
+  // a non-persisted outcome (a failed join) whose explanation must survive the
+  // rows arriving. It is re-seated here rather than by the caller after the
+  // await, so the clear and the re-seat land in the SAME update: an overlay
+  // re-added a tick later leaves one render without that turn, and the render
+  // in between destroys any disclosure the operator had expanded on it (a
+  // disclosure's open/closed state lives in the component, not the cache).
+  async function reloadConversationTurns(
+    id: string,
+    myRun: number,
+    carry: EphemeralExchange | null = null,
+  ) {
     try {
       const resp = await call('/conversations/' + encodeURIComponent(id));
       if (myRun !== runSeq || !resp.ok) return;
@@ -1282,6 +1476,7 @@
       // empty thread. Same ordering discipline as settleConversation.
       conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
       liveExchange = null;
+      ephemeralExchange = carry == null ? null : reseated(carry, conversationTurns);
       finalReply = null;
       finalIsError = false;
       iacPr = null; // the persisted crew turn carries the PR CTA now
@@ -1323,6 +1518,10 @@
     busy = true;
     events = [];
     traceId = null;
+    ephemeralExchange = null;
+    // See submitChat: the joining crew's stream owns its own trace id, and its
+    // disclosure must stream exactly like a first crew's.
+    let liveTraceId: string | null = null;
     finalReply = null;
     finalIsError = false;
     iacPr = null;
@@ -1368,7 +1567,8 @@
         // moved and the nonce is spent, so treating it as retryable would keep
         // a dead chip on screen AND leave the composer bound to the crew that
         // left, whose next typed turn the crew lock then refuses. The failure
-        // belongs in the hero; the transition still has to land in the thread.
+        // is reported as an ephemeral turn; the transition still has to land in
+        // the thread.
         if (resp.headers.get('X-Handoff-Redeemed') === '1') {
           clearHandoff(cid);
           // The marker is stamped only past the burn, and only the ACCEPT
@@ -1380,12 +1580,22 @@
           finalReply = $t('conversations.handoff.error.joinFailed', crews);
           finalIsError = true;
           status = 'error';
-          await reloadConversationTurns(cid, myRun);
+          setEphemeral({
+            prompt: '',
+            workload: offer.to as Workload,
+            reply: finalReply,
+            isError: true,
+            traceId: null, // nothing streamed — the failure is the response itself
+            omitUserTurn: true,
+          });
+          // Carried, not dropped: this ephemeral turn IS the explanation for a
+          // crew change with no reply behind it.
+          await reloadConversationTurns(cid, myRun, ephemeralExchange);
           return;
         }
         // Otherwise nothing happened: no crew moved, no turn ran. Not a chat
         // error — report it on the chip the operator clicked and leave the
-        // hero alone.
+        // transcript alone.
         const refusal = handoffRefusal(resp, crews);
         handoffError = refusal.text;
         if (refusal.dead) forgetOffer(cid); // spent server-side; don't restore it on reload
@@ -1438,6 +1648,7 @@
           const body = await resp.json();
           if (myRun !== runSeq) return;
           traceId = resp.headers.get('X-Trace-Id');
+          liveTraceId = traceId;
           finalReply = typeof body?.reply === 'string' ? body.reply : JSON.stringify(body);
           const ip = body?.iac_pr;
           iacPr =
@@ -1453,21 +1664,37 @@
           status = 'error';
           finalReply = $t('header.chatError.malformed');
           finalIsError = true;
+          setEphemeral({
+            prompt: '',
+            workload: offer.to as Workload,
+            reply: finalReply,
+            isError: true,
+            traceId: null,
+            omitUserTurn: true,
+          });
         }
       } else {
         let streamErrored = false;
+        let sawDone = false;
+        let sawErrorFrame = false;
         try {
           await consumeSse(resp, {
             onMeta: (m) => {
+              // Unguarded and keyed — see the identical note in submitChat.
+              liveTraceId = m.trace_id;
+              traceCache.beginLive(m.trace_id);
               if (myRun !== runSeq) return;
               traceId = m.trace_id;
               status = 'streaming';
             },
             onEvent: (e) => {
+              const te = e as unknown as TraceEvent;
+              if (liveTraceId) traceCache.appendLive(liveTraceId, te);
               if (myRun !== runSeq) return;
-              events = [...events, e as unknown as TraceEvent];
+              events = [...events, te];
             },
             onDone: (d) => {
+              sawDone = true;
               if (myRun !== runSeq) return;
               finalReply = d.reply;
               finalIsError = false;
@@ -1478,11 +1705,19 @@
               status = 'complete';
             },
             onError: (er) => {
+              sawErrorFrame = true;
               if (myRun !== runSeq) return;
               finalReply = er.detail || $t('header.chatError.coordinatorError');
               finalIsError = true;
               status = 'error';
-              liveExchange = null;
+              setEphemeral({
+                prompt: '',
+                workload: offer.to as Workload,
+                reply: finalReply,
+                isError: true,
+                traceId: liveTraceId,
+                omitUserTurn: true,
+              });
               // An error FRAME is still a terminal answer, and it can only
               // arrive after the burn: the stream begins downstream of the
               // redemption, so anything streamed at all means it committed.
@@ -1490,8 +1725,17 @@
             },
           });
         } catch {
-          if (myRun !== runSeq) return;
           streamErrored = true;
+          if (myRun !== runSeq) {
+            if (liveTraceId) traceCache.endLive(liveTraceId, 'error');
+            return;
+          }
+        }
+        if (liveTraceId) {
+          traceCache.endLive(
+            liveTraceId,
+            streamErrored || sawErrorFrame || !sawDone ? 'error' : 'complete',
+          );
         }
         if (myRun !== runSeq) return;
         if (finalReply == null) {
@@ -1500,7 +1744,14 @@
             ? $t('header.chatError.streamInterrupted')
             : $t('header.chatError.streamEnded');
           finalIsError = true;
-          liveExchange = null;
+          setEphemeral({
+            prompt: '',
+            workload: offer.to as Workload,
+            reply: finalReply,
+            isError: true,
+            traceId: liveTraceId,
+            omitUserTurn: true,
+          });
         }
       }
 
@@ -1509,7 +1760,14 @@
         // Nothing moved. Leave the chip and its nonce exactly as they were so
         // the operator can confirm the same suggestion once they resume,
         // instead of having to coax the crew into making it again.
-        liveExchange = null;
+        setEphemeral({
+          prompt: '',
+          workload: offer.to as Workload,
+          reply: finalReply,
+          isError: false,
+          traceId: liveTraceId,
+          omitUserTurn: true,
+        });
         return;
       }
       if (!sawTerminal) {
@@ -1558,9 +1816,9 @@
       // the thread is refetched either way — a crew change the operator
       // confirmed must be visible even if the joining crew's first reply
       // errored.
-      await backfillTrace(myRun);
+      await backfillTrace(myRun, liveTraceId);
       if (myRun !== runSeq) return;
-      await reloadConversationTurns(cid, myRun);
+      await reloadConversationTurns(cid, myRun, ephemeralExchange);
       if (myRun !== runSeq) return;
       void overview.refresh('chat-turn');
       void loadConversations(); // the thread's crew + message count just changed
@@ -1579,24 +1837,36 @@
     }
   }
 
-  async function backfillTrace(myRun: number) {
-    const tid = traceId;
-    if (!tid || myRun !== runSeq) return;
+  // `tid` is passed EXPLICITLY rather than read off the global `traceId`: on the
+  // fast path this runs in the background after the composer has already been
+  // released, so a quick follow-up turn can null the global out from under it.
+  //
+  // Two different guards, on purpose. The CACHE settle is keyed by trace id and
+  // therefore unconditional — a superseding run bumping runSeq must not orphan
+  // the previous trace's entry, which is the one an operator scrolling back
+  // will expand. The GLOBAL timeline write keeps its runSeq guard exactly as it
+  // was: that array belongs to whatever run is on screen now.
+  async function backfillTrace(myRun: number, tid: string | null) {
+    if (!tid) return;
+    let fetched: TraceResponse | null = null;
     try {
       const resp = await call('/trace/' + encodeURIComponent(tid));
-      if (myRun !== runSeq || !resp.ok) return;
-      const t = (await resp.json()) as TraceResponse;
-      if (myRun !== runSeq) return;
-      // MERGE the ingestion-lagged /trace snapshot into the live timeline,
-      // never overwrite it: the live stream already rendered every kind except
-      // the trace-only mcp_call side-channel, and a too-early /trace can be
-      // incomplete (or hold only log lines). reconcileBackfill pulls the
-      // mcp_call events and falls back to /trace only when the stream produced
-      // nothing displayable. See lib/timeline.ts.
-      events = reconcileBackfill(events, Array.isArray(t.events) ? t.events : []);
+      if (resp.ok) fetched = (await resp.json()) as TraceResponse;
     } catch {
-      /* backfill is best-effort — the live stream already populated the timeline */
+      /* backfill is best-effort — the live stream already populated both */
     }
+    // Null is meaningful: settleBackfill keeps the live events and leaves the
+    // enrichment state alone, so a failed backfill can still be retried by a
+    // later expand rather than being recorded as loaded-and-empty.
+    traceCache.settleBackfill(tid, fetched);
+    if (myRun !== runSeq || fetched == null) return;
+    // MERGE the ingestion-lagged /trace snapshot into the live timeline,
+    // never overwrite it: the live stream already rendered every kind except
+    // the trace-only mcp_call side-channel, and a too-early /trace can be
+    // incomplete (or hold only log lines). reconcileBackfill pulls the
+    // mcp_call events and falls back to /trace only when the stream produced
+    // nothing displayable. See lib/timeline.ts.
+    events = reconcileBackfill(events, Array.isArray(fetched.events) ? fetched.events : []);
   }
 
   // ---- historical replay ----
@@ -1618,6 +1888,9 @@
     finalIsError = false;
     iacPr = null;
     liveExchange = null; // a replay always shows the hero, never a live bubble
+    // …and neither does it show the previous turn's failure. The hero is gated
+    // on this being null, so leaving it set blanks the replay's own rationale.
+    ephemeralExchange = null;
     historicalDecision = null;
     historicalPrBody = null;
     historicalPrBodyTruncated = false;
@@ -1828,11 +2101,11 @@
   <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
   <TraceBadge {traceId} {status} />
   <!-- During a live chat the reply lands in the thread's crew bubble (see
-       displayTurns), so the standalone hero + its loading shimmer yield. They
-       stay for historical replay and the non-persist fallback (paused / one-shot
-       / error), where liveExchange is cleared and there is no bubble to hold the
-       reply. -->
-  {#if !liveExchangeActive}
+       displayTurns), so the standalone hero + its loading shimmer yield. Since
+       ds-jns the non-persist fallbacks (paused / one-shot / error) render as
+       ephemeral thread turns too, so the only caller left is historical replay
+       — which is why PR 3 can delete this whole cluster. -->
+  {#if !liveExchangeActive && ephemeralExchange === null}
     <FinalResponse reply={finalReply} isError={finalIsError} />
   {/if}
   {#if historicalActive && historicalDecision}
@@ -1918,7 +2191,7 @@
       />
     </div>
     {#if !historicalActive && displayTurns.length > 0}
-      <ConversationThread turns={displayTurns} onOpenTrace={openTrace} />
+      <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} />
     {/if}
     <!-- The confirmation sits at the END of the transcript, directly under the
          crew reply that proposed it — the thread runs oldest-first below the
