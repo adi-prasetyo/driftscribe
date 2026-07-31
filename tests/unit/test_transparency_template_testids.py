@@ -99,6 +99,43 @@ def test_approval_pages_link_shared_css_no_inline_style():
         assert 'class="ds-' in body, f"{name} must use ds-* classes"
 
 
+def test_approval_reason_preserves_its_own_line_breaks():
+    """ds-thm: the rollback reason is model-authored prose and may carry
+    DriftScribe's own "[… N characters omitted …]" marker on its own blank
+    line. In an ordinary text node those newlines collapse to a single space
+    and the marker reads as part of the sentence it interrupts.
+
+    Three things are pinned, because each was a way to get this wrong:
+
+    1. the value is wrapped in the ``ds-prewrap`` element at all;
+    2. the rule lives in the BUILT stylesheet. Both approval templates are held
+       to "no inline style" by the test above; that convention exists because
+       the IaC approval page is served under ``style-src 'self'`` with no
+       ``'unsafe-inline'``. This page (the rollback approval) carries no CSP
+       today, so an inline style here would break the convention rather than be
+       blocked — worth stating precisely, since "the CSP forbids it" would be
+       an overclaim on this template;
+    3. ``{{ approval.reason }}`` sits flush against its tags. Under
+       ``pre-wrap``, template indentation is no longer invisible — a newline
+       and two spaces before the expression would render as real leading
+       whitespace on the page.
+    """
+    tpl = Path("agent/templates/approval.html").read_text()
+    assert '<span class="ds-prewrap">{{ approval.reason }}</span>' in tpl, (
+        "the reason must be wrapped flush inside ds-prewrap — any whitespace "
+        "between the tag and the expression becomes visible under pre-wrap"
+    )
+
+    css = Path("frontend/src/styles/base.css").read_text()
+    block = css[css.index(".ds-field > .ds-prewrap"):]
+    block = block[: block.index("}")]
+    assert "white-space: pre-wrap" in block
+    # .ds-field is a flex row; without these the pre-wrap child refuses to
+    # shrink and overflows the card instead of wrapping inside it.
+    assert "min-width: 0" in block
+    assert "flex: 1 1 0" in block
+
+
 def test_approval_pages_preserve_form_post_and_hidden_token():
     """P5b must not regress the form-POST security flow: real method=post forms
     + hidden CSRF token fields with the token-field testid."""

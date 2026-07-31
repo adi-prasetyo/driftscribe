@@ -48,6 +48,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # ds-thm: a REAL CommonMark parser, used as the test oracle for the
+    # notifier-body clamp. Three hand-rolled backtick heuristics were each
+    # wrong there, and each passed a hand-rolled assertion that shared its
+    # blind spot — so the oracle must not be ours. Available transitively via
+    # rich today; declared so the tests do not depend on that staying true.
+    "markdown-it-py>=3.0",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "respx>=0.21",

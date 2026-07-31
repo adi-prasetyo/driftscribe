@@ -95,8 +95,23 @@ def test_rollback_body_does_not_surface_token_separately():
     # No "token:" / "approval token:" / "Token = " style key-value rows.
     assert "token:" not in lowered
     assert "approval token" not in lowered
-    # The raw token value (`xyz`) appears only inside the URL.
-    assert body.count("xyz") == 1
+
+    # ds-thm: this used to assert ``body.count("xyz") == 1``. The body now
+    # carries the approval URL TWICE — once above the model's rationale, where
+    # forward-parsed Markdown cannot swallow it, and once in the footer with
+    # the expiry and traffic warning.
+    #
+    # The count was never the property that mattered; the docstring above says
+    # so. What matters is that the token never appears OUTSIDE a ``?t=`` URL,
+    # because that is the shape every sanitizer keys on. Asserted directly:
+    # strip the tokened URLs and the token must be gone, which holds for one
+    # occurrence or ten and would still fail for a bare ``Token: xyz`` line.
+    from agent.renderer import redact_approval_tokens_deep
+
+    assert "xyz" not in redact_approval_tokens_deep(body), (
+        "the token survives redaction, so it appears somewhere that is not a "
+        "tokened approval URL"
+    )
 
 
 def test_rollback_body_scrubs_secret_in_rationale():

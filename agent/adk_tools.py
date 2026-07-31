@@ -42,7 +42,17 @@ from agent.contract import contract_preview_payload, load_contract
 from agent.github_actions import get_repo
 from agent.iac_artifacts import load_plan_view_from_gcs
 from agent.iac_pr_trace_store import record_authoring_trace
+from agent.renderer import normalize_close_reason, normalize_notifier_body
 from agent.request_context import get_current_autonomy_mode
+# ds-thm: reuse the coordinator's existing mirror of the worker's revision-name
+# regex rather than declaring a third copy. Pinned equal to the worker's by
+# tests/unit/test_worker_bound_mirrors.py.
+from agent.validator import _REVISION_NAME
+from driftscribe_lib.iac_editor_policy import (
+    EditorPolicyError,
+    validate_file_writes,
+    validate_title_body,
+)
 from driftscribe_lib.iac_plan_summary import (
     BLAST_CANNOT_TOUCH_NOTE,
     blast_radius_phrase,
@@ -452,6 +462,40 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     visible in the chat conversation / trace; only the worker-stored,
     operator-rendered string is replaced.
     """
+    # ds-thm. The worker constrains ``target_revision`` to the Cloud Run
+    # revision-name regex at 1..64 chars; the AUTONOMOUS lane validates the same
+    # pattern before calling (agent/validator.py), the chat lane never did. Two
+    # consequences, the second worse than the first: the value is interpolated
+    # into ``safe_reason`` below, and this is the ONE tool that deliberately
+    # launders the worker's error (ds-y5i), so a violation came back as "the
+    # rollback service refused the request" with nothing the model could act on.
+    #
+    # REFUSE, never clamp: truncating an identifier does not degrade it, it
+    # names a DIFFERENT one, and a clipped revision name could match another
+    # real revision and shift production traffic somewhere nobody proposed.
+    #
+    # Syntax only. Membership in ``previous_revisions`` is deliberately NOT
+    # checked here: the reader returns at most five candidates and degrades a
+    # listing failure to ``[]``, while the worker checks the authoritative
+    # revision list. Enforcing membership would refuse valid older revisions the
+    # worker accepts, and would turn a best-effort candidate-list outage into a
+    # rollback-proposal outage.
+    # ``fullmatch``, NOT ``match``: Python's ``$`` also matches just BEFORE a
+    # final newline, so ``match`` accepts "payment-demo-00024-f6v\n" — which
+    # pydantic-core (Rust regex, where ``$`` is strictly end-of-text) rejects
+    # with ``string_pattern_mismatch``. A guard that accepts precisely what the
+    # consumer refuses is ds-j0i reproduced inside the fix for ds-j0i.
+    if not _REVISION_NAME.fullmatch(target_revision or ""):
+        return {
+            "error": (
+                "That is not a valid Cloud Run revision name, so no rollback "
+                "was proposed. Revision names are lowercase letters, digits and "
+                "hyphens, start with a letter, end alphanumerically, and are at "
+                "most 64 characters. Call read_live_env_tool and choose an entry "
+                "from its previous_revisions list; do not invent a name."
+            ),
+            "target_revision": target_revision,
+        }
     _ = reason  # accepted for the model's tool contract; intentionally NOT forwarded
     safe_reason = (
         f"Rollback to {target_revision} proposed via DriftScribe chat; "
@@ -490,11 +534,32 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
                 # anywhere, which is the cost accepted here.
             },
         )
+        # ds-thm: a well-shaped but wrong revision name passes the syntax guard
+        # above and is refused by the worker, which alone knows the
+        # authoritative revision list. ds-y5i forbids forwarding ``e.body`` — a
+        # compromised worker could smuggle a credential through it — but the
+        # STATUS CODE is safe, and keying a COORDINATOR-AUTHORED message off it
+        # gives the model a next step without reopening that channel. Without
+        # this, the only recoverable case is the one the local guard catches.
+        _refusal = {
+            400: (
+                "The rollback service refused that revision: it is the one "
+                "currently serving traffic, so rolling back to it would do "
+                "nothing. Choose a DIFFERENT entry from previous_revisions."
+            ),
+            404: (
+                "The rollback service does not know that revision. Call "
+                "read_live_env_tool again and choose an entry from its "
+                "previous_revisions list."
+            ),
+        }.get(e.status_code)
         return {
             "error": (
-                "The rollback service refused the request, so no approval link "
-                "was released. No rollback was attempted or executed. Tell the "
-                "operator that the rollback service returned an error."
+                f"{_refusal} No rollback was attempted or executed."
+                if _refusal
+                else "The rollback service refused the request, so no approval "
+                "link was released. No rollback was attempted or executed. Tell "
+                "the operator that the rollback service returned an error."
             ),
             "target_revision": target_revision,
         }
@@ -613,10 +678,19 @@ def patch_docs_tool(
     """Ask the Docs Agent to open a docs PR.
 
     ``file_path`` MUST match the worker's path allowlist
-    (``^demo/docs/[^/]+\\.md$``). The worker refuses anything else at
-    Layer 2 — this tool does NOT pre-validate, so the LLM sees the
-    worker's 403 directly if it picks a bad path. That's the desired
-    feedback loop (model learns the constraint from the error).
+    (``^demo/docs/[^/]+\\.md$``). The worker refuses anything else at Layer 2 —
+    this tool does NOT pre-validate.
+
+    ⚠️ ds-thm correction: that used to be justified here as "the LLM sees the
+    worker's 403 directly, which is the desired feedback loop". **It does
+    not.** ``Runner`` is built with no ``on_tool_error``
+    (``agent/adk_agent.py``), so ADK re-raises an uncaught tool exception and
+    ABORTS the turn; ``/chat`` renders a 502 and the model never receives a
+    function response. A bad path therefore kills the turn rather than teaching
+    anything. Left as-is deliberately (the supported target is a single known
+    file, so the path is effectively fixed), but do not repeat the reasoning:
+    if this tool ever takes free-form input, pre-validate and return a
+    structured refusal the way ``_open_iac_pr_and_notify`` now does.
 
     The branch name is computed here rather than asked of the LLM
     because the only constraint that matters is collision avoidance
@@ -663,10 +737,27 @@ def notify_tool(channel: str, severity: str, body: str) -> dict:
     ``{"delivered": False, "error": ...}`` result. Report it to the user
     but do not retry the notification within the same turn.
     """
+    # ds-thm. The worker declares ``body: min_length=1, max_length=10000`` and
+    # this argument is model-authored, so both ends of that range are reachable.
+    # A violation 422s, and the except below reports only the STATUS to the
+    # model — so it would learn "422" and never that the body was the problem.
+    if not (body or "").strip():
+        # Not a fabricated body: a notification's body is its entire substance,
+        # so inventing one changes what the operator is told. Contrast
+        # ``upgrade_close_pr_tool``, where the reason is auxiliary to an action
+        # the operator actually requested and a disclosing fallback is right.
+        return {
+            "delivered": False,
+            "error": "notification not sent: the body was empty.",
+        }
     try:
         return worker_client.call(
             "notifier",
-            {"channel": channel, "severity": severity, "body": body},
+            {
+                "channel": channel,
+                "severity": severity,
+                "body": normalize_notifier_body(body),
+            },
         )
     except worker_client.WorkerClientError as e:
         return {
@@ -941,7 +1032,12 @@ def upgrade_close_pr_tool(pr_number: int, reason: str) -> dict:
     """
     target = _get_upgrade_target()
     try:
-        return worker_client.call_close_pr(target.target_repo, pr_number, reason)
+        # ds-thm: the worker declares ``reason: min_length=1, max_length=1000``
+        # and this is model-authored. Unlike the notify body, an absent reason
+        # must not fail the call — the close is what the operator asked for.
+        return worker_client.call_close_pr(
+            target.target_repo, pr_number, normalize_close_reason(reason)
+        )
     except worker_client.WorkerClientError as e:
         return {
             "closed": False,
@@ -1220,7 +1316,37 @@ def _open_iac_pr_and_notify(
     - ``open_infra_pr_tool`` runs ``find_import_violations`` before calling here.
     - ``propose_adoption_tool`` passes a renderer-produced file (always safe) and
       calls here directly (never runs the violation check on its own output).
+
+    ds-thm: the size/shape policy IS checked here, and that is a change. These
+    tools used to lean on the worker's re-validation, on the stated theory that
+    "a bad request surfaces the worker's 403/422 to the model as a feedback
+    loop". **That theory is false at runtime.** ``Runner`` is built with no
+    ``on_tool_error`` (``agent/adk_agent.py``), so ADK RE-RAISES an uncaught
+    tool exception and aborts the turn — ``/chat`` renders a 502 and the model
+    never receives a function response at all. So a 201-character title or a
+    >20000-character body killed the turn instead of teaching anything.
+
+    This adds no new bounds: it calls the SAME ``iac_editor_policy`` validators
+    the worker calls, which ``agent/fanout.py`` already calls on the other
+    authoring path. It brings this path in line with that one, which is exactly
+    what this function exists to guarantee. The worker still re-validates
+    everything — it remains the authority; this only converts the failures we
+    can name locally into a structured refusal the model can act on.
+
+    Content is never truncated, only refused: truncating HCL would change what
+    infrastructure is being proposed.
     """
+    try:
+        validate_title_body(title, body)
+        validate_file_writes(files)
+    except EditorPolicyError as e:
+        return {
+            "status": "rejected",
+            "reason": (
+                f"{e.reason}. The change was NOT submitted. Fix it and call "
+                "this tool again — do not shorten file contents to fit."
+            ),
+        }
     authority = derive_iac_pr_authority(title)
     dispatch_plan_builder = get_current_autonomy_mode() == "propose_apply"
     result = worker_client.call_open_infra_pr(
@@ -1285,8 +1411,18 @@ def open_infra_pr_tool(files: list[dict], title: str, body: str) -> dict:
 
     The tofu-editor worker re-validates every file (iac/-prefix, suffix,
     foundation, traversal, size, AGENT-mode static gate incl. the secret ban)
-    before any GitHub call, so this tool deliberately does NOT pre-validate — a
-    bad request surfaces the worker's 403/422 to the model as a feedback loop.
+    before any GitHub call, and remains the authority on all of it.
+
+    ds-thm: the size/shape subset is ALSO checked here now, and an oversize
+    title, body, file or file-count comes back as
+    ``{"status": "rejected", "reason": ...}`` — the same shape as the
+    freehand-import guard below. Fix the request and call again; never shorten
+    file contents to fit, since truncating HCL changes what is being proposed.
+
+    This replaced a "the worker's 403/422 reaches the model as a feedback loop"
+    rationale, which was false: ``Runner`` installs no ``on_tool_error``, so an
+    uncaught worker error re-raises and ABORTS the turn with a 502 rather than
+    returning a function response the model could act on.
 
     After the PR opens, the returned ``next_steps`` is the authoritative summary
     of what happens next: the plan-builder auto-starts at Propose + Apply (else

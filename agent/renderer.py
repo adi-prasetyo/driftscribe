@@ -292,6 +292,68 @@ ROLLBACK_REASON_ABSENT = (
 )
 
 
+def clamp_middle_out(
+    text: str, cap: int, *, reserve: int = 0
+) -> tuple[str, str, str] | None:
+    """Split ``text`` middle-out to fit ``cap``. Pure arithmetic, no policy.
+
+    Returns ``(head, marker, tail)``, or ``None`` when ``text`` already fits and
+    no cut is needed. Callers join the three parts; the split is exposed rather
+    than the joined string because a Markdown-aware caller must repair the head
+    and the tail INDEPENDENTLY (an opener stranded in the head is a different
+    artifact from an orphan closer stranded in the tail), and it cannot recover
+    that boundary from joined output — model text may contain the marker itself.
+
+    ``reserve`` is space a caller will spend on text it APPENDS after the cut,
+    subtracted from the budget before cutting. The ordering is the whole point:
+    cutting to ``cap`` and then appending emits more than ``cap`` and recreates
+    the 422 the clamp exists to prevent — which is why the Notifier reserves
+    its fence closer unconditionally (``workers/notifier/main.py``).
+
+    No caller in this module needs it today: both wrappers only ever REMOVE
+    text after the cut. It is kept because "append after clamping" is the
+    natural thing for the next caller to write, and this parameter is where
+    that caller finds out it has to be paid for up front.
+
+    Half the remaining budget goes to each side, odd character to the tail. Tail
+    preservation is not symmetry for its own sake — see
+    :func:`normalize_rollback_reason` for what lives at the end of a rationale.
+    """
+    if cap <= 0:
+        # A generic helper cannot inherit the single-caller fallback that used
+        # to live below: ``text[:negative]`` slices from the END under Python's
+        # negative-index semantics and would emit almost the whole string while
+        # claiming to have clamped it. Callers pass a module constant, so a
+        # non-positive cap is a programming error, not an input to absorb.
+        raise ValueError(f"cap must be positive, got {cap}")
+    if reserve < 0:
+        # A negative reserve would ENLARGE the budget past ``cap`` and quietly
+        # break the one guarantee this function makes.
+        raise ValueError(f"reserve must be non-negative, got {reserve}")
+    # ``cap``, NOT ``cap - reserve``. The reserve pays for repairs a CUT makes,
+    # so it has no bearing on whether a cut is needed — subtracting it here
+    # truncated bodies the consumer would have accepted verbatim (9993..10000
+    # against a 10000 cap, found in Codex review of this change).
+    if len(text) <= cap:
+        return None
+
+    # Size the marker against the WHOLE length first, so the real marker (whose
+    # number is smaller) can never be longer than the space reserved for it.
+    reserved = len(_OMISSION_MARKER.format(n=len(text))) + reserve
+    budget = cap - reserved
+    if budget <= 0:
+        # Cap too small to hold a marker at all. Emit head-only, still bounded.
+        return text[: max(0, cap - reserve)], "", ""
+    head_budget = budget // 2
+    tail_budget = budget - head_budget
+    omitted = len(text) - head_budget - tail_budget
+    return (
+        text[:head_budget],
+        _OMISSION_MARKER.format(n=omitted),
+        text[len(text) - tail_budget :],
+    )
+
+
 def normalize_rollback_reason(scrubbed: str) -> str:
     """Bound an already-SCRUBBED rationale to the worker's ``reason`` contract.
 
@@ -323,23 +385,219 @@ def normalize_rollback_reason(scrubbed: str) -> str:
     text = (scrubbed or "").strip()
     if not text:
         return ROLLBACK_REASON_ABSENT
-    if len(text) <= ROLLBACK_REASON_MAX_CHARS:
+    parts = clamp_middle_out(text, ROLLBACK_REASON_MAX_CHARS)
+    if parts is None:
         return text
-
-    # Size the marker against the WHOLE length first, so the real marker (whose
-    # number is smaller) can never be longer than the space reserved for it.
-    reserved = len(_OMISSION_MARKER.format(n=len(text)))
-    budget = ROLLBACK_REASON_MAX_CHARS - reserved
-    if budget <= 0:  # pragma: no cover — only if the cap is set absurdly low
-        return text[:ROLLBACK_REASON_MAX_CHARS]
-    head_budget = budget // 2
-    tail_budget = budget - head_budget
-    omitted = len(text) - head_budget - tail_budget
+    head, marker, tail = parts
     return (
-        text[:head_budget]
-        + _OMISSION_MARKER.format(n=omitted)
-        + text[len(text) - tail_budget:]
+        head
+        + marker
+        + tail
     )
+
+
+# The Notifier's ``NotifyRequest.body`` bound (ds-thm). Mirrored here and
+# pinned equal by tests/unit/test_worker_bound_mirrors.py. Mirrored rather than
+# imported for the reason stated at ``agent/validator.py``: the coordinator must
+# not take a BUILD-time dependency on a worker package. A TEST-time import is
+# fine, and is exactly what keeps the two honest.
+NOTIFIER_BODY_MAX_CHARS = 10000
+
+# Fence handling, deliberately DUPLICATED from ``workers/notifier/main.py``
+# rather than hoisted into ``driftscribe_lib``. That package is split
+# coordinator/worker, so sharing this would couple their deploys (the
+# infra-drift worker-skew canary is the prior incident) for the sake of one
+# heuristic the two sides may legitimately want to evolve apart.
+#
+# EVERY CommonMark code delimiter, removed in TWO ORDERED PASSES:
+#
+# - ``` `+ ``` — backtick runs of ANY length. Three-or-more open a fenced
+#   block; one or two open an inline span. Both are removed, because a cut can
+#   leave a lone span delimiter in the retained tail that re-pairs with a later
+#   one and encloses the approval URL between them. Reasoning about blank lines
+#   only rules out a span crossing FROM the head; it says nothing about two
+#   delimiters that both survive inside the tail (Codex reproduced both the
+#   one- and two-backtick cases end to end).
+# - ``~{3,}`` — tilde fences. CommonMark has two fence characters and a
+#   backtick-only rule silently leaves the other half live; reproduced through
+#   the real rollback renderer with a ``~~~yaml`` block whose closer fell in
+#   the omitted middle. Tilde runs of one or two are NOT code delimiters (``~~``
+#   is GFM strikethrough, which cannot swallow a link), so they are left alone.
+#
+# ORDER IS LOAD-BEARING, and a single alternation regex gets it wrong. ``re.sub``
+# matches against the ORIGINAL string, so a removal is never rescanned — and
+# removing a backtick can JOIN tilde fragments into a fence that was not there
+# before: ``"~~`~"`` becomes ``"~~~"``. The neutralizer would then create the
+# exact delimiter it exists to remove (Codex, and the fifth distinct way this
+# one function has been wrong).
+#
+# Backticks first, then tildes, is sufficient — not merely likelier to work:
+#   - pass 1 removes every backtick, so pass 2 cannot re-create one;
+#   - pass 2 removes tilde RUNS, and a run is by definition bounded by
+#     non-tildes, so deleting one leaves those non-tildes adjacent and cannot
+#     merge two runs into a longer one.
+# No fixpoint loop is needed, and the property test asserts the postcondition
+# directly rather than trusting this argument.
+_BACKTICK_RUN = re.compile(r"`+")
+_TILDE_FENCE = re.compile(r"~{3,}")
+
+# Removing a fence can ACTIVATE markup that was inert inside it. Codex's case:
+# a ``<!--`` sitting in a fenced block whose ``-->`` and closing fence are both
+# deleted by the cut. Once the opening fence goes, the comment is live and
+# swallows everything after it — the approval URL included. "Nothing can open
+# if no code delimiter survives" was true only of CODE.
+#
+# This is NOT another guess at an alphabet. CommonMark defines exactly seven
+# HTML block start conditions, and the ones below are precisely those whose end
+# condition is a specific terminator rather than a blank line:
+#
+#   type 1  <script | <pre | <style | <textarea   (ends at its closing tag)
+#   type 2  <!--                                  (ends at -->)
+#   type 3  <?                                    (ends at ?>)
+#   type 4  <! + letter                           (ends at >)
+#   type 5  <![CDATA[                             (ends at ]]>)
+#
+# Types 6 and 7 end at a BLANK LINE, and the omission marker supplies blank
+# lines on both sides, so they terminate on their own and are left alone.
+#
+# Only the ``<`` is matched, so the surrounding text survives, and the pattern
+# provably cannot touch ``<https://…>`` — an autolink is none of these start
+# conditions, which matters because that autolink IS the approval link.
+#
+# It is DELETED, not escaped to ``&lt;``. Escaping replaced one character with
+# four and made neutralization grow the string: ``"<!--" * 3000`` came out at
+# 17 460 characters against a 10 000 cap — this bead's own bug class, recreated
+# a third time inside its own fix. Every transform on this path must be
+# shrink-only, and the cheapest way to guarantee that is to only ever remove.
+_HTML_SWALLOWER = re.compile(
+    r"<(?=!--|\?|!\[CDATA\[|![A-Za-z]|/?(?:script|pre|style|textarea)\b)",
+    re.IGNORECASE,
+)
+
+
+def _neutralize_fences(fragment: str) -> str:
+    """Remove every code delimiter from a TRUNCATED fragment.
+
+    Four attempts at *repairing* fences came before this one. Each was wrong,
+    and each shipped with a hand-rolled assertion that shared its blind spot,
+    so the reasoning is worth keeping:
+
+    1. Append ``\\n``` `` to a head with an odd delimiter count. Wrong —
+       CommonMark closes a fence only with a run at least as long as the
+       opener, so a four- or six-backtick block is not closed by three.
+    2. Drop the last unmatched run instead. Still wrong — it decides WHICH runs
+       are unmatched by parity, and parity cannot see length. A 12-backtick
+       opener followed by a too-short three-backtick line counts as "even" and
+       is left alone, with the block open straight through the approval URL.
+    3. Prepend an opener to a tail whose delimiter count is odd. Wrong in the
+       other direction — an inline ``` ``` ``` inside ordinary prose is not a
+       fence at all, so the prepended opener never closes and the "repair"
+       CREATES the failure it was added to prevent.
+    4. Delete backtick runs of three or more. Right idea, incomplete alphabet:
+       it left ``~~~`` fences live, and left one- and two-backtick span
+       delimiters able to re-pair INSIDE the retained tail around the URL.
+    5. Delete both alphabets in ONE alternation. Wrong because ``re.sub`` never
+       rescans what it produced, so removing a backtick can JOIN tildes into a
+       fence that did not exist: ``"~~`~"`` -> ``"~~~"``. See the ordering
+       argument above the patterns.
+    6. Delete only CODE delimiters. Wrong because removing a fence ACTIVATES
+       what was inert inside it — an ``<!--`` in a fenced block whose ``-->``
+       fell in the cut becomes a live comment and swallows the URL. Hence
+       ``_HTML_SWALLOWER``, applied after the fences are gone.
+
+    Every one of those delivers the notification while silently disabling the
+    one thing it exists to deliver, which is strictly worse than the 422 this
+    clamp replaces. Parity cannot model fence state; a real fence-state walker
+    is not proportionate in a notification path (the Notifier says the same of
+    its own copy); and each partial alphabet just moved the failure.
+
+    So: no inference, and no partial alphabet. Delete every delimiter that can
+    open code — backtick runs of ANY length, and tilde runs of three or more.
+    Nothing can be left open if nothing can open. It is correct for every
+    arrangement, needs no reserve because it only ever SHRINKS, and has no
+    order-dependence to get wrong.
+
+    The cost is honest and small: a truncated notification loses code
+    *formatting* in the fragments that survive. A body on this path has already
+    lost its middle, and monospace rendering is worth far less than a clickable
+    approval link. Bodies that fit are never passed here at all.
+    """
+    without_code = _TILDE_FENCE.sub("", _BACKTICK_RUN.sub("", fragment))
+    # Last, and only after the fences are gone: what was inert inside a code
+    # block is live now, so the HTML swallowers have to be defused on the
+    # POST-removal text, not the original.
+    out = _HTML_SWALLOWER.sub("", without_code)
+    # The one property every caller depends on. Asserted rather than trusted
+    # because "this transform only removes" has now been believed and been
+    # wrong once (the ``&lt;`` escape), and the consequence is a 422.
+    assert len(out) <= len(fragment)  # noqa: S101 — invariant, not input validation
+    return out
+
+
+def normalize_notifier_body(body: str) -> str:
+    """Bound a notification body to the Notifier's ``body`` contract (ds-thm).
+
+    The Notifier already fits bodies to Discord's 2000-char ``content`` limit,
+    so this is not that cut — it is the one that keeps the request from being
+    rejected by ``NotifyRequest`` at 10000 with a 422, before any of the
+    worker's own handling runs.
+
+    **Why this cut must be Markdown-aware even though the worker repairs
+    fences.** ``_discord_safe_content`` repairs only the ``content`` field. The
+    handler sets ``text`` to the FULL body, on purpose — *"Only ``content`` is
+    capped. ``text`` deliberately carries the FULL body … so a non-Discord
+    receiver loses nothing to a limit that isn't theirs."* So a cut here that
+    strands a code fence reaches Slack and every generic receiver as malformed
+    Markdown, with nothing downstream to fix it.
+
+    A cut through arbitrary Markdown can leave a code fence open, and anything
+    after an open fence — the approval URL included — renders as inert text
+    rather than a link. So both retained fragments have their fence delimiters
+    NEUTRALIZED rather than repaired; :func:`_neutralize_fences` records why
+    three cleverer attempts were each wrong.
+
+    Untouched when the body already fits, which is the overwhelmingly common
+    case: a body only reaches the neutralizer once it is over the cap and has
+    already lost its middle.
+
+    ``tests/integration/test_notify_preserves_approval_url.py`` pins the
+    end-to-end property (URL present AND outside a code block) against the real
+    renderer and the Notifier's real Discord cut.
+    """
+    text = body or ""
+    # No reserve: neutralizing only ever removes characters, so nothing is
+    # appended after the cut and the cap cannot be exceeded afterwards.
+    parts = clamp_middle_out(text, NOTIFIER_BODY_MAX_CHARS)
+    if parts is None:
+        return text
+    head, marker, tail = parts
+    return _neutralize_fences(head) + marker + _neutralize_fences(tail)
+
+
+# The Upgrade Docs worker's ``ClosePrRequest.reason`` bound (ds-thm). Mirrored;
+# pinned equal by tests/unit/test_worker_bound_mirrors.py.
+UPGRADE_CLOSE_REASON_MAX_CHARS = 1000
+
+# The worker requires ``min_length=1``, and the model can omit the reason
+# entirely. Closing the PR is the action the OPERATOR asked for and the reason
+# is auxiliary audit context, so the action is preserved rather than failed —
+# but the text discloses that nothing was supplied instead of inventing a
+# motive the model never gave.
+UPGRADE_CLOSE_REASON_ABSENT = (
+    "Closed via DriftScribe at the operator's request; no reason was supplied."
+)
+
+
+def normalize_close_reason(reason: str) -> str:
+    """Bound a model-authored PR-close reason to the worker's contract."""
+    text = (reason or "").strip()
+    if not text:
+        return UPGRADE_CLOSE_REASON_ABSENT
+    parts = clamp_middle_out(text, UPGRADE_CLOSE_REASON_MAX_CHARS)
+    if parts is None:
+        return text
+    head, marker, tail = parts
+    return head + marker + tail
 
 
 # Tokenized rollback-approval link, wherever it hides in a served string
@@ -523,30 +781,41 @@ def render_drift_issue_body(p: DecisionProposal) -> str:
 """
 
 
-def render_rollback_body(p: DecisionProposal, approval_url: str) -> str:
-    """Render the operator-facing approval body for a ROLLBACK decision.
+#: Fallback evidence line when not even one table row fits the budget. Says
+#: what is missing and where to get it, rather than rendering a headerless
+#: table that reads as "no drift found".
+_EVIDENCE_OMITTED = (
+    "_The change evidence did not fit this notification. Open the approval "
+    "link below to see it in full._"
+)
 
-    Delivered by the Notifier worker (severity="approval"). The body surfaces
-    the approval URL minted by the Rollback Worker's ``/propose`` response so
-    the operator can click through to ``{COORDINATOR_URL}/approvals/{id}`` and
-    Approve / Reject the proposed traffic shift.
 
-    ``approval_url`` is passed in (not derived) because the renderer is a pure
-    function — it has no access to Firestore or the HMAC key, and the worker
-    response is the only place the URL is minted. The caller (Task 13.3) reads
-    ``result["approval_url"]`` from the worker response and threads it here.
+def _rollback_body(
+    p: DecisionProposal, approval_url: str, rationale: str, evidence: str
+) -> str:
+    """The template.
 
-    Markdown discipline:
-    - The approval URL is wrapped in ``<...>`` (markdown autolink form) so
-      long URLs don't line-break in some renderers.
-    - ``target_revision`` is shown inside an inline code span — Cloud Run
-      revision names are alphanumeric + hyphens, so they don't break tables.
-    - The rationale is scrubbed via :func:`_scrub_secret_values_from_rationale`
-      so an LLM that quoted a secret value in prose doesn't leak it here.
+    Split out so the budget can be measured against the REAL fixed text rather
+    than an estimate that drifts as the copy is edited.
+
+    **The approval link appears BEFORE the model-authored rationale, and that
+    ordering is a safety property, not a layout choice.** Markdown is parsed
+    forwards: an unclosed fence or an ``<!--`` in the rationale swallows
+    everything AFTER it, so a link that has already been rendered above cannot
+    be retroactively captured. This closes a defect that predates ds-thm
+    entirely — a model that emitted an unclosed ``` in even a SHORT rationale
+    broke the approval link in every notification, truncated or not.
+
+    The footer link is kept as well: it carries the expiry and traffic warning,
+    it is where an operator reading the whole message expects the call to
+    action, and a second copy costs one line.
     """
-    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
     return f"""\
 ## DriftScribe — rollback proposed (approval required)
+
+**Approve or reject:** <{approval_url}>
+
+Rolling back `payment-demo` to `{p.target_revision}`.
 
 {rationale}
 
@@ -559,7 +828,7 @@ def render_rollback_body(p: DecisionProposal, approval_url: str) -> str:
 
 ### Evidence
 
-{_evidence_table(p)}
+{evidence}
 
 ### Operator approval required
 
@@ -574,6 +843,157 @@ re-propose to mint a fresh token.
 > to revision `{p.target_revision}`. Rejecting leaves traffic on the current
 > revision and DriftScribe will not retry automatically.
 """
+
+
+def _minimal_rollback_body(p: DecisionProposal, approval_url: str) -> str:
+    """Everything except the link is expendable; the link is why the message
+    exists. Used when the fixed template cannot fit the cap at all."""
+    return (
+        "## DriftScribe — rollback proposed (approval required)\n\n"
+        f"Roll back `payment-demo` to `{p.target_revision}`. The details did "
+        "not fit this notification — approve or reject here:\n\n"
+        f"<{approval_url}>\n"
+    )
+
+
+def _bounded_evidence(p: DecisionProposal, budget: int) -> str:
+    """Fit the evidence table to ``budget`` by dropping WHOLE ROWS.
+
+    Never a character cut. Half a table row is malformed Markdown — the pipes
+    stop matching the header and the whole table degrades to prose, which on an
+    approval page reads as though the evidence were something other than a
+    table. Dropping rows keeps every surviving row exact and says how many went.
+    """
+    header = "| Var | Expected | Live | Status | Recent PR | /debug/config |\n|---|---|---|---|---|---|"
+    rows = [_diff_row(d) for d in p.env_diffs]
+    kept: list[str] = []
+    used = len(header)
+    for row in rows:
+        # +1 for the newline joining it on.
+        note_len = len(_row_omission_note(len(rows) - len(kept) - 1))
+        if used + 1 + len(row) + note_len > budget:
+            break
+        kept.append(row)
+        used += 1 + len(row)
+    if not kept:
+        return _EVIDENCE_OMITTED if len(_EVIDENCE_OMITTED) <= budget else ""
+    out = header + "\n" + "\n".join(kept)
+    dropped = len(rows) - len(kept)
+    if dropped:
+        out += _row_omission_note(dropped)
+    return out
+
+
+def _row_omission_note(dropped: int) -> str:
+    if dropped <= 0:
+        return ""
+    return f"\n\n_{dropped} further changed variable(s) omitted from this notification._"
+
+
+def render_rollback_body(
+    p: DecisionProposal, approval_url: str, *, max_chars: int | None = None
+) -> str:
+    """Render the operator-facing approval body for a ROLLBACK decision.
+
+    Delivered by the Notifier worker (severity="approval"). The body surfaces
+    the approval URL minted by the Rollback Worker's ``/propose`` response so
+    the operator can click through to ``{COORDINATOR_URL}/approvals/{id}`` and
+    Approve / Reject the proposed traffic shift.
+
+    ``approval_url`` is passed in (not derived) because the renderer is a pure
+    function — it has no access to Firestore or the HMAC key, and the worker
+    response is the only place the URL is minted.
+
+    ``max_chars`` bounds the OUTPUT, and how it does so is the point (ds-thm).
+
+    The first six attempts at this clamped the ASSEMBLED body and then tried to
+    repair the Markdown the cut had broken, so the approval link stayed
+    reachable. Each was wrong in a new way — fence parity, delimiter length,
+    inline spans mistaken for fences, a second fence alphabet, a substitution
+    that manufactured the delimiter it removed, and markup that was inert
+    inside a code block waking up once the fence around it was deleted. That is
+    not a run of bad luck; "cut arbitrary Markdown and guarantee one specific
+    element still renders" is an open-ended sanitization problem, and the sixth
+    fix reintroduced this bead's own bug class by growing the string it was
+    supposed to bound.
+
+    So the budget is spent BEFORE assembly instead. The variable sections — the
+    model's rationale and the evidence table — are bounded to fit whatever the
+    fixed template leaves over; the template itself, including the approval URL
+    and the traffic warning, is never cut, never sanitized, and cannot be
+    truncated away. The invariant is structural rather than inferred.
+
+    The rationale is still neutralized WHEN TRUNCATED, because a cut can strand
+    a fence or an ``<!--`` inside it that would swallow everything below —
+    including the link. That neutralization is shrink-only, so it cannot push
+    the assembled body back over the cap.
+
+    Markdown discipline (unchanged):
+    - The approval URL is wrapped in ``<...>`` (markdown autolink form) so
+      long URLs don't line-break in some renderers.
+    - ``target_revision`` is shown inside an inline code span — Cloud Run
+      revision names are alphanumeric + hyphens, so they don't break tables.
+    - The rationale is scrubbed via :func:`_scrub_secret_values_from_rationale`
+      so an LLM that quoted a secret value in prose doesn't leak it here.
+    """
+    rationale = _scrub_secret_values_from_rationale(p.rationale, p.env_diffs)
+    full = _rollback_body(p, approval_url, rationale, _evidence_table(p))
+    if max_chars is None or len(full) <= max_chars:
+        # The overwhelmingly common path, and it must be BYTE-IDENTICAL to the
+        # unbounded render. Budgeting the sections without first asking whether
+        # the whole body fits abridged inputs the worker accepts verbatim: a
+        # 5000-char rationale assembles to ~6000 against a 10 000 cap and was
+        # being cut to ~5577 by the half-budget split. That is the same
+        # "truncate acceptable input" defect this bead exists to remove, one
+        # level up from where it was first found (Codex).
+        return full
+    if max_chars <= 0:
+        # Only reachable from a caller passing a nonsense cap. Refuse rather
+        # than slice: ``minimal[:-1]`` would quietly emit 226 characters under
+        # Python's negative-index semantics, which is the shape of bug this
+        # module has already been bitten by twice.
+        raise ValueError(f"max_chars must be positive, got {max_chars}")
+
+    # Measure the real template, so editing the copy above can never silently
+    # invalidate the arithmetic here.
+    overhead = len(_rollback_body(p, approval_url, "", ""))
+    available = max_chars - overhead
+    if available > 0:
+        # Rationale first, at up to half; whatever it leaves goes to evidence.
+        parts = clamp_middle_out(rationale, max(1, available // 2))
+        if parts is not None:
+            head, marker, tail = parts
+            rationale = _neutralize_fences(head) + marker + _neutralize_fences(tail)
+        body = _rollback_body(
+            p, approval_url, rationale, _bounded_evidence(p, available - len(rationale))
+        )
+        if len(body) <= max_chars:
+            return body
+
+    # The template alone does not fit — only reachable via an absurd
+    # ``approval_url`` (i.e. a misconfigured ``COORDINATOR_URL``), since the
+    # revision name is schema-bounded at 64. Degrade toward the link, in
+    # descending order of how much context survives with it.
+    minimal = _minimal_rollback_body(p, approval_url)
+    if len(minimal) <= max_chars:
+        return minimal
+
+    # Prose is not worth a link. An earlier version went straight from here to
+    # a head slice, which kept the HEADING and dropped the URL — so a cap that
+    # could physically hold the whole autolink still produced a notification
+    # with nothing to click (Codex). Spend the remaining budget on the only
+    # part that does anything.
+    autolink = f"<{approval_url}>\n"
+    if len(autolink) <= max_chars:
+        return autolink
+
+    # Not even the bare link fits. NOTHING can preserve an arbitrary URL under
+    # a cap shorter than that URL, so this is a config error rather than an
+    # input to absorb — but it must not 422 the worker, and it must not raise:
+    # this runs AFTER the approval is minted and BEFORE the decision row is
+    # written, so an exception would strand the approval for real (ds-hdt).
+    # Bounded output, honestly degraded, is the least-bad outcome left.
+    return autolink[:max_chars]
 
 
 def render_escalation_issue_body(p: DecisionProposal) -> str:

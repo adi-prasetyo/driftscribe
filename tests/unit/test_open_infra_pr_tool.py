@@ -26,6 +26,14 @@ import pytest
 _BRANCH_RE = re.compile(r"^infra/.+-\d+-[0-9a-f]{4}$")
 _WORKER_ALLOWLIST_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
+# ds-thm: these fixtures used ``"content": ""``. The tofu-editor worker rejects
+# blank content (``iac_editor_policy.validate_file_writes``), so that request
+# could never have succeeded in production — the tests only passed because the
+# worker was mocked out. Since the coordinator now applies the same policy
+# before calling (so an over-size request is a structured refusal rather than an
+# aborted ADK turn), the fixture has to be one the system would actually accept.
+_CONTENT = 'resource "google_storage_bucket" "b" {\n  name = "example"\n}\n'
+
 
 # --------------------------------------------------------------------------- #
 # Signature pin — authority/routing fields must NOT appear as LLM-facing params
@@ -197,7 +205,7 @@ def test_open_infra_pr_tool_result_falls_back_to_derived_branch(monkeypatch):
     monkeypatch.setattr(adk_tools.worker_client, "call_open_infra_pr", _fake)
 
     result = adk_tools.open_infra_pr_tool(
-        files=[{"path": "iac/a.tf", "content": ""}], title="x", body="y"
+        files=[{"path": "iac/a.tf", "content": _CONTENT}], title="x", body="y"
     )
     assert result["branch"] == captured["branch"]
 
@@ -218,7 +226,7 @@ def _capture_branch(monkeypatch, *, title: str) -> str:
 
     monkeypatch.setattr(adk_tools.worker_client, "call_open_infra_pr", _fake)
     adk_tools.open_infra_pr_tool(
-        files=[{"path": "iac/a.tf", "content": ""}], title=title, body="b"
+        files=[{"path": "iac/a.tf", "content": _CONTENT}], title=title, body="b"
     )
     return captured["branch"]
 
@@ -254,16 +262,25 @@ def test_open_infra_pr_tool_empty_title_falls_back_to_infra(monkeypatch):
     assert slug == "infra"
 
 
-def test_open_infra_pr_tool_caps_branch_for_pathological_title(monkeypatch):
+def test_branch_derivation_caps_a_pathological_title():
     """A ~300-char title still yields a branch the worker accepts: the tail
     (everything after ``infra/``) is <= 200 chars, allowlist-safe, has no ``..``,
     and the authoritative ``validate_branch`` does NOT raise.
+
+    ds-thm moved this off ``open_infra_pr_tool``. A 300-char title is refused by
+    ``validate_title_body`` at BOTH ends now — the coordinator before the call
+    and the worker after it — so driving this through the tool would only ever
+    exercise the refusal. The capping logic is still real defense in depth for
+    any caller whose title is not model-authored, so it is tested where it
+    lives instead of through a door it can no longer come in by.
     """
     from driftscribe_lib.iac_editor_policy import validate_branch
 
+    from agent.adk_tools import derive_iac_pr_authority
+
     title = "Add " + "very long resource name " * 12  # ~300 chars
     assert len(title) > 200
-    branch = _capture_branch(monkeypatch, title=title)
+    branch = derive_iac_pr_authority(title).branch
 
     assert branch.startswith("infra/")
     tail = branch[len("infra/"):]
@@ -272,6 +289,34 @@ def test_open_infra_pr_tool_caps_branch_for_pathological_title(monkeypatch):
     assert ".." not in branch
     # Authoritative check — must not raise.
     validate_branch(branch)
+
+
+def test_open_infra_pr_tool_refuses_an_over_long_title(monkeypatch):
+    """The other half of the change above: the tool now REFUSES rather than
+    letting the request die at the worker.
+
+    That matters because ADK's ``Runner`` is built with no ``on_tool_error``,
+    so an uncaught worker error re-raises and ABORTS the turn — the model never
+    sees a function response and cannot correct itself.
+    """
+    from agent import adk_tools
+
+    called = False
+
+    def _fake(**_kw):
+        nonlocal called
+        called = True
+        return {"status": "opened", "pr_number": 1, "pr_url": "u"}
+
+    monkeypatch.setattr(adk_tools.worker_client, "call_open_infra_pr", _fake)
+    out = adk_tools.open_infra_pr_tool(
+        files=[{"path": "iac/a.tf", "content": _CONTENT}],
+        title="A" * 250,
+        body="b",
+    )
+    assert called is False
+    assert out["status"] == "rejected"
+    assert "title too long" in out["reason"]
 
 
 # --------------------------------------------------------------------------- #
@@ -296,7 +341,7 @@ def test_open_infra_pr_tool_honors_target_repo_override(monkeypatch):
     monkeypatch.setattr(adk_tools.worker_client, "call_open_infra_pr", _fake)
 
     adk_tools.open_infra_pr_tool(
-        files=[{"path": "iac/a.tf", "content": ""}], title="t", body="b"
+        files=[{"path": "iac/a.tf", "content": _CONTENT}], title="t", body="b"
     )
     assert captured["target_repo"] == "acme/driftscribe-e2e-target"
 

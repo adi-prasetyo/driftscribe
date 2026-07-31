@@ -73,7 +73,9 @@ from agent.github_actions import (
 from agent.mcp.developer_knowledge import MissingDeveloperKnowledgeApiKeyError
 from agent.models import DecisionAction, DecisionProposal
 from agent.renderer import (
+    NOTIFIER_BODY_MAX_CHARS,
     attach_iac_pr_link,
+    normalize_notifier_body,
     normalize_rollback_reason,
     render_docs_pr_body,
     render_drift_issue_body,
@@ -1622,7 +1624,16 @@ def _notify_rollback_approval(rendered: str) -> dict[str, Any]:
     try:
         worker_client.call(
             "notifier",
-            {"channel": "approval", "severity": "high", "body": rendered},
+            {
+                "channel": "approval",
+                "severity": "high",
+                # ds-thm: ``rendered`` is already bounded at render time (see
+                # _do_rollback), which is the guarantee that matters. This is a
+                # second, independent bound for the OTHER callers of this
+                # helper and for any future one that forgets — it is a no-op on
+                # an already-conforming body.
+                "body": normalize_notifier_body(rendered),
+            },
         )
     except WorkerClientError as e:
         # Expected class: the notifier or its downstream refused. Only the
@@ -1915,7 +1926,45 @@ def _do_rollback(
     # path that does, we must release the claim. Without this, a renderer
     # exception would leave the event claimed and perma-409 subsequent retries.
     try:
-        rendered = render_rollback_body(proposal, approval_url)
+        # ds-thm: bounded to the Notifier's declared ``body`` cap AT RENDER, so
+        # the fixed template — the approval URL and the traffic warning — is
+        # never part of any text that gets cut. Clamping the assembled body
+        # instead meant repairing whatever Markdown the cut had broken, which
+        # took six wrong attempts and still could not be made sound; see
+        # render_rollback_body's docstring.
+        # ds-thm: the notification renders this as a Markdown autolink
+        # (``<url>``), and CommonMark autolinks require an ABSOLUTE URI — a
+        # relative ``/approvals/…`` renders as literal text with no link at
+        # all. ``_approval_url_matches`` deliberately accepts the relative form
+        # (see above), so the shapes the validator admits are wider than the
+        # shapes the renderer can make clickable: the same producer/consumer
+        # contract mismatch this bead is about, in URL shape rather than length.
+        #
+        # Canonicalized against OUR configured origin rather than rejected,
+        # because rejecting here would strand an already-minted approval
+        # (ds-hdt). If neither origin is configured the link cannot be made
+        # absolute by anyone, and the body still carries the path as text.
+        # "Is it absolute?" is decided with the SAME semantics the validator
+        # used to accept it — ``urlsplit``'s scheme, which is case-insensitive.
+        # A ``startswith(("http://", "https://"))`` check disagrees on
+        # ``HTTPS://…``: the validator admits it, the prefix check calls it
+        # relative, and the result is
+        # ``https://coordinator/HTTPS://worker/approvals/…`` — a link that
+        # renders perfectly and points at a coordinator path that does not
+        # exist. Two checks for the same question must not use two definitions
+        # (Codex); that disagreement is this bead's whole subject.
+        notify_url = approval_url
+        try:
+            absolute = bool(urllib.parse.urlsplit(notify_url).scheme)
+        except ValueError:  # pragma: no cover — validated upstream
+            absolute = False
+        if not absolute:
+            origin = (s.coordinator_origin or "").rstrip("/")
+            if origin:
+                notify_url = f"{origin}/{notify_url.lstrip('/')}"
+        rendered = render_rollback_body(
+            proposal, notify_url, max_chars=NOTIFIER_BODY_MAX_CHARS
+        )
     except Exception as e:
         state.release_event(event_key)
         raise HTTPException(
@@ -7043,7 +7092,13 @@ def _iac_merge_step(
         with contextlib.suppress(Exception):
             worker_client.call(
                 "notifier",
-                {"channel": "approval", "severity": "high", "body": alert},
+                # ds-thm: ``alert`` interpolates ``{e}``, whose ``str()`` embeds
+                # a GitHub/PyGithub response body of no fixed size. This is the
+                # "apply SUCCEEDED but merge failed" page — the one an operator
+                # most needs delivered — and the suppress above means a 422
+                # would lose it silently.
+                {"channel": "approval", "severity": "high",
+                 "body": normalize_notifier_body(alert)},
             )
         return _render_iac_outcome(
             request,
