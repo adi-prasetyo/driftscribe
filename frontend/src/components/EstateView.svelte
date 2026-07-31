@@ -217,6 +217,14 @@
 
 <style>
   .estate-view {
+    /* `width: 100%` is load-bearing since the 2026-07-31 merge, and it is not
+       redundant with max-width. This is a GRID ITEM with auto margins, so
+       without an explicit width it is sized shrink-to-fit — 384px at 1280,
+       against the 780px approval-desk card directly above it. Two centered
+       cards of different widths in one column is exactly the "bolted-on
+       frontend" reading the merge exists to fix. ApprovalDesk carries the same
+       pair; keep them identical. */
+    width: 100%;
     max-width: 780px;
     margin: 0 auto;
     background: var(--ds-bg);

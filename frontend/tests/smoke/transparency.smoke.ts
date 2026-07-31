@@ -141,6 +141,30 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.getByTestId('approval-desk')).toHaveCount(0);
   });
 
+  // The 2026-07-31 merge put the desk card and the estate section in one grid
+  // column, and a real layout engine is the only thing that can check they
+  // landed in the same one — jsdom has none, so the unit suite cannot see this
+  // at all. It is not hypothetical: both declared `max-width: 780px; margin: 0
+  // auto`, but as auto-margin grid items they were sized SHRINK-TO-FIT, and the
+  // estate's narrower content gave it 384px at left 448 against the desk's
+  // 780px at left 250. Two mismatched centered cards stacked in one column is
+  // precisely the "the frontend looks bolted on" reading the merge answers.
+  test('the desk card and the estate section share one column', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/');
+
+    const desk = await page.getByTestId('approval-desk').boundingBox();
+    const estate = await page.getByTestId('estate-view').boundingBox();
+    expect(desk, 'desk card must render').not.toBeNull();
+    expect(estate, 'estate section must render').not.toBeNull();
+    // Exact, not approximate: they are the same column, so any difference is a
+    // bug rather than a rounding artifact.
+    expect(Math.round(estate!.x)).toBe(Math.round(desk!.x));
+    expect(Math.round(estate!.width)).toBe(Math.round(desk!.width));
+  });
+
   test('shell + built assets load with no 404 and render the chrome', async ({ page }) => {
     const bad: string[] = [];
     page.on('response', (r) => {

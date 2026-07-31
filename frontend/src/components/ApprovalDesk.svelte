@@ -500,6 +500,13 @@
 
 <style>
   .approval-desk {
+    /* Explicit, though this card happens to reach 780px on its own: the band's
+       44px numerals give it a max-content width past the cap, so shrink-to-fit
+       lands on the same number by accident. Leaving it to that accident is what
+       let EstateView render 384px wide beneath it after the 2026-07-31 merge —
+       and it would come back the moment the band slimmed. The two cards share
+       one column; keep this pair identical to EstateView's. */
+    width: 100%;
     max-width: 780px;
     margin: 0 auto;
     background: var(--ds-bg);
