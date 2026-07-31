@@ -136,6 +136,31 @@ def test_the_omission_is_stated_in_driftscribes_own_voice() -> None:
     assert len(head) + int(count) + len(tail) == len(original)
 
 
+def test_no_input_length_can_produce_an_over_cap_output() -> None:
+    """The clamp's arithmetic, swept rather than argued.
+
+    The marker embeds a COUNT whose digit width grows with the input, so the
+    space reserved for it has to hold the widest marker the input could produce.
+    That is the one part of this function where an off-by-a-few would ship
+    silently — the output would exceed the cap only for inputs whose omitted
+    count happens to gain a digit, which no single hand-picked fixture would
+    catch. So the boundaries either side of every digit rollover are swept.
+
+    (Reserving against ``len(text)`` rather than the eventual count is what
+    makes this safe: the real count is always smaller, so the real marker can
+    never outgrow its reservation.)
+    """
+    lengths = list(range(0, 4100)) + [
+        4999, 5000, 5001, 9999, 10_000, 10_001,
+        99_999, 100_000, 100_001, 999_999, 1_000_000,
+    ]
+    for n in lengths:
+        out = normalize_rollback_reason("x" * n)
+        assert 1 <= len(out) <= ROLLBACK_REASON_MAX_CHARS, (
+            f"input of {n} chars produced {len(out)}"
+        )
+
+
 def test_an_empty_rationale_gets_a_deterministic_fallback() -> None:
     """The worker requires ``min_length=1``; ``DecisionProposal.rationale`` has
     no minimum. Without this, an empty model rationale is the SAME outage by a
