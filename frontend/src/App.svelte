@@ -46,6 +46,7 @@
   import type { HandoffOffer } from './lib/sse';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import ApprovalDesk from './components/ApprovalDesk.svelte';
+  import DecisionRecord from './components/DecisionRecord.svelte';
   import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
   import { reconcileApprovals } from './lib/estate';
@@ -67,6 +68,7 @@
   import { createAutonomyStore, autonomyNoteFor } from './lib/autonomyStore';
   import { createOverviewStore, NO_DECISIONS_YET } from './lib/overviewStore';
   import { createTraceCache } from './lib/traceCache';
+  import { hasDecisionForTrace } from './lib/ledger';
   import { prefersReducedMotion } from './lib/motion';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -203,7 +205,12 @@
   // — same pure-function-over-location.search pattern as the deep-link helpers
   // above, this time picking a view instead of a resource id. See lib/deeplink
   // for viewFromSearch/AppView/DEFAULT_VIEW (Task 2.1).
-  let view = $state<AppView>(viewFromSearch(window.location.search));
+  // Captured separately from the `view` state below because the boot
+  // deep-link work in onMount runs AFTER navigation may already have moved
+  // `view` (openConversation navigates to chat). Boot decisions must read the
+  // view the URL asked for, not wherever the app has since arrived.
+  const bootView: AppView = viewFromSearch(window.location.search);
+  let view = $state<AppView>(bootView);
 
   // Navigate to view `v`. AWAY from chat, this writes `view` + clears every
   // chat-intent param (reasoning/conversation/ask_pr/preview_pr) in ONE
@@ -244,6 +251,23 @@
     const fromView = view; // capture BEFORE the assignment — the push test needs it
     view = v;
     const u = new URL(window.location.href);
+    // A view gesture is not a record or preview gesture — neither piece of desk
+    // state travels, and neither may survive as invisible state. Done here
+    // rather than in teardownChatSurface() because that runs only for non-chat
+    // targets, while this must also cover the two gestures it would miss:
+    // clicking Chat (which preserves every param below, both of these included)
+    // and clicking Desk while already on it (a no-op re-entry that still strips
+    // them). Either would leave the state and the URL contradicting — and since
+    // ds-jns both params RESOLVE to the desk, a survivor would bounce a reload
+    // of the chat URL straight back here.
+    if (deskRecordTraceId !== null) {
+      deskRecordTraceId = null;
+      u.searchParams.delete('reasoning');
+    }
+    if (previewPr !== null) {
+      previewPr = null;
+      u.searchParams.delete('preview_pr');
+    }
     if (v === DEFAULT_VIEW) u.searchParams.delete('view');
     else u.searchParams.set('view', v);
     // CHAT_INTENT_PARAMS is the shared list — see its comment in lib/deeplink.
@@ -813,6 +837,36 @@
   const overview = createOverviewStore(call);
   const decisions = $derived($overview.decisions);
   onDestroy(() => overview.destroy());
+
+  // ---- desk decision record (ds-jns, design §3) ----
+  // THE single source of truth for "which decision is open on the desk". The
+  // ledger row and the pending hero both only ASK (onRecordChange); neither
+  // holds a copy, so at most one record can be open by construction rather
+  // than by two components agreeing to stay in step.
+  // Seeded from the URL: a `?reasoning=` that resolved to the DESK (i.e. one
+  // with no `?conversation=` framing it — lib/deeplink's hasChatIntent) is a
+  // request to open that decision's record here. Gated on `bootView` rather
+  // than on "no conversation" so the one URL shape that still means chat
+  // replay, `?view=chat&reasoning=`, is not quietly claimed by the desk.
+  let deskRecordTraceId = $state<string | null>(bootView === 'desk' ? bootReasoningTid : null);
+
+  // The only writer, so the `?reasoning=` param and the state can never drift —
+  // same discipline as setConversationId. A shared/reloaded desk URL therefore
+  // always reopens exactly the record that was on screen.
+  function setDeskRecord(tid: string | null): void {
+    deskRecordTraceId = tid;
+    syncReasoningParam(tid);
+  }
+
+  // Is the open record among the decisions we actually hold? `ledgerRows`'
+  // keepTraceId guarantees a held decision always gets a row (cap or no cap),
+  // so "not here" is exactly "no ledger row will render it" — which is what
+  // makes the pinned card below safe from rendering a second copy of a row
+  // that "show more" would reveal.
+  const deskRecordInLedger = $derived(hasDecisionForTrace(decisions, deskRecordTraceId));
+  const deskPinnedRecord = $derived(
+    deskRecordTraceId !== null && !deskRecordInLedger ? deskRecordTraceId : null,
+  );
 
   // The band's managed/drift numerals point at the estate, which since the
   // 2026-07-31 merge is a section of THIS page. Scroll to it rather than
@@ -2011,11 +2065,16 @@
       history.replaceState(null, '', u);
       document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    // Boot deep-links. A shared ?conversation=<id> resumes that thread; a shared
-    // ?reasoning=<id> replays that timeline; both together restore the thread first,
-    // then the replay on top (mirrors the on-screen state that produced the URL:
-    // openTrace leaves conversationId intact). AWAIT the conversation open before
-    // openTrace bumps runSeq, or its in-flight fetch would be cancelled by the guard.
+    // Boot deep-links. A shared ?conversation=<id> resumes that thread; a
+    // ?reasoning=<id> alongside it replays that timeline on top (mirroring the
+    // on-screen state that produced the URL: openTrace leaves conversationId
+    // intact). AWAIT the conversation open before openTrace bumps runSeq, or its
+    // in-flight fetch would be cancelled by the guard.
+    //
+    // A BARE ?reasoning= never reaches this branch: it resolves to the desk
+    // (lib/deeplink) and was already seeded into deskRecordTraceId at setup, so
+    // the record is on screen before this callback runs. `bootView` is what
+    // separates the two — the URL's own answer, taken before anything navigated.
     void (async () => {
       if (bootConversationId) {
         const bootRun = runSeq; // openConversation's ++runSeq will make this bootRun+1
@@ -2025,7 +2084,7 @@
         // replay on top of what they navigated to. Bail out of the boot continuation.
         if (runSeq !== bootRun + 1) return;
       }
-      if (bootReasoningTid) openTrace(bootReasoningTid);
+      if (bootReasoningTid && bootView === 'chat') openTrace(bootReasoningTid);
     })();
     // Browser Back/Forward across the two views (ds-7ag.1). Registered here
     // rather than in the module body so it is torn down with the component.
@@ -2169,10 +2228,12 @@
          marker moved with it. PauseBanner stays here (only shown when paused). -->
     <PauseBanner {pause} />
     <div class="tour-target">
+      <!-- No `previewPr` here: the estate preview belongs to the desk now
+           (ds-jns Task 2.4), and `?preview_pr=` routes there. Passing it would
+           put the same ghost overlay on two pages. -->
       <InfraDiagram
         {call}
         {appliedEpoch}
-        {previewPr}
         onExitPreview={exitPreview}
         onAdopt={handleAdopt}
         onInvestigate={handleAdopt}
@@ -2219,6 +2280,22 @@
        of its own. `refresh={overview.refresh}` lets the desk arm its own
        short, bounded re-check burst after sending the operator to an
        approval page (see ApprovalDesk's "fast convergence" comment). -->
+  <!-- A record whose decision is NOT in the snapshot we hold — a `?reasoning=`
+       link older than the listed rows, or one naming a chat turn's trace. It
+       is pinned above the desk because there is no row for it to open under.
+       The out-of-window NOTE waits for `settled`: while the first cycle is
+       outstanding the list is empty for a reason that has nothing to do with
+       this record's age, and "older than the records listed below" would be a
+       guess about a list we have not read yet (ds-eh6's rule). -->
+  {#if deskPinnedRecord !== null}
+    <div class="desk-pinned-record">
+      <DecisionRecord
+        traceId={deskPinnedRecord}
+        cache={traceCache}
+        note={$overview.settled ? 'outOfWindow' : null}
+      />
+    </div>
+  {/if}
   <ApprovalDesk
     graph={$overview.graph}
     decisions={$overview.decisions}
@@ -2228,7 +2305,9 @@
     lastError={$overview.lastError}
     refresh={overview.refresh}
     onShowEstate={scrollToEstate}
-    onOpenTrace={openTrace}
+    recordTraceId={deskRecordTraceId}
+    cache={traceCache}
+    onRecordChange={setDeskRecord}
   />
   <!-- The estate, directly beneath the decision area (2026-07-31 merge — one
        landing page: band → hero → ledger → estate). Data comes exclusively
@@ -2239,6 +2318,25 @@
        Its loading/degraded state is deliberately INDEPENDENT of the hero's:
        a pending approval can coexist with a failed graph fetch, and each area
        reports its own truth (ds-eh6). -->
+  <!-- `?preview_pr=N` — the ghost overlay the IaC approval page links to
+       (agent/templates/iac_approval.html). It renders on the DESK now, above
+       the estate it is a preview OF, instead of in the chat view where the
+       operator had to scroll past a composer to reach it. Mounted only when
+       there is a preview: the desk's own estate section below is the resting
+       state, and a second full diagram would just repeat it. -->
+  {#if previewPr !== null}
+    <div class="desk-preview">
+      <InfraDiagram
+        {call}
+        {appliedEpoch}
+        {previewPr}
+        onExitPreview={exitPreview}
+        onAdopt={handleAdopt}
+        onInvestigate={handleAdopt}
+        adoptDisabled={chatDisabled}
+      />
+    </div>
+  {/if}
   <EstateView
     graph={$overview.graph}
     decisions={$overview.decisions}
@@ -2505,6 +2603,26 @@
   .chat-area {
     padding: var(--ds-sp-5) var(--ds-sp-6) var(--ds-sp-8);
     max-width: var(--ds-page-max);
+  }
+  /* The out-of-window record, pinned above the desk. Width + centring copied
+     from ApprovalDesk/EstateView rather than left to shrink-to-fit: those two
+     share one column and pin it explicitly for exactly the reason ds-cmc
+     found — a card that happens to land on 780px by accident stops doing so
+     the moment its contents change. */
+  /* Same column as ApprovalDesk/EstateView — the preview sits between them. */
+  .desk-preview {
+    width: 100%;
+    max-width: 780px;
+    margin: var(--ds-sp-5) auto 0;
+  }
+  .desk-pinned-record {
+    width: 100%;
+    max-width: 780px;
+    margin: 0 auto var(--ds-sp-5);
+    padding: var(--ds-sp-5) var(--ds-sp-6);
+    background: var(--ds-bg);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius);
   }
   .chat-area > :global(*) {
     margin-bottom: var(--ds-sp-4);

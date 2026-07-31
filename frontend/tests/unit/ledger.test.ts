@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ledgerRows } from '../../src/lib/ledger';
+import { ledgerRows, ledgerTotal, hasDecisionForTrace } from '../../src/lib/ledger';
 import type { Decision } from '../../src/lib/types';
 
 // ledgerRows() reduces the decisions list to the desk's "Recent record" strip
@@ -302,5 +302,93 @@ describe('ledgerRows', () => {
       expect(ledgerRows(decisions, NaN, { now: NOW, origin: ORIGIN })).toHaveLength(4);
       expect(ledgerRows(decisions, Infinity, { now: NOW, origin: ORIGIN })).toHaveLength(4);
     });
+  });
+});
+
+// ds-jns — the strip became an accordion, so two facts about the cap changed:
+// a row whose record is open must survive it, and the caller needs to know
+// whether a given trace HAS a row at all (App pins the ones that do not).
+describe('ledgerRows — keepTraceId', () => {
+  const older = (i: number) =>
+    decision({
+      decision_id: `k${i}`,
+      trace_id: `${i}`.repeat(32),
+      // Descending — k0 newest, k5 oldest.
+      created_at: new Date(Date.parse('2026-07-28T09:00:00Z') - i * 60_000).toISOString(),
+    });
+  const six = Array.from({ length: 6 }, (_, i) => older(i));
+
+  it('appends the open record’s row when the cap would have dropped it', () => {
+    const rows = ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: '5'.repeat(32) });
+    expect(rows.map((r) => r.decision.decision_id)).toEqual(['k0', 'k1', 'k2', 'k3', 'k5']);
+  });
+
+  it('does not duplicate a row the cap already included', () => {
+    const rows = ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: '1'.repeat(32) });
+    expect(rows).toHaveLength(4);
+    expect(rows.filter((r) => r.decision.decision_id === 'k1')).toHaveLength(1);
+  });
+
+  it('is a no-op for a trace no decision carries', () => {
+    const rows = ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: 'f'.repeat(32) });
+    expect(rows).toHaveLength(4);
+  });
+
+  it('ignores null/empty, so "nothing open" is not a lookup', () => {
+    expect(ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: null })).toHaveLength(4);
+    expect(ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: '' })).toHaveLength(4);
+  });
+
+  it('still respects max <= 0 — a kept row does not resurrect an emptied strip', () => {
+    // The cap is the caller saying "render nothing"; keepTraceId is "do not let
+    // the cap hide THIS one". The first is not a rounding error for the second.
+    expect(
+      ledgerRows(six, 0, { now: NOW, origin: ORIGIN, keepTraceId: '5'.repeat(32) }),
+    ).toEqual([]);
+  });
+});
+
+describe('hasDecisionForTrace', () => {
+  const d = decision({ decision_id: 'h1', trace_id: 'a'.repeat(32) });
+
+  it('is true when a decision carries that trace', () => {
+    expect(hasDecisionForTrace([d], 'a'.repeat(32))).toBe(true);
+  });
+
+  it('is false for a trace nothing carries', () => {
+    expect(hasDecisionForTrace([d], 'b'.repeat(32))).toBe(false);
+  });
+
+  it('is false for a null/empty trace, and never throws on a ragged list', () => {
+    expect(hasDecisionForTrace([d], null)).toBe(false);
+    expect(hasDecisionForTrace([d], '')).toBe(false);
+    expect(hasDecisionForTrace([null, undefined, d], 'a'.repeat(32))).toBe(true);
+    expect(hasDecisionForTrace(null, 'a'.repeat(32))).toBe(false);
+  });
+
+  it('does NOT apply the deep-link shape gate — "is it here" is not "can it open"', () => {
+    // A doc holding a malformed trace_id is still a doc that is here. Conflating
+    // the two questions would pin a record above the desk for a row that is
+    // sitting right there in the list, inert.
+    const junk = decision({ decision_id: 'h2', trace_id: 'NOT-A-TRACE' });
+    expect(hasDecisionForTrace([junk], 'NOT-A-TRACE')).toBe(true);
+  });
+});
+
+describe('ledgerTotal', () => {
+  it('counts every non-null decision, uncapped', () => {
+    const many = Array.from({ length: 9 }, (_, i) => decision({ decision_id: `t${i}` }));
+    expect(ledgerTotal(many)).toBe(9);
+  });
+
+  it('skips null elements exactly as ledgerRows does', () => {
+    const d = decision({ decision_id: 't1' });
+    expect(ledgerTotal([null, d, undefined])).toBe(1);
+  });
+
+  it('is 0 for a null/undefined/empty list', () => {
+    expect(ledgerTotal(null)).toBe(0);
+    expect(ledgerTotal(undefined)).toBe(0);
+    expect(ledgerTotal([])).toBe(0);
   });
 });

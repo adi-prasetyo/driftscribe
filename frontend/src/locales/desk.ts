@@ -68,6 +68,10 @@ export const desk = {
     // have succeeded with the response lost. Saying "failed" here would be a
     // second false claim in the opposite direction (ds-2mc).
     'desk.ledger.unconfirmedTitle': 'You approved · outcome unconfirmed',
+    // One-way: the strip opens to the whole snapshot and does not re-collapse.
+    // `n` is every decision the snapshot holds, not the number still hidden —
+    // "Show all 12" says what you will get; "Show 8 more" makes you do the sum.
+    'desk.ledger.showMore': 'Show all {n}',
     // DecisionRecord (ds-jns PR 2) — one decision opened on the desk: the
     // ledger row's accordion body, and the pinned card a bare `?reasoning=`
     // link lands on. Both lines are quiet statements of fact, not errors —
@@ -233,6 +237,7 @@ export const desk = {
     'desk.ledger.openTitle': 'あなたの承認待ち',
     'desk.ledger.failedTitle': 'あなたが承認 → 適用されず',
     'desk.ledger.unconfirmedTitle': 'あなたが承認 → 結果は未確認',
+    'desk.ledger.showMore': '{n}件すべて表示',
     'desk.record.incomplete': 'このトレースには判断の記録が紐づいていません。',
     'desk.record.outOfWindow': 'この判断は、下の一覧より古い記録です。',
     // ---- unresolved rollback outcome (desk rule 2.5) ----

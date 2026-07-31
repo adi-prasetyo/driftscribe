@@ -18,20 +18,66 @@
    * should ever fire the stamp-in animation (SealStamp's own header comment).
    */
   import { t, locale, type TranslateFn } from '../lib/i18n';
-  import { ledgerRows, type LedgerRow, type LedgerState } from '../lib/ledger';
+  import { ledgerRows, ledgerTotal, type LedgerRow, type LedgerState } from '../lib/ledger';
   import { fmtClock, decisionActionLabel } from '../lib/format';
+  import { isReplayableTraceId } from '../lib/deeplink';
+  import type { TraceCache } from '../lib/traceCache';
   import type { Decision } from '../lib/types';
+  import DecisionRecord from './DecisionRecord.svelte';
   import SealStamp from './SealStamp.svelte';
 
   let {
     decisions,
     max,
+    recordTraceId = null,
+    cache = null,
+    onRecordChange = null,
   }: {
     decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
     max?: number;
+    /** The one open record, owned by App and passed down through ApprovalDesk
+     *  (ds-jns). At most one row is open because there is only one id to be
+     *  open — exclusivity is structural here, not bookkeeping this component
+     *  has to keep right. */
+    recordTraceId?: string | null;
+    cache?: TraceCache | null;
+    /** Ask App to open (`traceId`) or close (`null`) a record. Omitted →
+     *  every row renders inert, exactly as it did before this existed. */
+    onRecordChange?: ((traceId: string | null) => void) | null;
   } = $props();
 
-  const rows = $derived(ledgerRows(decisions, max));
+  // One-way, deliberately: "show more" reveals the rest of the snapshot and
+  // there is no "show less". Re-capping could hide a row whose record is open —
+  // `keepTraceId` would rescue it, but the honest simplification is not to
+  // create the situation.
+  let showAll = $state(false);
+  const total = $derived(ledgerTotal(decisions));
+  const rows = $derived(
+    ledgerRows(decisions, showAll ? Number.MAX_SAFE_INTEGER : (max as number), {
+      keepTraceId: recordTraceId,
+    }),
+  );
+
+  /** The trace this row can open a record for, or null for no affordance at all.
+   *
+   *  `Decision.trace_id` is optional and the docs are an open shape, so a row
+   *  can carry nothing, or carry junk. Gated on `isReplayableTraceId` — the
+   *  SAME rule the `?reasoning=` parser applies (lib/deeplink) — because
+   *  opening a record writes that param: a laxer gate here would produce a row
+   *  that opens once and then fails to restore on reload or share, which is
+   *  the drift `isReplayableTraceId` was exported to prevent.
+   *
+   *  Null means the row renders as plain text. Never a disabled control: the
+   *  strip is a record, and a greyed-out button on a row whose reasoning was
+   *  never captured advertises something that does not exist. */
+  function openableTrace(row: LedgerRow): string | null {
+    if (onRecordChange === null || cache === null) return null;
+    return isReplayableTraceId(row.decision.trace_id) ? row.decision.trace_id : null;
+  }
+
+  function toggle(traceId: string): void {
+    onRecordChange?.(traceId === recordTraceId ? null : traceId);
+  }
 
   // Decorative next to a text title — aria-hidden on the glyph span itself
   // (below) keeps a screen reader from reading raw punctuation aloud.
@@ -61,33 +107,62 @@
   }
 </script>
 
+<!-- The row's four cells, written once and rendered into either shell below.
+     Which shell a row gets is the whole affordance decision, so the cells must
+     not be able to differ between them. -->
+{#snippet cells(row: LedgerRow)}
+  <span class="ledger-strip__time">{fmtClock(row.decision.created_at ?? '', $locale)}</span>
+  <span class="ledger-strip__glyph ledger-strip__glyph--{row.state}" aria-hidden="true"
+    >{GLYPH[row.state]}</span
+  >
+  <span class="ledger-strip__title">
+    {titleFor(row, $t)}
+    {#if subtitleFor(row) !== undefined}
+      <small>{subtitleFor(row)}</small>
+    {/if}
+  </span>
+  {#if row.state === 'applied'}
+    <SealStamp size="sm" />
+  {:else}
+    <span></span>
+  {/if}
+{/snippet}
+
 {#if rows.length > 0}
   <div class="ledger-strip" data-testid="ledger-strip">
     <div class="ledger-strip__heading">{$t('desk.ledger.heading')}</div>
     <div class="ledger-strip__rows">
       {#each rows as row (row.decision.decision_id)}
-        <div
-          class="ledger-strip__row"
-          data-testid="ledger-strip-row"
-          data-state={row.state}
-        >
-          <span class="ledger-strip__time">{fmtClock(row.decision.created_at ?? '', $locale)}</span>
-          <span class="ledger-strip__glyph ledger-strip__glyph--{row.state}" aria-hidden="true"
-            >{GLYPH[row.state]}</span
+        {@const traceId = openableTrace(row)}
+        {#if traceId !== null}
+          <button
+            type="button"
+            class="ledger-strip__row ledger-strip__row--open"
+            data-testid="ledger-strip-row"
+            data-state={row.state}
+            aria-expanded={traceId === recordTraceId}
+            onclick={() => toggle(traceId)}
           >
-          <span class="ledger-strip__title">
-            {titleFor(row, $t)}
-            {#if subtitleFor(row) !== undefined}
-              <small>{subtitleFor(row)}</small>
-            {/if}
-          </span>
-          {#if row.state === 'applied'}
-            <SealStamp size="sm" />
-          {:else}
-            <span></span>
-          {/if}
-        </div>
+            {@render cells(row)}
+          </button>
+        {:else}
+          <div class="ledger-strip__row" data-testid="ledger-strip-row" data-state={row.state}>
+            {@render cells(row)}
+          </div>
+        {/if}
+        {#if traceId !== null && traceId === recordTraceId && cache !== null}
+          <div class="ledger-strip__record">
+            <DecisionRecord {traceId} {cache} decision={row.decision} />
+          </div>
+        {/if}
       {/each}
+      {#if total > rows.length}
+        <button
+          type="button"
+          class="ledger-strip__more"
+          data-testid="ledger-show-more"
+          onclick={() => (showAll = true)}>{$t('desk.ledger.showMore', { n: total })}</button>
+      {/if}
     </div>
   </div>
 {/if}
@@ -126,6 +201,66 @@
   }
   .ledger-strip__row:last-child {
     border-bottom: 0;
+  }
+
+  /* The interactive shell. Only the button chrome is reset here — everything
+     that positions the row (grid, padding, font-size, baseline alignment)
+     stays in the base rule above, so the two shells cannot drift apart.
+     `border-bottom` is restated because `border: 0` had to clear the UA's;
+     `.ledger-strip__row:last-child` still wins over it on specificity (0,2,0
+     vs 0,1,0), so a trailing open row still loses its rule as before. */
+  .ledger-strip__row--open {
+    appearance: none;
+    width: 100%;
+    margin: 0;
+    border: 0;
+    border-bottom: 1px solid var(--ds-border);
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--ds-dur-fast) var(--ds-ease);
+  }
+  .ledger-strip__row--open:hover {
+    background: var(--ds-surface);
+  }
+  .ledger-strip__row--open:focus-visible {
+    outline: none;
+    box-shadow: var(--ds-ring);
+    border-radius: var(--ds-radius-sm);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ledger-strip__row--open {
+      transition: none;
+    }
+  }
+
+  .ledger-strip__record {
+    padding: var(--ds-sp-4) 0;
+    border-bottom: 1px solid var(--ds-border);
+  }
+
+  .ledger-strip__more {
+    appearance: none;
+    display: block;
+    margin: 12px 0 0;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11.5px;
+    color: var(--ds-fg-soft);
+    text-decoration: underline;
+  }
+  .ledger-strip__more:hover {
+    color: var(--ds-fg);
+  }
+  .ledger-strip__more:focus-visible {
+    outline: none;
+    box-shadow: var(--ds-ring);
+    border-radius: var(--ds-radius-sm);
   }
 
   /* The timestamp is the ledger's whole point — WHEN each decision happened —

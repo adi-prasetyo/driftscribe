@@ -106,33 +106,56 @@ describe('viewFromSearch', () => {
     expect(viewFromSearch('?view=desk')).toBe('desk');
   });
 
-  it('every chat intent forces chat, beating an explicit view param', () => {
-    for (const q of ['?reasoning=' + HEX32, '?conversation=' + CONV, '?ask_pr=42', '?preview_pr=42'])
-      expect(viewFromSearch('?view=desk&' + q.slice(1))).toBe('chat');
+  // ds-jns — the five-row destination matrix. The param no longer decides the
+  // view on its own: `reasoning` means "expand this message" inside a
+  // conversation and "open this record" without one, and the desk renders the
+  // second. The old suite asserted all four params force chat; that was the
+  // behaviour this design set out to change, so this is a rewrite, not an edit.
+  it('a conversation goes to chat, beating an explicit view param', () => {
+    expect(viewFromSearch('?view=desk&conversation=' + CONV)).toBe('chat');
   });
 
-  // A malformed reasoning/conversation value is NOT a chat intent: those params
-  // are validated by reasoningTraceFromSearch/conversationIdFromSearch, and junk
-  // that those reject (e.g. path traversal) carries no real "resume this" signal.
-  it('a malformed reasoning/conversation value does not force chat', () => {
-    expect(viewFromSearch('?view=desk&reasoning=not-a-trace-id')).toBe('desk');
+  it('a conversation + reasoning goes to chat — the reasoning frames the thread', () => {
+    expect(viewFromSearch(`?view=desk&conversation=${CONV}&reasoning=${HEX32}`)).toBe('chat');
+  });
+
+  it('ask_pr goes to chat — it is a composer prefill', () => {
+    expect(viewFromSearch('?view=desk&ask_pr=42')).toBe('chat');
+  });
+
+  it('a BARE reasoning goes to the desk — that is where a decision record opens', () => {
+    expect(viewFromSearch('?reasoning=' + HEX32)).toBe('desk');
+    // ...and an explicit ?view=chat still wins, so the replay links this app
+    // wrote before the fork keep resolving to the replay.
+    expect(viewFromSearch('?view=chat&reasoning=' + HEX32)).toBe('chat');
+  });
+
+  it('preview_pr goes to the desk — the estate lives there', () => {
+    expect(viewFromSearch('?preview_pr=42')).toBe('desk');
+    expect(viewFromSearch('?view=desk&preview_pr=0')).toBe('desk');
+  });
+
+  // A malformed conversation value is NOT a chat intent: the param is validated
+  // by conversationIdFromSearch, and junk it rejects (e.g. path traversal)
+  // carries no real "resume this" signal.
+  it('a malformed conversation value does not force chat', () => {
     expect(viewFromSearch('?view=desk&conversation=../../etc/passwd')).toBe('desk');
+    // And a malformed conversation cannot promote a bare reasoning into one.
+    expect(viewFromSearch(`?conversation=../x&reasoning=${HEX32}`)).toBe('desk');
   });
 
-  // ask_pr / preview_pr are read as raw truthiness, unlike reasoning/conversation.
-  // A malformed value (e.g. "?ask_pr=abc") still means the visitor arrived from
-  // the approval page on an errand — landing them on the desk would silently
-  // swallow that intent, even though the real parser would reject the value.
-  it('an invalid or zero ask_pr/preview_pr value still forces chat (any non-empty value counts)', () => {
+  // ask_pr is read as raw truthiness, unlike conversation. A malformed value
+  // (e.g. "?ask_pr=abc") still means the visitor arrived from the approval page
+  // on an errand — landing them on the desk would silently swallow that intent,
+  // even though the real parser would reject the value.
+  it('an invalid or zero ask_pr value still forces chat (any non-empty value counts)', () => {
     expect(viewFromSearch('?view=desk&ask_pr=abc')).toBe('chat');
     expect(viewFromSearch('?view=desk&ask_pr=0')).toBe('chat');
-    expect(viewFromSearch('?view=desk&preview_pr=0')).toBe('chat');
   });
 
   // An empty-string value is falsy, so it does NOT count as intent — this mirrors
   // "the param is absent" rather than "the param names something".
-  it('an empty ask_pr/preview_pr value does not force chat', () => {
+  it('an empty ask_pr value does not force chat', () => {
     expect(viewFromSearch('?view=desk&ask_pr=')).toBe('desk');
-    expect(viewFromSearch('?view=desk&preview_pr=')).toBe('desk');
   });
 });

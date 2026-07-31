@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import LedgerStrip from '../../src/components/LedgerStrip.svelte';
 import { setLocale } from '../../src/lib/i18n';
+import { createTraceCache } from '../../src/lib/traceCache';
 import * as format from '../../src/lib/format';
 import type { Decision } from '../../src/lib/types';
 
@@ -168,6 +169,156 @@ describe('LedgerStrip', () => {
       expect(spy).toHaveBeenCalledWith('2026-07-28T09:15:00Z', 'ja');
 
       spy.mockRestore();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-jns — the strip became an accordion. A row opens the decision record for
+// its own trace, in place, on the page that lists it.
+//
+// Exclusivity is NOT tested as bookkeeping this component performs: there is
+// one `recordTraceId` prop and App owns it, so "at most one open" is a property
+// of the shape. What IS tested is that the component asks for the right
+// transitions and renders exactly the row that id names.
+// ---------------------------------------------------------------------------
+describe('LedgerStrip — decision records', () => {
+  const T1 = 'a'.repeat(32);
+  const T2 = 'b'.repeat(32);
+
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  function cache() {
+    return createTraceCache(
+      async () =>
+        new Response(JSON.stringify({ trace_id: T1, events: [], decision: null, complete: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+  }
+
+  function two(): Decision[] {
+    return [
+      decision({ decision_id: 'x1', trace_id: T1, created_at: '2026-07-28T10:00:00Z' }),
+      decision({ decision_id: 'x2', trace_id: T2, created_at: '2026-07-28T09:00:00Z' }),
+    ];
+  }
+
+  it('makes a row with a well-formed trace a button, and asks to open it', async () => {
+    const onRecordChange = vi.fn();
+    const { getAllByTestId } = render(LedgerStrip, {
+      props: { decisions: two(), cache: cache(), recordTraceId: null, onRecordChange },
+    });
+    const rows = getAllByTestId('ledger-strip-row');
+    expect(rows[0].tagName).toBe('BUTTON');
+    expect(rows[0].getAttribute('aria-expanded')).toBe('false');
+    await fireEvent.click(rows[0]);
+    expect(onRecordChange).toHaveBeenCalledWith(T1);
+  });
+
+  it('clicking the OPEN row asks to close it, not to reopen it', async () => {
+    const onRecordChange = vi.fn();
+    const { getAllByTestId } = render(LedgerStrip, {
+      props: { decisions: two(), cache: cache(), recordTraceId: T1, onRecordChange },
+    });
+    await fireEvent.click(getAllByTestId('ledger-strip-row')[0]);
+    expect(onRecordChange).toHaveBeenCalledWith(null);
+  });
+
+  it('renders the record under the named row, and under no other', async () => {
+    const { getAllByTestId, getByTestId } = render(LedgerStrip, {
+      props: { decisions: two(), cache: cache(), recordTraceId: T2, onRecordChange: vi.fn() },
+    });
+    await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
+    expect(getAllByTestId('decision-record')).toHaveLength(1);
+    const rows = getAllByTestId('ledger-strip-row');
+    expect(rows[0].getAttribute('aria-expanded')).toBe('false');
+    expect(rows[1].getAttribute('aria-expanded')).toBe('true');
+  });
+
+  describe('affordance gating — a row that cannot open one gets no control', () => {
+    // Decision.trace_id is optional on an open shape, and the record's URL is a
+    // `?reasoning=` param — so the gate is isReplayableTraceId, the very rule
+    // the deep-link parser applies. A laxer one here produces a row that opens
+    // once and then fails to restore on reload (lib/deeplink's own warning).
+    for (const [name, trace_id] of [
+      ['no trace_id at all', undefined],
+      ['an empty trace_id', ''],
+      ['a short trace_id', 'abc123'],
+      ['uppercase hex (the parser is case-sensitive)', 'A'.repeat(32)],
+      ['33 hex chars', 'a'.repeat(33)],
+    ] as const) {
+      it(`renders plain text for ${name}`, () => {
+        const d = decision({ decision_id: 'g1', ...(trace_id === undefined ? {} : { trace_id }) });
+        const { getByTestId } = render(LedgerStrip, {
+          props: { decisions: [d], cache: cache(), recordTraceId: null, onRecordChange: vi.fn() },
+        });
+        const row = getByTestId('ledger-strip-row');
+        expect(row.tagName).not.toBe('BUTTON');
+        expect(row.getAttribute('aria-expanded')).toBeNull();
+      });
+    }
+
+    it('renders plain rows when no handler is wired, rather than dead buttons', () => {
+      const { getAllByTestId } = render(LedgerStrip, { props: { decisions: two() } });
+      for (const row of getAllByTestId('ledger-strip-row')) expect(row.tagName).not.toBe('BUTTON');
+    });
+
+    it('renders plain rows when a handler exists but no cache does', () => {
+      // A button here would open a record with nothing to load it.
+      const { getAllByTestId } = render(LedgerStrip, {
+        props: { decisions: two(), onRecordChange: vi.fn() },
+      });
+      for (const row of getAllByTestId('ledger-strip-row')) expect(row.tagName).not.toBe('BUTTON');
+    });
+  });
+
+  describe('show more', () => {
+    const six = () =>
+      Array.from({ length: 6 }, (_, i) =>
+        decision({ decision_id: `s${i}`, created_at: `2026-07-28T0${i}:00:00Z` }),
+      );
+
+    it('names the whole total, and reveals every row when pressed', async () => {
+      const { getByTestId, getAllByTestId, queryByTestId } = render(LedgerStrip, {
+        props: { decisions: six() },
+      });
+      expect(getAllByTestId('ledger-strip-row')).toHaveLength(4);
+      expect(getByTestId('ledger-show-more').textContent).toContain('6');
+      await fireEvent.click(getByTestId('ledger-show-more'));
+      expect(getAllByTestId('ledger-strip-row')).toHaveLength(6);
+      // One-way: nothing offers to re-hide them.
+      expect(queryByTestId('ledger-show-more')).toBeNull();
+    });
+
+    it('is absent when the cap already shows everything', () => {
+      const { queryByTestId } = render(LedgerStrip, { props: { decisions: two() } });
+      expect(queryByTestId('ledger-show-more')).toBeNull();
+    });
+
+    it('is absent when an explicit max already shows everything', () => {
+      const { queryByTestId } = render(LedgerStrip, { props: { decisions: six(), max: 6 } });
+      expect(queryByTestId('ledger-show-more')).toBeNull();
+    });
+
+    it('does not count a kept out-of-cap row as more to show', () => {
+      // The open record's row is appended past the cap (ledgerRows keepTraceId),
+      // so 5 rows render out of 6. The control must still offer the sixth.
+      // s0 is the OLDEST (00:00) and the strip is newest-first, so it is the
+      // one the 4-row cap drops — the premise this test needs. Pinning the
+      // newest instead would leave the cap doing nothing and the assertion
+      // below passing for the wrong reason.
+      const decisions = six();
+      decisions[0].trace_id = T1;
+      const { getAllByTestId, getByTestId } = render(LedgerStrip, {
+        props: { decisions, cache: cache(), recordTraceId: T1, onRecordChange: vi.fn() },
+      });
+      const ids = getAllByTestId('ledger-strip-row').map((r) => r.textContent);
+      expect(ids).toHaveLength(5);
+      expect(getByTestId('ledger-show-more')).toBeTruthy();
     });
   });
 });

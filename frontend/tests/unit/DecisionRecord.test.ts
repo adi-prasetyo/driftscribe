@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import DecisionRecord from '../../src/components/DecisionRecord.svelte';
 import { createTraceCache } from '../../src/lib/traceCache';
@@ -14,6 +14,12 @@ import type { Decision, TraceResponse } from '../../src/lib/types';
 // tests drive a real cache with a mocked `call` for that reason.
 
 afterEach(cleanup);
+
+// jsdom has no layout, so it implements no scrollIntoView — the record calls it
+// on every open. Same stub as TourCard.test.ts / ApprovalDesk.test.ts.
+beforeEach(() => {
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
+});
 
 const TID = 'a'.repeat(32);
 
@@ -65,6 +71,11 @@ describe('DecisionRecord — opening IS mounting', () => {
     await waitFor(() =>
       expect(getByTestId('trace-row-thought').textContent).toContain('Reading the service'),
     );
+  });
+
+  it('scrolls itself into view, because the row that opened it can be off-screen', () => {
+    mount();
+    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
   });
 
   it('offers TraceDetail’s retry, wired to the cache', async () => {

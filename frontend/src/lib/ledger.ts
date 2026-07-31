@@ -110,11 +110,20 @@ function classify(
  * changes whether the returned href carries a `?lang=ja` suffix, never
  * null-vs-non-null, and this module discards the href anyway (it only needs
  * the actionability verdict), so there is nothing here for `locale` to affect.
+ *
+ * `opts.keepTraceId` (ds-jns) never hides the row whose decision record the
+ * operator currently has OPEN: if it falls outside the cap it is appended.
+ * Same rule and the same reason as rail.ts's `capRailItems`, and the desk
+ * depends on it for more than tidiness — App pins an out-of-window record
+ * ABOVE the desk whenever no ledger row carries its trace, so a record that
+ * the cap alone could hide would render twice the moment "show more" revealed
+ * its row. With this, "in the decisions snapshot" and "has a ledger row" are
+ * the same question, and `hasDecisionForTrace` below is what App asks it with.
  */
 export function ledgerRows(
   decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
   max: number = DEFAULT_MAX,
-  opts?: { now?: number; origin?: string },
+  opts?: { now?: number; origin?: string; keepTraceId?: string | null },
 ): LedgerRow[] {
   const now = opts?.now ?? Date.now();
   const origin = opts?.origin;
@@ -148,5 +157,48 @@ export function ledgerRows(
     return b.ts - a.ts;
   });
 
-  return rows.slice(0, cap);
+  const capped = rows.slice(0, cap);
+  const keep = opts?.keepTraceId;
+  if (typeof keep === 'string' && keep !== '' && !capped.some((r) => r.decision.trace_id === keep)) {
+    // Appended, not spliced into date order: it is out of the window the cap
+    // describes, and pretending otherwise would put an older row above a newer
+    // one with nothing on screen explaining why.
+    const kept = rows.find((r) => r.decision.trace_id === keep);
+    if (kept) capped.push(kept);
+  }
+  return capped;
+}
+
+/**
+ * Is there a decision in this snapshot carrying `traceId`? The question
+ * `ledgerRows`' `keepTraceId` makes answerable on the caller's side: because a
+ * kept row survives the cap, "the snapshot has it" and "the strip renders it"
+ * are equivalent, so App can decide whether to pin an out-of-window record
+ * without knowing anything about the strip's cap or its "show more" state.
+ *
+ * Deliberately NOT gated on `isReplayableTraceId`: this answers "is it here",
+ * and a decision doc holding a malformed trace_id would still be here. The
+ * affordance gate is a separate question, asked separately (LedgerStrip).
+ */
+export function hasDecisionForTrace(
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
+  traceId: string | null | undefined,
+): boolean {
+  if (!traceId) return false;
+  return (decisions ?? []).some((d) => d != null && d.trace_id === traceId);
+}
+
+/**
+ * How many rows `ledgerRows` would classify with no cap — i.e. how many
+ * decisions the snapshot actually holds. The strip's "show more" control gates
+ * on `total > rendered`, and computing it here rather than in the component
+ * keeps "what counts as a row" (skip null elements, and nothing else) in the
+ * one module that decides it.
+ */
+export function ledgerTotal(
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
+): number {
+  let n = 0;
+  for (const d of decisions ?? []) if (d != null) n++;
+  return n;
 }

@@ -21,6 +21,7 @@
   import type { Decision } from '../lib/types';
   import { crewName } from '../lib/workloads';
   import { decisionActionLabel, fmtWhen } from '../lib/format';
+  import { prefersReducedMotion } from '../lib/motion';
   import { t, locale } from '../lib/i18n';
   import CrewGlyph from './CrewGlyph.svelte';
   import TraceDetail from './TraceDetail.svelte';
@@ -101,9 +102,24 @@
   $effect(() => {
     void cache.ensure(traceId);
   });
+
+  // Mount = open here too, and an opened record is frequently off-screen: the
+  // ledger row that opens it can be the fourth of four, and the desk's pending
+  // hero sits a full viewport above the strip. Unconditional because every
+  // mount of this component IS an operator asking to see this record — there is
+  // no passive one to protect.
+  let el = $state<HTMLElement | null>(null);
+  $effect(() => {
+    // `traceId` is read for its dependency, not its value: App's pinned record
+    // keeps ONE element across a re-target (a second deep link, a different
+    // ledger row while the pin is up), so without it a newly opened record
+    // would silently stay off-screen.
+    void traceId;
+    el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'nearest' });
+  });
 </script>
 
-<article class="record" data-testid="decision-record">
+<article class="record" data-testid="decision-record" bind:this={el}>
   {#if note === 'outOfWindow'}
     <p class="record__note" data-testid="decision-record-outofwindow">
       {$t('desk.record.outOfWindow')}

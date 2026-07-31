@@ -21,6 +21,7 @@
   import { resourceCards, scopeTotals, type InfraGraph, type PendingApproval } from '../lib/infra_graph';
   import { fmtWhen } from '../lib/format';
   import { notifyFailed } from '../lib/approval';
+  import type { TraceCache } from '../lib/traceCache';
   import type { Decision } from '../lib/types';
   import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
   import LedgerStrip from './LedgerStrip.svelte';
@@ -35,7 +36,9 @@
     degraded = false,
     lastError = null,
     onShowEstate,
-    onOpenTrace,
+    recordTraceId = null,
+    cache = null,
+    onRecordChange = null,
     refresh,
   }: {
     graph: InfraGraph | null;
@@ -58,11 +61,17 @@
      *  merge there is exactly one destination and it is a section of this same
      *  page, so App scrolls (and moves focus) rather than navigating. */
     onShowEstate: () => void;
-    /** Opens a past reasoning timeline (App.svelte's openTrace — it switches
-     *  to the chat view and syncs `?reasoning=`). Optional: when omitted the
+    /** The one open decision record, owned by App (ds-jns). Threaded through to
+     *  LedgerStrip, which App cannot reach — the desk mounts it. */
+    recordTraceId?: string | null;
+    cache?: TraceCache | null;
+    /** Open (`traceId`) or close (`null`) a decision record. Replaces the
+     *  former `onOpenTrace`: a decision opens HERE now, on the page that lists
+     *  it, instead of bouncing the operator into the chat view's replay mode.
+     *  Optional for the same reason its predecessor was — when omitted the
      *  pending card's "view the reasoning" link is not rendered at all, rather
      *  than rendered inert. */
-    onOpenTrace?: (traceId: string) => void;
+    onRecordChange?: ((traceId: string | null) => void) | null;
     /** overviewStore.refresh, threaded in so the return-ladder below (fast
      *  convergence after an approval) can ask the ALREADY-OWNED store to
      *  refetch sooner — this component still performs no fetch of its own.
@@ -129,8 +138,13 @@
   // replay-able trace id AND a handler exists — never as a disabled affordance,
   // and never with the mockup's "(N steps)" count, which the desk has no way to
   // know without fetching the trace it is offering to open.
+  //
+  // ds-jns: it opens the record on THIS page rather than switching views. The
+  // hero's decision is a decision in the ledger below it, so the record it
+  // opens is the ledger row's — one door, and the operator keeps the pending
+  // card they were reading.
   function openReasoning(traceId: string): void {
-    onOpenTrace?.(traceId);
+    onRecordChange?.(traceId);
   }
 
   // Stamped decay: when `model` is 'stamped', schedule exactly one timer to
@@ -418,7 +432,7 @@
              otherwise a title, a PR number and two buttons — the page's
              highest-stakes CTA carrying its least evidence. A button, not an
              anchor: openTrace is client-side view state, not a navigation. -->
-        {#if model.traceId && onOpenTrace}
+        {#if model.traceId && onRecordChange}
           {@const traceId = model.traceId}
           <p class="approval-desk__why">
             <button
@@ -495,7 +509,7 @@
     {/if}
   </div>
 
-  <LedgerStrip {decisions} />
+  <LedgerStrip {decisions} {recordTraceId} {cache} {onRecordChange} />
 </section>
 
 <style>
