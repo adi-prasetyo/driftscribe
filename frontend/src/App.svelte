@@ -70,6 +70,7 @@
   import { createOverviewStore, NO_DECISIONS_YET } from './lib/overviewStore';
   import { createTraceCache } from './lib/traceCache';
   import { hasDecisionForTrace } from './lib/ledger';
+  import { turnOwnsReasoning } from './lib/conversations';
   import { prefersReducedMotion } from './lib/motion';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -1065,7 +1066,9 @@
         // replay fallback.
         if (
           autoExpandTraceId !== null &&
-          !conversationTurns.some((t) => t.trace_id === autoExpandTraceId)
+          !conversationTurns.some(
+            (t) => t.trace_id === autoExpandTraceId && turnOwnsReasoning(t),
+          )
         ) {
           autoExpandTraceId = null;
           syncReasoningParam(null);

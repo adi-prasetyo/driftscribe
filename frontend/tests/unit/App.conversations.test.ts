@@ -951,6 +951,51 @@ describe('App — ?conversation boot deep-link', () => {
     }
   });
 
+  // A `trace_id` alone does not make a turn the one a `?reasoning=` names. The
+  // thread mounts a disclosure only on a CREW bubble — a user turn carries the
+  // trace of the run it started, and a declined handoff records a transition
+  // trace with no crew response after it. Both are normal persisted shapes, and
+  // both left the URL claiming a message that renders nothing to open.
+  for (const [name, turn] of [
+    [
+      'a declined-handoff transition',
+      { seq: 1, role: 'handoff_declined', text: 'not my area', workload: 'drift' },
+    ],
+    ['a user turn', { seq: 1, role: 'user', text: 'what changed?', workload: 'drift' }],
+  ] as const) {
+    it(`drops ?reasoning= when the only matching turn is ${name}`, async () => {
+      const T = 'f'.repeat(32);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url.includes('/trace/')) return okJson({ trace_id: T, complete: true, events: [] });
+          if (url.includes('/conversations/'))
+            return okJson({
+              conversation_id: 'c1',
+              workload: 'drift',
+              title: 'prior chat',
+              turns: [{ ...turn, trace_id: T, handoff: { from: 'drift', to: 'provision' } }],
+            });
+          if (url.includes('/conversations')) return okJson({ conversations: [] });
+          if (url.includes('/decisions')) return okJson({ decisions: [] });
+          if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+          if (url.includes('/infra/graph')) return okJson(GRAPH);
+          return okJson({});
+        }),
+      );
+      history.replaceState(null, '', `/?conversation=c1&reasoning=${T}`);
+      const { findByTestId, queryByTestId } = render(App);
+      await findByTestId('conversation-thread');
+      await waitFor(() =>
+        expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull(),
+      );
+      expect(new URLSearchParams(window.location.search).get('conversation')).toBe('c1');
+      // The row renders — it is a real turn — but it mounts no disclosure.
+      expect(queryByTestId('reasoning-disclosure')).toBeNull();
+    });
+  }
+
   it('clears ?conversation but still opens the ?reasoning replay when the boot conversation 404s', async () => {
     vi.stubGlobal(
       'fetch',

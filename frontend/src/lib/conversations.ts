@@ -7,7 +7,7 @@
 // i18n: buckets are returned as SEMANTIC IDS, not rendered labels — this module
 // stays locale-free. ConversationsRail.svelte maps id → `$t('conversations.bucket.<id>')`.
 
-import type { Conversation } from './types';
+import type { Conversation, ConversationTurn } from './types';
 import { normalizeForSearch } from './format';
 import { crewName } from './workloads';
 
@@ -112,4 +112,33 @@ export function groupConversations(
   return order
     .filter((label) => (buckets.get(label)?.length ?? 0) > 0)
     .map((label) => ({ label, items: buckets.get(label)! }));
+}
+
+/** Roles the thread renders as a centered TRANSITION rule rather than as
+ *  anybody's message. Server-authored: nobody said them. */
+const TRANSITION_ROLES = ['crew_change', 'handoff_declined'];
+
+/**
+ * Does this turn own a reasoning disclosure — i.e. is it the kind of row
+ * ConversationThread renders as a CREW bubble, the only branch that mounts
+ * one?
+ *
+ * Extracted (ds-jns) because two callers must agree and had drifted: the
+ * thread renders the disclosure, and App decides whether a
+ * `?conversation=&reasoning=` deep link names a message this thread actually
+ * shows — dropping the param when it does not. A `trace_id` is not sufficient
+ * on its own: a USER turn carries the trace of the run it started, and a
+ * declined handoff records a transition trace with no crew response after it.
+ * Matching on the trace alone left the URL claiming a message that renders no
+ * disclosure to open.
+ */
+export function turnOwnsReasoning(
+  turn: ConversationTurn,
+): turn is ConversationTurn & { trace_id: string } {
+  return (
+    typeof turn.trace_id === 'string' &&
+    turn.trace_id !== '' &&
+    turn.role !== 'user' &&
+    !TRANSITION_ROLES.includes(turn.role)
+  );
 }

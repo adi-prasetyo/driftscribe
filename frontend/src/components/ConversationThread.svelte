@@ -9,6 +9,7 @@
   import CrewGlyph from './CrewGlyph.svelte';
   import ReasoningDisclosure from './ReasoningDisclosure.svelte';
   import { crewName } from '../lib/workloads';
+  import { turnOwnsReasoning } from '../lib/conversations';
   import { iacApprovalHref } from '../lib/approval';
   import { t, locale } from '../lib/i18n';
   import type { TraceCache } from '../lib/traceCache';
@@ -48,6 +49,10 @@
   function isTransition(turn: ConversationTurn): boolean {
     return TRANSITION_ROLES.includes(turn.role);
   }
+  // `turnOwnsReasoning` (lib/conversations) is the SAME predicate App uses to
+  // decide whether a `?conversation=&reasoning=` deep link names a message this
+  // thread shows. Shared rather than restated: the two drifted once already,
+  // leaving the URL claiming a message that renders no disclosure to open.
   // Both crews, resolved to display names. Falls back to the row's own
   // workload so a pre-`handoff` row (or a truncated one) still reads sensibly
   // instead of rendering an empty proper noun.
@@ -139,7 +144,7 @@
                  do so: expanding only reads the per-trace cache (a no-op while
                  the stream runs), where the old open-trace button bumped runSeq
                  and dropped the in-flight settle. -->
-            {#if turn.trace_id}
+            {#if turnOwnsReasoning(turn)}
               <ReasoningDisclosure
                 traceId={turn.trace_id}
                 {cache}
