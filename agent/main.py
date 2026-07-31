@@ -1174,7 +1174,14 @@ def _cached_rollback_is_expired(cached: dict) -> bool:
     return when < dt.datetime.now(dt.timezone.utc)
 
 
-_READER_RETRY_DELAYS = (0.5, 1.5)
+_READER_RETRY_DELAYS = (0.5, 1.0)
+
+# Per-attempt read budget. MUST be set explicitly: ``worker_client.call`` has no
+# entry for "reader" in _WORKER_DEFAULT_TIMEOUTS, so it would otherwise inherit
+# the 30s _HTTPX_TIMEOUT and three attempts could burn ~92s. See the sizing
+# argument in _read_with_retry, and the guard in
+# test_the_retry_costs_less_wall_clock_than_the_read_it_replaced.
+_READER_ATTEMPT_TIMEOUT_S = 9.0
 
 
 async def _read_with_retry() -> object:
@@ -1191,15 +1198,34 @@ async def _read_with_retry() -> object:
     for a real drift, silently and indefinitely — the same class of outcome as
     the bug being fixed.
 
-    Bounded on purpose: a Reader that is genuinely down must still fail fast
-    rather than spin inside a background task. Only the READ is retried, never
-    the agent turn, so the cost is two short sleeps against a turn that already
-    took tens of seconds.
+    **Sized so retrying is strictly cheaper than the single call it replaced.**
+    That is the whole budget argument, and it is deliberately conservative
+    rather than merely "bounded". The read this wraps used to be one
+    ``worker_client.call("reader", {})`` inheriting the default 30s timeout;
+    three attempts at that timeout plus sleeps would be ~92s, and this runs
+    inside a request that already spent 20-120s on the agent turn and may still
+    owe the Rollback Worker's /propose — against Cloud Run's 300s request
+    timeout. So each attempt gets 9s and the delays are short: worst case
+    9 + 0.5 + 9 + 1.0 + 9 = 28.5s, under the 30s this replaced. Adding retries
+    therefore cannot push any caller past a deadline it used to make.
+
+    9s per attempt is also enough to survive a Reader COLD START, and a cold
+    start is precisely the transient this is for: attempt 1 may time out while
+    the container boots, and attempt 2 then finds it warm.
+
+    One honest limitation: ``worker_client.call`` is synchronous, so each
+    attempt blocks the event loop for its duration. That is pre-existing — the
+    single call it replaced blocked the same loop for up to 30s — and the
+    budget above strictly reduces the worst case rather than growing it. Moving
+    the call off-loop is a real improvement but a separate one, filed rather
+    than smuggled in here.
     """
     last: Exception | None = None
     for delay in (*_READER_RETRY_DELAYS, None):
         try:
-            return worker_client.call("reader", {})
+            return worker_client.call(
+                "reader", {}, timeout=_READER_ATTEMPT_TIMEOUT_S
+            )
         except Exception as e:  # noqa: BLE001 — re-raised below if all fail
             last = e
             if delay is None:
@@ -2528,10 +2554,17 @@ async def _do_recheck(
         # must not both re-propose and double-mint approvals for one drift.
         stale_id = stale_cached.get("decision_id")
         if not (stale_id and state.evict_cached_decision(event_key, stale_id)):
-            # CAS lost: another request is already repairing this key. Re-read
-            # and hand back its result if it has landed and is itself servable;
-            # otherwise 409 so the caller retries cleanly rather than falling
-            # through to claim an event slot the winner is mid-flight on.
+            # CAS lost: the pointer now names a DIFFERENT decision, so another
+            # request is already repairing this key. Re-read and hand back its
+            # result if it has landed and is itself servable; otherwise 409 so
+            # the caller retries cleanly rather than falling through to claim an
+            # event slot the winner is mid-flight on.
+            #
+            # Note this branch is NOT taken when the pointer is simply absent —
+            # that returns True, because a repair that died after evicting must
+            # stay retryable rather than wedging the key at 409 forever. See
+            # evict_cached_decision's docstring; the property is pinned by
+            # test_a_failed_repair_leaves_the_key_retryable.
             existing = state.find_decision_for_event(event_key)
             if _cached_rollback_needs_ground_truth(existing, observed_env):
                 raise HTTPException(

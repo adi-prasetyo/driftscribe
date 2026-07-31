@@ -404,9 +404,15 @@ class InMemoryStateStore:
         return self._decisions.get(decision_id)
 
     def evict_cached_decision(self, event_key: str, decision_id: str) -> bool:
-        """Compare-and-delete the event doc; True iff decision_id matched."""
+        """Compare-and-delete the event doc. True == the caller may re-propose.
+
+        In-memory parity with the Firestore store — see its docstring for why
+        an ABSENT event doc is a success rather than a failure (ds-q38).
+        """
         record = self._events.get(event_key)
-        if not record or record.get("decision_id") != decision_id:
+        if record is None:
+            return True
+        if record.get("decision_id") != decision_id:
             return False
         self._events.pop(event_key, None)
         return True
@@ -895,12 +901,51 @@ class FirestoreStateStore:
         return snap.to_dict() if snap.exists else None
 
     def evict_cached_decision(self, event_key: str, decision_id: str) -> bool:
-        """Compare-and-delete the event doc transactionally; True iff
-        decision_id matched. Closes Phase 13 Codex W2 carry-over — two
-        concurrent /recheck retries observing the same expired cached
-        rollback would both call release_event under the prior code,
-        letting one re-claim and the other delete that fresh claim. The
-        CAS keeps the loser from clobbering the winner."""
+        """Compare-and-delete the event doc transactionally.
+
+        Returns True when the caller may go on to re-propose — which is NOT
+        the same as "I deleted something". Three cases:
+
+        * pointer names ``decision_id`` -> delete it, True (the ordinary CAS
+          win). Closes Phase 13 Codex W2 carry-over: two concurrent /recheck
+          retries observing the same expired cached rollback would both call
+          ``release_event`` under the pre-Phase-13 code, letting one re-claim
+          and the other delete that fresh claim. The compare keeps the loser
+          from clobbering the winner.
+        * pointer names something ELSE -> False. Someone already installed a
+          replacement; deleting it would clobber a fresh claim.
+        * **pointer ABSENT -> True (ds-q38).** There is nothing to clobber and
+          no claim held, so the caller is free to proceed.
+
+        That third case used to return False, and it is worth being explicit
+        about why that was a bug rather than a nicety, because it only bites
+        in combination with ds-bej:
+
+        1. A run wins the CAS, so the event doc is gone — but the decision doc
+           survives, carrying its ``event_key`` field.
+        2. Anything then fails before a replacement is recorded (the Rollback
+           Worker's /propose, rendering, a GitHub side effect, the
+           ``record_decision`` write itself).
+        3. The next audit's :meth:`find_decision_for_event` misses on the
+           pointer and RESURRECTS the stale row through the ``event_key``
+           recovery query.
+        4. It is correctly judged stale, so the caller tries to evict it — and
+           under the old contract that CAS could never succeed again, because
+           the pointer it compares against no longer exists.
+        5. Every subsequent audit for that key 409s. Forever.
+
+        The wedge lands on exactly the path that REPAIRS a poisoned key, so a
+        single transient worker failure during a repair would have made the
+        damage permanent. Treating "already absent" as success makes the whole
+        sequence retryable instead: a failed repair leaves the key in a state
+        the next delivery can pick up.
+
+        Safety of the relaxation rests on the claim, not on this CAS: minting
+        is gated by ``record_event`` (create-if-absent) downstream on BOTH
+        branches — ``_do_rollback`` claims before calling /propose, and the
+        non-rollback path claims before any side effect. So two runs that both
+        pass here still serialize one step later, and only one can mint.
+        """
         from google.cloud import firestore
 
         doc_ref = self._events.document(event_key)
@@ -909,7 +954,7 @@ class FirestoreStateStore:
         def _txn(transaction, expected_decision_id):
             snap = doc_ref.get(transaction=transaction)
             if not snap.exists:
-                return False
+                return True
             data = snap.to_dict() or {}
             if data.get("decision_id") != expected_decision_id:
                 return False

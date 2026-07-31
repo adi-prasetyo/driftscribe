@@ -9,18 +9,30 @@ state" — a self-inflicted outage of the autonomous lane, with the whole suite
 still green.
 
 So these drive real ``google.genai`` event shapes through the actual
-``_emit_event_logs`` and assert on what lands in the sink. The gate on the
-caller's side (``event.content and event.content.parts and partial is not
-True``) is asserted too, because a response that never passes it never reaches
-this function at all.
+``_emit_event_logs`` and assert on what lands in the sink.
+
+Two layers, because the projection and the plumbing fail differently:
+
+* most tests here call ``_emit_event_logs`` directly, pinning WHAT gets
+  projected out of a reader response (and what deliberately does not);
+* the last two drive real ``run_agent`` with only ADK's ``Runner.run_async``
+  replaced, pinning that the caller loop still forwards the sink at all.
+
+The second layer exists because the first cannot see the outage-shaped
+failure: dropping ``reader_sink=`` from ``run_agent``'s emit call leaves every
+projection test green while production refuses every audit. That was verified
+by injecting exactly that change — 8 green, 1 red.
 """
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from google.adk.runners import Runner
 from google.genai import types
 
-from agent.adk_agent import _emit_event_logs
+from agent.adk_agent import _emit_event_logs, run_agent
 from agent.adk_tools import read_live_env_tool
 
 
@@ -156,13 +168,91 @@ def test_an_empty_revision_is_recorded_as_unknown_not_as_empty() -> None:
     assert sink == [{"env": {"A": "1"}, "revision": None}]
 
 
-def test_the_callers_partial_gate_would_admit_a_tool_response_event() -> None:
-    """``run_agent`` only calls ``_emit_event_logs`` for events satisfying
-    ``content and content.parts and partial is not True``. A tool-response event
-    has content and parts, and ADK leaves ``partial`` unset (None) on it — so
-    the gate admits it. Pinned because a response that never passes the gate
-    never reaches the capture above, and the sink would be empty in production
-    while every other test still passed."""
-    event = _response_event(read_live_env_tool.__name__, _READER_RESPONSE)
-    assert event.content and event.content.parts
-    assert getattr(event, "partial", None) is not True
+async def test_run_agent_itself_forwards_the_sink_through_its_event_loop(
+    drift_workload_env,
+) -> None:
+    """The whole caller loop, not just the projection — Codex round 5.
+
+    Everything above calls ``_emit_event_logs`` directly, which pins the
+    projection but leaves the seam that actually breaks untested: ``run_agent``
+    could stop passing ``reader_sink=``, stop iterating response events, or
+    tighten its ``partial`` gate, and all eight would stay green while
+    production refused EVERY audit with "the agent did not read live state".
+    That is an outage with a green suite, so the loop is exercised end to end
+    here with only the ADK runner replaced.
+
+    This also subsumes the ``partial``-gate assertion this test replaced, which
+    was tautological: it built its own event with ``partial=None`` and then
+    asserted ``partial is not True``. It could never have failed. Driving the
+    real loop tests the gate against events instead of against itself.
+    """
+    proposal_json = json.dumps({
+        "action": "no_op",
+        "env_diffs": [],
+        "target_docs_file": None,
+        "target_docs_section": None,
+        "rationale": "Live configuration matches the contract.",
+        "confidence": 0.95,
+        "requires_human_review": False,
+    })
+
+    reader_event = _response_event(read_live_env_tool.__name__, _READER_RESPONSE)
+    reader_event.is_final_response = lambda: False
+    reader_event.usage_metadata = None
+
+    final_event = SimpleNamespace(
+        content=types.Content(role="model", parts=[types.Part(text=proposal_json)]),
+        partial=None,
+        usage_metadata=None,
+        is_final_response=lambda: True,
+    )
+
+    async def _fake_run_async(self, **_kwargs):
+        yield reader_event
+        yield final_event
+
+    sink: list = []
+    with patch.object(Runner, "run_async", _fake_run_async):
+        proposal = await run_agent(
+            "check for drift", workload="drift", autonomy_mode="propose",
+            reader_sink=sink,
+        )
+
+    assert proposal.action.value == "no_op", "premise: the turn completed"
+    assert sink == [
+        {
+            "env": {"PAYMENT_MODE": "live", "FEATURE_NEW_CHECKOUT": "false"},
+            "revision": "payment-demo-00021-t8k",
+        }
+    ], "run_agent must forward the sink into _emit_event_logs for reader responses"
+
+
+async def test_run_agent_leaves_the_sink_empty_when_the_agent_never_reads(
+    drift_workload_env,
+) -> None:
+    """The other half of the seam, and the one the coherence gate keys on: an
+    agent that answers without consulting live state must produce NO
+    observation, so the caller refuses rather than assuming it looked."""
+    proposal_json = json.dumps({
+        "action": "no_op", "env_diffs": [], "target_docs_file": None,
+        "target_docs_section": None, "rationale": "Nothing to do.",
+        "confidence": 0.9, "requires_human_review": False,
+    })
+    final_event = SimpleNamespace(
+        content=types.Content(role="model", parts=[types.Part(text=proposal_json)]),
+        partial=None,
+        usage_metadata=None,
+        is_final_response=lambda: True,
+    )
+
+    async def _fake_run_async(self, **_kwargs):
+        yield final_event
+
+    sink: list = []
+    with patch.object(Runner, "run_async", _fake_run_async):
+        await run_agent(
+            "check for drift", workload="drift", autonomy_mode="propose",
+            reader_sink=sink,
+        )
+
+    assert sink == []

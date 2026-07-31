@@ -133,18 +133,51 @@ Guarding three of four is how this class of bug ships.
 This half alone neutralises the already-poisoned production row, which is why no
 Firestore surgery is needed.
 
+### (c) A failed repair must stay retryable — `evict_cached_decision`
+
+Added in round 5, because (b) made a new permanent failure reachable on the one
+path that repairs a poisoned key.
+
+`evict_cached_decision` compare-and-deletes the **event pointer**; the decision
+document survives, carrying its `event_key`. If the repairing run then dies
+before recording a replacement — the Rollback Worker's `/propose` 503s, render
+raises, a GitHub side effect fails, the `record_decision` write fails — the next
+audit resurrects the stale row through `find_decision_for_event`'s recovery
+query (ds-bej), correctly judges it stale, and tries to evict it against a
+pointer that **no longer exists**. Under the old contract that CAS could never
+succeed again, so the key 409'd forever.
+
+That is strictly worse than the bug being fixed: a wrong answer becomes *no*
+answer, permanently, and only on the healing path. So an **absent pointer is now
+a success** — there is nothing to clobber and no claim held:
+
+| pointer state | result |
+|---|---|
+| names `decision_id` | delete, True (ordinary CAS win) |
+| names something else | False (a replacement exists; don't clobber it) |
+| **absent** | **True (ds-q38) — a failed repair stays retryable** |
+
+Safety rests on the **claim**, not this CAS: minting is gated by
+`record_event` (create-if-absent) on both branches — `_do_rollback` claims
+before `/propose`, the non-rollback path claims before any side effect. Two runs
+that both pass here still serialize one step later.
+
 ## Scope / non-goals
 
 - **The gate refuses to PERSIST, not to SERVE.** A cache hit returns before it,
   so an already-cached decision can still be served under a key this request did
   not corroborate. That is a stale answer, not a new poisoned row; closing it
   means moving the cache lookup after the gate, which changes ds-b3m's ordering.
-- **ds-bej is NOT fixed here.** `find_decision_for_event`'s recovery fallback
-  (`decisions.where("event_key","==",…)`) means a CAS-evicted pointer still
-  resolves via the field on the decision doc. After (b)'s evict → re-propose the
-  new pointer wins on the primary path, so the demo unblocks; the residual
-  (arbitrary `.limit(1)` with no `order_by` once two rows share a key) stays on
-  ds-bej. Do not quietly widen this PR into that.
+- **ds-bej is still NOT fully fixed here.** (c) removes the permanent *wedge*,
+  which was the blocking half. The resurrection itself remains: the recovery
+  query still returns a row whose pointer was deleted, and once two rows share
+  an `event_key` the arbitrary `.limit(1)` with no `order_by` picks
+  unpredictably. That stays on ds-bej. Do not quietly widen this PR into it.
+- **The reader read still blocks the event loop.** `worker_client.call` is
+  synchronous, so each attempt holds the loop. Pre-existing — the single call it
+  replaced blocked for up to 30s — and the retry budget strictly *reduces* the
+  worst case rather than growing it (28.5s < 30s). Moving it off-loop is a real
+  improvement, filed rather than smuggled in.
 - No change to `_cached_rollback_needs_ground_truth` or the rollback TTL.
 
 ## Tests
@@ -173,8 +206,21 @@ Firestore surgery is needed.
 
 ## What the review changed
 
-Three Codex rounds. Every blocker was accepted; two of them were defects in my
-own fix rather than in the original code.
+Five Codex rounds. Every blocker was accepted; **four of the five were defects
+in my own fix rather than in the original code** — the fix, not the bug, was
+consistently the riskier thing in this change.
+
+- **Round 5 blocker:** deferring the eviction (round 4) made a *permanent* wedge
+  reachable — see (c). Verified by reverting the contract and watching
+  `test_a_failed_repair_leaves_the_key_retryable` fail at its 409 assertion.
+  Also from round 5, both accepted: the retry inherited the 30s default timeout,
+  so three attempts could burn ~92s inside a request that may also spend 120s on
+  the turn and 90s on `/propose`, against Cloud Run's 300s ceiling — now 9s per
+  attempt with a guard pinning the ladder *below* the single call it replaced;
+  and the capture tests all called `_emit_event_logs` directly, so dropping
+  `reader_sink=` from `run_agent` would have refused every production audit with
+  a green suite — now driven through real `run_agent`, verified by injecting
+  exactly that regression (8 green, 1 red).
 
 - **Round 1 blocker:** the first draft compared `proposal.env_diffs`, which
   cannot see a `no_op` with an empty diff list — the bug would have survived its
@@ -212,7 +258,17 @@ own fix rather than in the original code.
 ## Known residuals (not fixed here)
 
 - **ds-bej** — `find_decision_for_event`'s recovery query can resurrect an
-  evicted row; every consumer now declines it, but the row itself persists.
+  evicted row; every consumer now declines it and (c) keeps that from wedging
+  the key, but the row itself persists and the `.limit(1)` tie-break between two
+  rows sharing an `event_key` is still arbitrary.
+- **The reader read blocks the event loop** (`worker_client.call` is sync).
+  Bounded well under the pre-existing worst case, but a slow reader still stalls
+  concurrent SSE chat streams on the same instance.
+- **The concurrency test is sequential and cannot be otherwise.** The
+  lookup→claim window is `await`-free, so no same-process test can interleave
+  it; `test_the_lookup_to_claim_window_contains_no_await` pins that assumption
+  so it cannot rot silently, and the losing branches are forced deterministically
+  instead of raced for.
 - The event key hashes env only. `previous_revisions` (best-effort, and the
   source of rollback candidates) and recent-PR evidence are **not** in it, so a
   transient empty candidate list can cache a `drift_issue` that a later valid

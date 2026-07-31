@@ -31,7 +31,10 @@ precisely because the doubles did not behave like the pipeline.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -610,6 +613,110 @@ def test_a_resurrected_firestore_row_is_still_recognised_as_stale() -> None:
     assert _cached_decision_is_stale(found, _rollback_proposal()) is True
 
 
+def test_a_failed_repair_leaves_the_key_retryable() -> None:
+    """Codex round 5 blocker: a repair that dies mid-flight must not wedge the
+    key permanently.
+
+    This is the ds-bej resurrection followed through to its consequence, on the
+    exact path that repairs the poisoned production row:
+
+    1. Audit A judges the cached ``no_op`` stale and WINS the eviction, so the
+       event pointer is deleted.
+    2. The Rollback Worker's /propose then fails, so A records no replacement.
+       The stale decision doc is still there, still carrying ``event_key``.
+    3. Audit B looks up the key, misses on the pointer, and resurrects the
+       stale row through the ``event_key`` recovery query.
+    4. B judges it stale — correctly — and tries to evict.
+
+    Under the pre-fix contract step 4 compared against a pointer that no longer
+    existed, so it returned False forever and every later audit 409'd. One
+    transient worker blip during a repair would have made the poisoning
+    permanent, which is strictly worse than the bug being fixed: a wrong answer
+    became no answer, on the only path that could have healed it.
+
+    So the property asserted is not "the repair succeeds" — it is "a failed
+    repair leaves the key in a state the NEXT delivery can still pick up".
+    """
+    key = "eventarc-payment-demo-failed-repair"
+    stale = {"decision_id": "cached-noop", "action": "no_op",
+             "event_key": key, "rationale": "No configuration drift is present."}
+
+    state = get_state()
+    state.record_event(key, {"trigger": "eventarc"})
+    state.record_decision("cached-noop", key, dict(stale))
+
+    # Step 3's resurrection: the in-memory store has no recovery query, so the
+    # Firestore-shaped fallback is modelled by answering every lookup with the
+    # stale row — which is precisely what production does once the pointer is
+    # gone but the decision doc survives (test_a_resurrected_firestore_row_...
+    # pins that the store really behaves this way).
+    propose_calls: list[int] = []
+    fail_propose = True
+
+    def dispatch(worker: str, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(_DRIFTED_ENV)
+        if worker == "rollback":
+            propose_calls.append(1)
+            if fail_propose:
+                raise worker_client.WorkerClientError(
+                    503, "rollback worker unavailable", "rollback"
+                )
+            return {
+                "approval_id": "8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c",
+                "approval_token": "t" * 43,
+                "approval_url":
+                    "/approvals/8f14e45f-ceea-467a-9a3c-2b1d5f6a7b8c?t=" + "t" * 43,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            }
+        if worker == "notifier":
+            return {"status": "ok", "channel": "approval", "severity": "high",
+                    "downstream_status": 200}
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._event_key", return_value=key),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+        patch.object(state, "find_decision_for_event", return_value=dict(stale)),
+    ):
+        m_call.side_effect = dispatch
+        first = TestClient(app).post("/recheck")
+
+    assert first.status_code >= 500, (
+        f"premise: the repair must FAIL, got {first.status_code}"
+    )
+    assert propose_calls == [1], "premise: the repair got as far as /propose"
+    # The wedge state, asserted against the REAL store (the patch above is gone
+    # now): the eviction landed so the pointer is deleted, while the stale
+    # decision document itself survives. In Firestore those two facts together
+    # are what the recovery query turns back into a live cache hit; in-memory
+    # has no such query, which is why the resurrection is patched in rather
+    # than expected here.
+    assert state.find_decision_for_event(key) is None, "the pointer was evicted"
+    assert state.get_decision("cached-noop") is not None, "the stale row survives"
+
+    # Step 4: the next delivery, reader healthy and worker recovered. Under the
+    # old contract this 409'd; it must now get through and mint the repair.
+    fail_propose = False
+    with (
+        patch("agent.main._event_key", return_value=key),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+        patch.object(state, "find_decision_for_event", return_value=dict(stale)),
+    ):
+        m_call.side_effect = dispatch
+        second = TestClient(app).post("/recheck")
+
+    assert second.status_code == 200, (
+        "a failed repair must not wedge the key at 409 forever; got "
+        f"{second.status_code}: {second.text}"
+    )
+    assert second.json()["action"] == "rollback"
+    assert second.json()["decision_id"] != "cached-noop"
+    assert propose_calls == [1, 1], "the retry minted exactly one new approval"
+
+
 def test_a_claim_loser_refuses_a_resurrected_noop() -> None:
     """The call-site half of the resurrection story.
 
@@ -641,8 +748,21 @@ async def test_concurrent_contradicted_audits_mint_exactly_one_approval() -> Non
     """The property the deferred CAS exists for: two audits seeing the SAME
     contradicted ``no_op`` must not both re-propose.
 
-    A sequential test makes "exactly one" true for free — only a concurrent one
-    can catch a fall-through that double-mints an approval for a single drift.
+    ⚠️ READ THE LIMIT BEFORE TRUSTING THIS. ``asyncio.gather`` does NOT actually
+    interleave the two runs here, so this is weaker than its name suggests: it
+    proves the two runs compose, not that the CAS wins a race. The reason is the
+    invariant pinned by ``test_the_lookup_to_claim_window_contains_no_await``
+    below — the whole lookup -> gate -> evict-CAS -> claim window is
+    ``await``-free, so the first coroutine runs it to completion before the
+    second is scheduled. Within one event loop that window is atomic BY
+    CONSTRUCTION, and no same-process test can exercise it.
+
+    The genuine cross-INSTANCE race is what Firestore's compare-and-delete and
+    the ``record_event`` claim exist for, and it is covered deterministically by
+    the loser tests (``test_a_claim_loser_refuses_a_resurrected_noop``, the
+    CAS-loser re-read) which force the losing branch instead of hoping to hit
+    it. Kept because "two audits compose without double-minting" is still worth
+    pinning; not kept as evidence that the CAS is race-safe.
     """
     state = get_state()
     key = "eventarc-payment-demo-concurrent"
@@ -696,6 +816,132 @@ async def test_concurrent_contradicted_audits_mint_exactly_one_approval() -> Non
             assert r["decision_id"] != "cached-noop"
         else:
             assert isinstance(r, HTTPException) and r.status_code == 409
+
+
+def test_the_contradicted_cas_loser_never_mints_a_second_approval() -> None:
+    """Forced CAS-loser on the CONTRADICTED path — Codex round 5.
+
+    The concurrency test above cannot reach this branch (the window is
+    ``await``-free, see below), and the existing loser coverage is for EXPIRED
+    ROLLBACKS, which get there by a different predicate: expiry is a property of
+    the cached row alone, while contradiction is proposal-sensitive — the same
+    cached ``no_op`` is stale against a rollback and perfectly servable against
+    a fresh ``no_op``. Testing one does not test the other, so the losing branch
+    is forced directly rather than raced for.
+
+    What must hold when this run loses: it does NOT fall through to mint a
+    second approval for one drift, and it does NOT hand back the contradicted
+    ``no_op`` it just declined.
+    """
+    key = "eventarc-payment-demo-cas-loser"
+    state = get_state()
+    state.record_event(key, {"trigger": "eventarc"})
+    state.record_decision(
+        "cached-noop", key,
+        {"decision_id": "cached-noop", "action": "no_op",
+         "rationale": "No configuration drift is present."},
+    )
+
+    propose_calls: list[int] = []
+
+    def dispatch(worker: str, *a: Any, **k: Any) -> Any:
+        if worker == "reader":
+            return _reader_envelope(_DRIFTED_ENV)
+        if worker == "rollback":
+            propose_calls.append(1)
+            raise AssertionError("the CAS loser must not mint an approval")
+        raise AssertionError(f"unexpected worker call: {worker!r}")
+
+    with (
+        patch("agent.main._event_key", return_value=key),
+        patch("agent.main._run_adk_agent", _adk(_rollback_proposal())),
+        patch("agent.main.worker_client.call") as m_call,
+        # Lose the compare-and-delete: the pointer now names a DIFFERENT
+        # decision, i.e. a concurrent run already installed its replacement.
+        patch.object(state, "evict_cached_decision", return_value=False),
+    ):
+        m_call.side_effect = dispatch
+        r = TestClient(app).post("/recheck")
+
+    assert r.status_code == 409, r.text
+    assert propose_calls == [], "the loser must not re-propose"
+    assert "cached-noop" not in r.text, "and must not serve the row it declined"
+
+
+def test_the_lookup_to_claim_window_contains_no_await() -> None:
+    """The invariant the test above LEANS ON, pinned so it cannot rot silently.
+
+    ``_do_recheck`` reads the cached decision, validates, runs the coherence
+    gate, compare-and-deletes a stale row, then claims the event — and does all
+    of it without a single ``await``. That is what makes the window atomic
+    inside one event loop: no other request in the same worker can observe the
+    half-state where the stale row is gone but the claim is not yet taken.
+
+    Nothing in the code SAYS so, though — it is an emergent property of the
+    statements that happen to sit there. Add one innocuous ``await`` in the
+    middle (make ``find_decision_for_event`` async, wrap a Firestore call in
+    ``asyncio.to_thread``, await a notifier) and the atomicity is gone with no
+    other visible change.
+
+    **What was actually measured, so this docstring does not overclaim.** An
+    ``await asyncio.sleep(0)`` injected at the most dangerous point — after the
+    cache lookup, before the deferred evict-CAS — made THIS test fail (line
+    reported correctly) and left the concurrency test above still passing, with
+    no double-mint: ``evict_cached_decision``'s compare-and-delete serialized
+    the loser exactly as designed. So the demonstrated consequence of breaking
+    this invariant is "the atomicity the concurrency test leans on is gone",
+    NOT "a drift mints two approvals". The CAS is the thing that would have to
+    fail for that, and it held under injection.
+
+    This is therefore a conservative tripwire on an assumption, not a
+    proven-exploit guard. If it fails, do not relax it: re-derive whether the
+    CAS still serializes losers across the new suspension point, and make the
+    concurrency test genuinely interleave before deciding the await is safe.
+    """
+    source = Path(inspect.getsourcefile(agent_main)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    fn = next(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "_do_recheck"
+        ),
+        None,
+    )
+    assert fn is not None, "premise: _do_recheck is an async def in agent/main.py"
+
+    def _first_call(pred) -> ast.Call:
+        found = [
+            n for n in ast.walk(fn) if isinstance(n, ast.Call) and pred(n.func)
+        ]
+        assert found, "premise: the anchoring call still exists in _do_recheck"
+        return min(found, key=lambda n: n.lineno)
+
+    key_call = _first_call(
+        lambda f: isinstance(f, ast.Name) and f.id == "_event_key"
+    )
+    claim_call = _first_call(
+        lambda f: isinstance(f, ast.Attribute) and f.attr == "record_event"
+    )
+    assert key_call.lineno < claim_call.lineno, (
+        "premise: the key is built before the event is claimed"
+    )
+
+    offenders = sorted(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Await) and key_call.lineno < n.lineno < claim_call.lineno
+    )
+    assert not offenders, (
+        "agent/main.py:{}-{} (_event_key -> record_event) must stay await-free; "
+        "found await at line(s) {}. Two concurrent audits in one instance can "
+        "now interleave between the cache lookup, the stale-row eviction and "
+        "the claim — the atomicity the concurrency test leans on is gone. "
+        "Whether that is exploitable depends on the CAS still serializing the "
+        "loser; re-derive it, do not assume it. See this test's docstring."
+        .format(key_call.lineno, claim_call.lineno, offenders)
+    )
 
 
 def test_a_cached_noop_is_still_served_to_a_fresh_noop() -> None:
