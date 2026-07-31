@@ -902,8 +902,14 @@
   // same discipline as setConversationId. A shared/reloaded desk URL therefore
   // always reopens exactly the record that was on screen.
   function setDeskRecord(tid: string | null): void {
-    deskRecordTraceId = tid;
-    syncReasoningParam(tid);
+    // A trace id the `?reasoning=` parser would reject can still reach here
+    // from a caller reading a raw `Decision.trace_id` (an open shape). Writing
+    // it would open a record whose URL evaporates on reload — the exact
+    // non-round-trip `isReplayableTraceId` exists to prevent — so it is
+    // refused at the one writer rather than guarded at each caller.
+    const next = tid !== null && isReplayableTraceId(tid) ? tid : null;
+    deskRecordTraceId = next;
+    syncReasoningParam(next);
   }
 
   // Is the open record among the decisions we actually hold? `ledgerRows`'
@@ -1051,6 +1057,19 @@
         const detail = (await resp.json()) as ConversationDetail;
         if (myRun !== runSeq) return;
         conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
+        // A `?conversation=&reasoning=` pair can name a trace this thread does
+        // not contain — a hand-edited URL, or a link outliving the turn it
+        // pointed at. The thread then expands nothing while the address bar
+        // goes on claiming that message, so the param stops claiming it. Only
+        // reachable on a SUCCESSFUL open; a failed one keeps its existing
+        // replay fallback.
+        if (
+          autoExpandTraceId !== null &&
+          !conversationTurns.some((t) => t.trace_id === autoExpandTraceId)
+        ) {
+          autoExpandTraceId = null;
+          syncReasoningParam(null);
+        }
         const wl = detail.workload as Workload | undefined;
         if (wl) {
           // `workload` is who holds the thread NOW, which a confirmed handoff

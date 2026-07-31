@@ -322,3 +322,70 @@ describe('LedgerStrip — decision records', () => {
     });
   });
 });
+
+// One request can record MORE THAN ONE decision under a single trace id — the
+// create-class IaC pair, a `waiting_for_rebake` pending and its merged
+// successor (agent/state_store.py's find_decision_by_trace_id documents this,
+// and answers with the NEWEST). Keying the accordion on the trace alone
+// therefore opened a record under every matching row at once.
+describe('LedgerStrip — a trace shared by several decisions', () => {
+  const SHARED = 'e'.repeat(32);
+
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  function cache() {
+    return createTraceCache(
+      async () =>
+        new Response(
+          JSON.stringify({ trace_id: SHARED, events: [], decision: null, complete: true }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+  }
+
+  // Newer first by created_at — the same order the backend picks its answer by.
+  const pair = (): Decision[] => [
+    decision({
+      decision_id: 'merged',
+      trace_id: SHARED,
+      action: 'iac_apply',
+      apply_status: 'applied',
+      created_at: '2026-07-28T10:00:00Z',
+    }),
+    decision({
+      decision_id: 'pending',
+      trace_id: SHARED,
+      action: 'iac_apply',
+      apply_status: 'waiting_for_rebake',
+      created_at: '2026-07-28T09:00:00Z',
+    }),
+  ];
+
+  it('opens exactly ONE record, not one per matching row', async () => {
+    const { getAllByTestId, queryAllByTestId } = render(LedgerStrip, {
+      props: { decisions: pair(), cache: cache(), recordTraceId: SHARED, onRecordChange: vi.fn() },
+    });
+    await waitFor(() => expect(queryAllByTestId('decision-record')).toHaveLength(1));
+    const rows = getAllByTestId('ledger-strip-row');
+    expect(rows).toHaveLength(2);
+    // ...under the NEWEST row, which is the decision GET /trace will answer
+    // with. Both this strip and that lookup order by created_at descending, so
+    // "first here" and "what the backend returns" agree by construction.
+    expect(rows[0].getAttribute('aria-expanded')).toBe('true');
+    expect(rows[1].getAttribute('aria-expanded')).toBeNull();
+  });
+
+  it('gives the older sibling no affordance at all, rather than a duplicate one', () => {
+    const { getAllByTestId } = render(LedgerStrip, {
+      props: { decisions: pair(), cache: cache(), recordTraceId: null, onRecordChange: vi.fn() },
+    });
+    const rows = getAllByTestId('ledger-strip-row');
+    expect(rows[0].tagName).toBe('BUTTON');
+    // The siblings are lifecycle stages of ONE reasoning run; the older row's
+    // own status is what the row already says, and a second button opening the
+    // same record would be two doors to one place.
+    expect(rows[1].tagName).not.toBe('BUTTON');
+  });
+});

@@ -6,6 +6,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor, within } from '@testing-library/svelte';
 import App from '../../src/App.svelte';
 
+// A REAL trace id (32 lowercase hex). `?reasoning=` is validated on the way
+// in, and since ds-jns the rail's open-trace writes it — so a readable token
+// like 'tid-iac-1' is a fixture the affordance under test would refuse.
+const TID_IAC = 'd'.repeat(32);
+
+
 function okJson(body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -926,6 +932,25 @@ describe('App — ?conversation boot deep-link', () => {
     await findByTestId('trace-detail');
   });
 
+  // A `?reasoning=` inside a `?conversation=` names a MESSAGE. When the thread
+  // opens successfully and contains no such message — a hand-edited URL, a link
+  // outliving the turn it pointed at — the address bar must stop claiming it.
+  it('drops ?reasoning= when the opened thread contains no such message', async () => {
+    const ORPHAN = 'f'.repeat(32);
+    stubResumeFetchWithTrace();
+    history.replaceState(null, '', `/?conversation=c1&reasoning=${ORPHAN}`);
+    const { findByTestId, queryByTestId, getAllByTestId } = render(App);
+    await findByTestId('conversation-thread');
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull(),
+    );
+    expect(new URLSearchParams(window.location.search).get('conversation')).toBe('c1');
+    expect(queryByTestId('trace-detail')).toBeNull();
+    for (const b of getAllByTestId('reasoning-disclosure')) {
+      expect(b.getAttribute('aria-expanded')).toBe('false');
+    }
+  });
+
   it('clears ?conversation but still opens the ?reasoning replay when the boot conversation 404s', async () => {
     vi.stubGlobal(
       'fetch',
@@ -1112,7 +1137,7 @@ describe('App — ?conversation boot deep-link', () => {
     });
     const iac = {
       decision_id: 'd1',
-      trace_id: 'tid-iac-1',
+      trace_id: TID_IAC,
       action: 'iac_apply',
       pr_number: 47,
       apply_status: 'applied',
@@ -1135,7 +1160,7 @@ describe('App — ?conversation boot deep-link', () => {
               },
             ],
           });
-        if (url.includes('/trace/')) return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+        if (url.includes('/trace/')) return okJson({ trace_id: TID_IAC, complete: true, events: [], decision: iac });
         if (url.includes('/decisions')) return okJson({ decisions: [iac] });
         if (url.includes('/infra/graph')) return okJson(GRAPH);
         return okJson({});

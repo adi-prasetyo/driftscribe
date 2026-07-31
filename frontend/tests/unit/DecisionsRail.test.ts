@@ -3,6 +3,21 @@ import { render, cleanup, fireEvent, within } from '@testing-library/svelte';
 import DecisionsRail from '../../src/components/DecisionsRail.svelte';
 import type { Decision } from '../../src/lib/types';
 
+// Real trace ids: 32 lowercase hex, the shape driftscribe_lib.logging._HEX32_RE
+// mints and lib/deeplink validates. Since ds-jns the rail gates its open-trace
+// affordance on exactly that shape — the button navigates to the desk and
+// writes `?reasoning=`, which is validated on the way back in — so a readable
+// token like 't-old' is a fixture that cannot exercise the control it is there
+// to test. `tid()` keeps the labels legible and the values real.
+const TRACE_IDS = new Map<string, string>();
+function tid(label: string): string {
+  if (!TRACE_IDS.has(label)) {
+    TRACE_IDS.set(label, (TRACE_IDS.size + 1).toString(16).padStart(32, 'b'));
+  }
+  return TRACE_IDS.get(label)!;
+}
+
+
 // First component-render test in the repo. Uses @testing-library/svelte (v5,
 // Svelte-5-native render) on the jsdom environment configured in
 // vitest.config.ts. We assert the supersession behaviour (a later `applied`
@@ -339,13 +354,13 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     const decisions: Decision[] = [
       iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68,
                created_at: '2026-06-05T01:27:33Z', head_sha: '0496b305dead',
-               trace_id: 'trace-applied', pr_title: 'infra(checkout): storefront + orders-worker' }),
+               trace_id: tid('trace-applied'), pr_title: 'infra(checkout): storefront + orders-worker' }),
       // Live-faithful: the two waiting docs share ONE trace_id.
       iacRow({ decision_id: 'wait-68-a', apply_status: 'waiting_for_rebake', pr_number: 68,
-               created_at: '2026-06-04T14:53:36Z', trace_id: 'trace-waiting',
+               created_at: '2026-06-04T14:53:36Z', trace_id: tid('trace-waiting'),
                pr_title: 'infra(checkout): storefront + orders-worker' }),
       iacRow({ decision_id: 'wait-68-b', apply_status: 'waiting_for_rebake', pr_number: 68,
-               created_at: '2026-06-04T14:53:29Z', trace_id: 'trace-waiting',
+               created_at: '2026-06-04T14:53:29Z', trace_id: tid('trace-waiting'),
                pr_title: 'infra(checkout): storefront + orders-worker' }),
     ];
     const opened: string[] = [];
@@ -387,7 +402,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     const btns = getAllByTestId('lifecycle-open-trace');
     expect(btns).toHaveLength(2);
     await fireEvent.click(btns[0]);
-    expect(opened).toEqual(['trace-waiting']);
+    expect(opened).toEqual([tid('trace-waiting')]);
   });
 
   it('an all-waiting group (no applied sibling) keeps the live "Review & approve →" CTA on ONE row', () => {
@@ -407,8 +422,8 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
 
   it('an anomalous history (prior failed step) is visible WITHOUT a click: composition in the summary + details defaults OPEN', () => {
     const decisions: Decision[] = [
-      iacRow({ decision_id: 'a32', apply_status: 'applied', pr_number: 32, trace_id: 't-a' }),
-      iacRow({ decision_id: 'f32', apply_status: 'failed', pr_number: 32, trace_id: 't-f' }),
+      iacRow({ decision_id: 'a32', apply_status: 'applied', pr_number: 32, trace_id: tid('t-a') }),
+      iacRow({ decision_id: 'f32', apply_status: 'failed', pr_number: 32, trace_id: tid('t-f') }),
     ];
     const { container, getByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
@@ -421,11 +436,11 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
 
   it('marks the group row active when an EARLIER step trace is the active trace', () => {
     const decisions: Decision[] = [
-      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68, trace_id: 't-new' }),
-      iacRow({ decision_id: 'w', apply_status: 'waiting_for_rebake', pr_number: 68, trace_id: 't-old' }),
+      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 68, trace_id: tid('t-new') }),
+      iacRow({ decision_id: 'w', apply_status: 'waiting_for_rebake', pr_number: 68, trace_id: tid('t-old') }),
     ];
     const { getByTestId } = render(DecisionsRail, {
-      props: { decisions, activeTraceId: 't-old', onOpenTrace: noop },
+      props: { decisions, activeTraceId: tid('t-old'), onOpenTrace: noop },
     });
     expect(getByTestId('past-decision-item').classList.contains('active')).toBe(true);
   });
@@ -526,7 +541,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
 describe('DecisionsRail — open-trace button label', () => {
   it('an iac_apply row shows "view details →"', () => {
     const decisions: Decision[] = [
-      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, trace_id: 't-applied' }),
+      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, trace_id: tid('t-applied') }),
     ];
     const { getByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
@@ -536,8 +551,8 @@ describe('DecisionsRail — open-trace button label', () => {
 
   it('an iac_apply lifecycle step also shows "view details →"', () => {
     const decisions: Decision[] = [
-      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, trace_id: 't-new' }),
-      iacRow({ decision_id: 'wait-68', apply_status: 'waiting_for_rebake', pr_number: 68, trace_id: 't-old' }),
+      iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, trace_id: tid('t-new') }),
+      iacRow({ decision_id: 'wait-68', apply_status: 'waiting_for_rebake', pr_number: 68, trace_id: tid('t-old') }),
     ];
     const { getByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
@@ -547,7 +562,7 @@ describe('DecisionsRail — open-trace button label', () => {
 
   it('a non-iac_apply row (rollback) with a trace_id shows "view reasoning →"', () => {
     const decisions: Decision[] = [
-      { decision_id: 'rb-1', action: 'rollback', trace_id: 't-rb' } as Decision,
+      { decision_id: 'rb-1', action: 'rollback', trace_id: tid('t-rb') } as Decision,
     ];
     const { getByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
@@ -768,7 +783,7 @@ function manyRows(n = 14): Decision[] {
       pr_number: i + 1,
       apply_status: 'applied',
       merge_state: 'merged',
-      trace_id: `t${i}`,
+      trace_id: tid(`t${i}`),
       pr_title: `change ${i}`,
     }),
   );
@@ -792,7 +807,7 @@ describe('DecisionsRail — cap + search', () => {
 
   it('hides the affordance when active-pinning means every row is already shown (total = max+1)', () => {
     const { getAllByTestId, queryByTestId } = render(DecisionsRail, {
-      props: { decisions: manyRows(11), activeTraceId: 't10', onOpenTrace: noop, max: 10 },
+      props: { decisions: manyRows(11), activeTraceId: tid('t10'), onOpenTrace: noop, max: 10 },
     });
     expect(getAllByTestId('past-decision-item')).toHaveLength(11); // 10 + pinned active = all
     expect(queryByTestId('decisions-search-open')).toBeNull(); // nothing hidden
@@ -800,7 +815,7 @@ describe('DecisionsRail — cap + search', () => {
 
   it('pins the active (open-trace) row even when it falls outside the cap', () => {
     const { getAllByTestId } = render(DecisionsRail, {
-      props: { decisions: manyRows(14), activeTraceId: 't13', onOpenTrace: noop, max: 10 },
+      props: { decisions: manyRows(14), activeTraceId: tid('t13'), onOpenTrace: noop, max: 10 },
     });
     const rows = getAllByTestId('past-decision-item');
     expect(rows).toHaveLength(11); // 10 newest + the pinned active row
@@ -826,7 +841,7 @@ describe('DecisionsRail — cap + search', () => {
   it('opening a trace from inside the modal closes the modal and calls onOpenTrace', async () => {
     const onOpenTrace = vi.fn();
     const rows = manyRows(14);
-    rows[7] = iacRow({ decision_id: 'd7', pr_number: 8, apply_status: 'applied', merge_state: 'merged', trace_id: 'trace-8', pr_title: 'unique-needle' });
+    rows[7] = iacRow({ decision_id: 'd7', pr_number: 8, apply_status: 'applied', merge_state: 'merged', trace_id: tid('trace-8'), pr_title: 'unique-needle' });
     const { getByTestId, queryByTestId, container } = render(DecisionsRail, {
       props: { decisions: rows, activeTraceId: null, onOpenTrace, max: 10 },
     });
@@ -834,7 +849,7 @@ describe('DecisionsRail — cap + search', () => {
     await fireEvent.input(getByTestId('decisions-search-input'), { target: { value: 'unique-needle' } });
     const dialog = container.querySelector('dialog')!;
     await fireEvent.click(within(dialog).getByTestId('open-trace-button'));
-    expect(onOpenTrace).toHaveBeenCalledWith('trace-8');
+    expect(onOpenTrace).toHaveBeenCalledWith(tid('trace-8'));
     // Modal closed → its search input is gone.
     expect(queryByTestId('decisions-search-input')).toBeNull();
   });
@@ -978,5 +993,46 @@ describe('DecisionsRail — rollback Approve CTA (ds-d4z)', () => {
     const { queryByTestId } = renderRow(null);
     expect(queryByTestId('rollback-approve-link')).toBeNull();
     expect(queryByTestId('rollback-approve-expired')).toBeNull();
+  });
+});
+
+// ds-jns re-pointed this button: it navigates to the desk and writes
+// `?reasoning=`, which is validated on the way back in. So what the control
+// OFFERS and what the router will ACCEPT have to be the same question — a row
+// whose trace_id cannot round-trip must not advertise one.
+describe('DecisionsRail — the open-trace affordance matches the router', () => {
+  for (const [name, trace_id] of [
+    ['no trace_id', undefined],
+    ['an empty trace_id', ''],
+    ['a readable token', 't-old'],
+    ['uppercase hex', 'A'.repeat(32)],
+    ['33 hex chars', 'a'.repeat(33)],
+  ] as const) {
+    it(`renders no open-trace button for ${name}`, () => {
+      const d = {
+        decision_id: 'g1',
+        action: 'rollback',
+        created_at: '2026-07-28T09:00:00Z',
+        ...(trace_id === undefined ? {} : { trace_id }),
+      } as Decision;
+      const { queryByTestId } = render(DecisionsRail, {
+        props: { decisions: [d], activeTraceId: null, onOpenTrace: noop },
+      });
+      expect(queryByTestId('open-trace-button')).toBeNull();
+    });
+  }
+
+  it('renders no per-step button for a lifecycle step whose trace cannot round-trip', () => {
+    const decisions = [
+      iacRow({ decision_id: 'a', apply_status: 'applied', pr_number: 90, trace_id: tid('ok-new'), created_at: '2026-06-04T14:53:40Z' }),
+      iacRow({ decision_id: 'w', apply_status: 'waiting_for_rebake', pr_number: 90, trace_id: 'junk', created_at: '2026-06-04T14:53:30Z' }),
+    ];
+    const { queryAllByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+    // The group's face carries the newest doc (a valid trace, so it keeps its
+    // own button); the folded step is the one with the unusable trace_id.
+    expect(queryAllByTestId('lifecycle-open-trace')).toHaveLength(0);
+    expect(queryAllByTestId('open-trace-button')).toHaveLength(1);
   });
 });

@@ -86,9 +86,14 @@ export const desk = {
     // `?reasoning=` link can legitimately name a CHAT turn's trace, which is
     // reasoning with no decision doc behind it.
     'desk.record.incomplete': 'No decision record is attached to this trace.',
-    // Only ever shown once the overview has SETTLED — claiming a record is
-    // older than a list that has not loaded yet would be a guess.
-    'desk.record.outOfWindow': 'This decision is older than the records listed below.',
+    // Only ever shown once the overview has SETTLED — a claim about a list
+    // cannot be made before the list has loaded. And it says ABSENCE, not age:
+    // settlement proves the record is not among the listed decisions, which is
+    // not the same as its being older than them. The earlier wording said
+    // "older", and could sit directly above "no decision record is attached to
+    // this trace" — two sentences calling one thing a decision and not a
+    // decision, one of them also guessing at its age.
+    'desk.record.outOfWindow': 'This record is not in the recent decisions listed below.',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
     'desk.unresolved.who': 'You approved',
     'desk.unresolved.failed.detail': 'Did not apply',
@@ -245,7 +250,7 @@ export const desk = {
     'desk.ledger.showMore': '{n}件すべて表示',
     'desk.record.prose': '判断の内容',
     'desk.record.incomplete': 'このトレースには判断の記録が紐づいていません。',
-    'desk.record.outOfWindow': 'この判断は、下の一覧より古い記録です。',
+    'desk.record.outOfWindow': 'この記録は、下の最近の判断一覧には含まれていません。',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
     'desk.unresolved.who': 'あなたが承認しました',
     'desk.unresolved.failed.detail': '適用されず',

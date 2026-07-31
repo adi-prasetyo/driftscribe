@@ -4,6 +4,12 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../src/App.svelte';
 import { VIEWS, CHAT_INTENT_PARAMS, viewFromSearch } from '../../src/lib/deeplink';
 
+// A REAL trace id (32 lowercase hex). `?reasoning=` is validated on the way
+// in, and since ds-jns the rail's open-trace writes it — so a readable token
+// like 'tid-iac-1' is a fixture the affordance under test would refuse.
+const TID_IAC = 'd'.repeat(32);
+
+
 function okJson(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -297,7 +303,7 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     const action = opts.action ?? 'iac_apply';
     const iac = {
       decision_id: 'd1',
-      trace_id: 'tid-iac-1',
+      trace_id: TID_IAC,
       action,
       pr_number: 47,
       head_sha: 'a'.repeat(40),
@@ -317,7 +323,7 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
           cached: false,
         });
       if (url.includes('/trace/'))
-        return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+        return okJson({ trace_id: TID_IAC, complete: true, events: [], decision: iac });
       if (url.includes('/decisions')) return okJson({ decisions: [iac] });
       if (url.includes('/infra/graph'))
         return okJson({
@@ -1312,7 +1318,11 @@ describe('App — desk decision records (ds-jns)', () => {
     history.replaceState(null, '', `/?reasoning=${TID}`);
     const { getByTestId } = render(App);
     await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
-    await waitFor(() => expect(getByTestId('decision-record-outofwindow')).toBeTruthy());
+    await waitFor(() =>
+      expect(getByTestId('decision-record-outofwindow').textContent).toContain(
+        'not in the recent decisions',
+      ),
+    );
     // Pinned ABOVE the desk, not inside the ledger it is not part of.
     const record = getByTestId('decision-record');
     const desk = getByTestId('approval-desk');

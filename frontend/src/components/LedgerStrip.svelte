@@ -60,6 +60,8 @@
 
   /** The trace this row can open a record for, or null for no affordance at all.
    *
+   *  Two reasons a row gets nothing.
+   *
    *  `Decision.trace_id` is optional and the docs are an open shape, so a row
    *  can carry nothing, or carry junk. Gated on `isReplayableTraceId` — the
    *  SAME rule the `?reasoning=` parser applies (lib/deeplink) — because
@@ -67,12 +69,25 @@
    *  that opens once and then fails to restore on reload or share, which is
    *  the drift `isReplayableTraceId` was exported to prevent.
    *
+   *  And a trace can belong to MORE THAN ONE decision. One request records the
+   *  create-class IaC pair — a `waiting_for_rebake` pending and its merged
+   *  successor — under a single trace id (agent/state_store.py's
+   *  `find_decision_by_trace_id` documents this and answers with the NEWEST).
+   *  Keying the accordion on the trace alone therefore opened a record under
+   *  every matching row at once. Only the first match is openable, and because
+   *  both this strip and that backend order by `created_at` descending, "first
+   *  here" and "the one /trace will answer with" are the same decision by
+   *  construction. The siblings are lifecycle stages of one reasoning run;
+   *  their own status is what the row already says.
+   *
    *  Null means the row renders as plain text. Never a disabled control: the
    *  strip is a record, and a greyed-out button on a row whose reasoning was
    *  never captured advertises something that does not exist. */
-  function openableTrace(row: LedgerRow): string | null {
+  function openableTrace(row: LedgerRow, index: number): string | null {
     if (onRecordChange === null || cache === null) return null;
-    return isReplayableTraceId(row.decision.trace_id) ? row.decision.trace_id : null;
+    if (!isReplayableTraceId(row.decision.trace_id)) return null;
+    const tid = row.decision.trace_id;
+    return rows.slice(0, index).some((r) => r.decision.trace_id === tid) ? null : tid;
   }
 
   function toggle(traceId: string): void {
@@ -132,8 +147,8 @@
   <div class="ledger-strip" data-testid="ledger-strip">
     <div class="ledger-strip__heading">{$t('desk.ledger.heading')}</div>
     <div class="ledger-strip__rows">
-      {#each rows as row (row.decision.decision_id)}
-        {@const traceId = openableTrace(row)}
+      {#each rows as row, i (row.decision.decision_id)}
+        {@const traceId = openableTrace(row, i)}
         {#if traceId !== null}
           <button
             type="button"

@@ -64,12 +64,24 @@
    *  `rendered_body`, the env diffs. Preferring the row outright hid the
    *  decision's own prose; preferring the fetched one would risk downgrading an
    *  enriched field to a staler value. The row wins on overlap and the fetched
-   *  copy fills the gaps, which is strictly additive to what either alone said. */
-  const doc = $derived(
-    decision && entry.decision
-      ? ({ ...entry.decision, ...decision } as Decision)
-      : (decision ?? entry.decision ?? null),
-  );
+   *  copy fills the gaps, which is strictly additive to what either alone said.
+   *
+   *  Merged ONLY when both copies name the same `decision_id`. A trace can
+   *  belong to several decisions (the create-class IaC lifecycle pair), and
+   *  GET /trace answers with the newest — so a caller holding an older sibling
+   *  would otherwise get a document that never existed: this row's status
+   *  fields over that row's prose. LedgerStrip makes this unreachable by
+   *  offering only the newest row an affordance, and this is the guard that
+   *  keeps it unreachable if that ever changes. On a mismatch the FETCHED doc
+   *  wins: it is what the backend says this trace's decision is. */
+  const doc = $derived.by((): Decision | null => {
+    const fetched = entry.decision;
+    if (!decision) return fetched ?? null;
+    if (!fetched) return decision;
+    return fetched.decision_id === decision.decision_id
+      ? ({ ...fetched, ...decision } as Decision)
+      : fetched;
+  });
 
   /** The crew that produced this trace, or null.
    *

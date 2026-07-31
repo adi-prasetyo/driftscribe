@@ -204,6 +204,28 @@ describe('DecisionRecord — the decision’s own prose', () => {
     expect(getByTestId('decision-record-prose').textContent).not.toContain('stale');
   });
 
+  it('refuses to blend two DIFFERENT decisions into one document', async () => {
+    // A trace can belong to several decisions (the create-class IaC lifecycle
+    // pair), and GET /trace answers with the newest. A caller holding an older
+    // sibling would otherwise get a document that never existed — this row's
+    // status fields wearing that row's prose. The FETCHED doc wins on a
+    // mismatch: it is what the backend says this trace's decision is.
+    const { getByTestId } = mount(
+      () =>
+        res(
+          traceResponse({
+            events: [ev({ insert_id: 't1', thought_text: 'landed' })],
+            decision: { ...ROLLBACK, decision_id: 'newer', rationale: 'the newer doc' },
+          }),
+        ),
+      { decision: { ...ROLLBACK, decision_id: 'older', rationale: 'the older doc' } },
+    );
+    await waitFor(() => expect(getByTestId('trace-row-thought')).toBeTruthy());
+    const prose = getByTestId('decision-record-prose').textContent ?? '';
+    expect(prose).toContain('the newer doc');
+    expect(prose).not.toContain('the older doc');
+  });
+
   it('renders nothing at all when the decision has no prose', async () => {
     const { queryByTestId, getByTestId } = mount(() => res(traceResponse()), {
       decision: ROLLBACK,
@@ -289,9 +311,15 @@ describe('DecisionRecord — out-of-window note', () => {
       decision: ROLLBACK,
       note: 'outOfWindow',
     });
-    await waitFor(() =>
-      expect(getByTestId('decision-record-outofwindow').textContent).toContain('older'),
-    );
+    // States ABSENCE, not age: `settled` proves the record is not among the
+    // listed decisions, which is not the same as its being older than them —
+    // and this line can sit directly above "no decision record is attached to
+    // this trace", where calling it "this decision" would contradict the line
+    // below it.
+    await waitFor(() => expect(getByTestId('decision-record-outofwindow')).toBeTruthy());
+    const note = getByTestId('decision-record-outofwindow').textContent ?? '';
+    expect(note).toContain('not in the recent decisions');
+    expect(note).not.toContain('older');
   });
 
   it('omits it by default', async () => {

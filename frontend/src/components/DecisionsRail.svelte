@@ -32,6 +32,7 @@
   import HelpHint from './HelpHint.svelte';
   import Modal from './Modal.svelte';
   import type { Decision } from '../lib/types';
+  import { isReplayableTraceId } from '../lib/deeplink';
   import { t, locale, localeTag, type MessageKey, type TranslateFn } from '../lib/i18n';
   import { modeLabel } from '../lib/autonomy';
 
@@ -82,9 +83,21 @@
   // (which App scrolls to the top of the page) isn't hidden behind the overlay.
   // Used at BOTH open-trace sites in decisionCard (face + lifecycle steps).
   function handleOpenTrace(traceId: string): void {
+    if (!isReplayableTraceId(traceId)) return; // see openable() below
     showSearch = false;
     onOpenTrace(traceId);
   }
+
+  /** Can this row's trace actually be opened?
+   *
+   *  `Decision.trace_id` is an open-shape field, so a row can carry a value
+   *  that is not a trace id. Since ds-jns this button navigates to the desk and
+   *  writes `?reasoning=`, and that param is validated on the way back in — so
+   *  a laxer gate here renders a control that opens a record whose URL
+   *  evaporates on reload. Same rule as LedgerStrip's own affordance gate, for
+   *  the same reason: what a control OFFERS and what the router will ACCEPT
+   *  must be the same question. */
+  const openable = (traceId: unknown): traceId is string => isReplayableTraceId(traceId);
 
   // Resolve the rollback approval link for a row, same-origin-guarded. Returns
   // the safe RELATIVE href, or null when there is no approval / it fails the
@@ -297,7 +310,7 @@
     {/if}
 
     <div class="row-actions">
-      {#if d.trace_id}
+      {#if openable(d.trace_id)}
         <button
           class="open-trace-btn"
           data-testid="open-trace-button"
@@ -368,7 +381,7 @@
                    panel wraps onto its own line below when opened. -->
               <span class={stepToneClass}>{#if stepMeta.done}<Icon name="check" size={12} extraClass="iac-status-check" />{/if}{stepMeta.label || $t('decisions.lifecycle.statusNotRecorded')}</span>
               {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtCreatedAt(step.created_at)}</time>{/if}
-              {#if step.trace_id}
+              {#if openable(step.trace_id)}
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
                   onclick={() => handleOpenTrace(step.trace_id as string)}>{traceButtonLabel(step.action, $t)}</button>
               {/if}
