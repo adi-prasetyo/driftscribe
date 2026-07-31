@@ -115,8 +115,14 @@
                readers hear the "generating" state and then the reply landing in
                the SAME node. Persisted / historical turns get no live region
                (else a rehydrated thread would re-announce every past reply). -->
+          <!-- An ephemeral turn can carry an error instead of a reply (network
+               failure, refused request, interrupted stream). It stays in the
+               thread rather than falling back to a different layout, so it has
+               to LOOK like what it is. -->
           <div
             class="bubble bubble--crew"
+            class:bubble--error={turn.isError === true}
+            data-testid={turn.isError === true ? 'thread-turn-error' : undefined}
             role={live ? 'status' : undefined}
             aria-live={live ? 'polite' : undefined}
           >
@@ -273,6 +279,13 @@
   }
   .bubble--crew {
     background: var(--ds-surface);
+  }
+  .bubble--error {
+    border-color: var(--ds-danger-border, var(--ds-danger-ink));
+    background: var(--ds-danger-surface, var(--ds-surface));
+  }
+  .bubble--error .turn__text {
+    color: var(--ds-danger-ink);
   }
 
   .turn__byline {
