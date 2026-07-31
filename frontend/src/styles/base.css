@@ -217,6 +217,31 @@ pre {
   border-top: 1px solid var(--ds-border);
 }
 
+/* ds-thm: a field value that must keep its own line breaks — today the rollback
+   approval reason, which is model-authored prose and may carry DriftScribe's
+   own "[… N characters omitted …]" marker on its own blank line. Rendered as a
+   normal text node those newlines collapse to a single space and the marker
+   reads as part of the sentence it interrupts.
+
+   The rule lives here, not inline, because both approval templates are
+   required to carry no inline style at all
+   (test_approval_pages_link_shared_css_no_inline_style). That convention comes
+   from the IaC approval page, which IS served under `style-src 'self'` with no
+   'unsafe-inline' — the rollback page this rule serves carries no CSP today,
+   so the constraint here is the shared convention rather than an enforced
+   header. Keeping both pages to one rule is what makes the CSP on the strict
+   one survive contact with future edits.
+
+   `flex: 1 1 0` + `min-width: 0` because .ds-field is a flex row — without
+   them a pre-wrap child refuses to shrink and overflows the card instead of
+   wrapping. */
+.ds-field > .ds-prewrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 /* the leading caption inside a field defers to .ds-label, but on a field row
    we want it to sit on its own minimum column so values align. */
 .ds-field > .ds-label {

@@ -74,6 +74,7 @@ from agent.mcp.developer_knowledge import MissingDeveloperKnowledgeApiKeyError
 from agent.models import DecisionAction, DecisionProposal
 from agent.renderer import (
     attach_iac_pr_link,
+    normalize_notifier_body,
     normalize_rollback_reason,
     render_docs_pr_body,
     render_drift_issue_body,
@@ -1622,7 +1623,17 @@ def _notify_rollback_approval(rendered: str) -> dict[str, Any]:
     try:
         worker_client.call(
             "notifier",
-            {"channel": "approval", "severity": "high", "body": rendered},
+            {
+                "channel": "approval",
+                "severity": "high",
+                # ds-thm: the rendered body carries an unbounded model rationale
+                # and an unbounded evidence table against the Notifier's
+                # 10000-char cap. Over it, the request 422s and the operator's
+                # only PUSH surface for a pending rollback goes silent — and
+                # only for the messy drift that produces a long body, i.e.
+                # exactly when they want the page.
+                "body": normalize_notifier_body(rendered),
+            },
         )
     except WorkerClientError as e:
         # Expected class: the notifier or its downstream refused. Only the
@@ -7043,7 +7054,13 @@ def _iac_merge_step(
         with contextlib.suppress(Exception):
             worker_client.call(
                 "notifier",
-                {"channel": "approval", "severity": "high", "body": alert},
+                # ds-thm: ``alert`` interpolates ``{e}``, whose ``str()`` embeds
+                # a GitHub/PyGithub response body of no fixed size. This is the
+                # "apply SUCCEEDED but merge failed" page — the one an operator
+                # most needs delivered — and the suppress above means a 422
+                # would lose it silently.
+                {"channel": "approval", "severity": "high",
+                 "body": normalize_notifier_body(alert)},
             )
         return _render_iac_outcome(
             request,

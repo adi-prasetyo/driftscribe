@@ -562,16 +562,24 @@ def test_open_infra_pr_tool_notify_body_relative_url_when_origin_empty(monkeypat
     assert "https://" not in body.split("/iac-approvals/")[0]
 
 
-def test_open_infra_pr_tool_notify_title_clamped_at_200_chars(monkeypatch):
+def test_notify_iac_pr_pending_clamps_a_long_title_at_200_chars(monkeypatch):
     """A title longer than 200 chars is clamped with '…' in the notify body;
-    the body stays within the notifier's 10k cap."""
-    from agent.adk_tools import open_infra_pr_tool
+    the body stays within the notifier's 10k cap.
+
+    ds-thm drove this through ``open_infra_pr_tool`` until the coordinator
+    started applying ``validate_title_body`` before calling the worker, which
+    refuses a 250-char title outright (as the worker always would have). The
+    clamp is still worth pinning — ``_NOTIFY_TITLE_CAP`` is defense in depth for
+    a caller whose title is not model-authored — so it is exercised directly on
+    the function that owns it rather than through a path that now short-circuits
+    before reaching it.
+    """
+    from agent.adk_tools import notify_iac_pr_pending
     from agent.config import get_settings
 
     monkeypatch.setenv("COORDINATOR_ORIGIN", "https://coord.example.com")
     get_settings.cache_clear()
     long_title = "A" * 250
-    _patch_open_infra_pr_call(monkeypatch)
 
     notifier_calls = []
 
@@ -580,13 +588,8 @@ def test_open_infra_pr_tool_notify_title_clamped_at_200_chars(monkeypatch):
             notifier_calls.append(payload)
         return {"status": "sent"}
 
-    args = dict(
-        files=[{"path": "iac/bucket.tf", "content": "resource bucket {}"}],
-        title=long_title,
-        body="body",
-    )
     with patch("agent.adk_tools.worker_client.call", side_effect=_fake_call):
-        open_infra_pr_tool(**args)
+        notify_iac_pr_pending(7, "https://github.com/x/y/pull/7", long_title)
 
     assert len(notifier_calls) == 1
     body = notifier_calls[0]["body"]

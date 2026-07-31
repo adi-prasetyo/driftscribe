@@ -292,6 +292,59 @@ ROLLBACK_REASON_ABSENT = (
 )
 
 
+def clamp_middle_out(
+    text: str, cap: int, *, reserve: int = 0
+) -> tuple[str, str, str] | None:
+    """Split ``text`` middle-out to fit ``cap``. Pure arithmetic, no policy.
+
+    Returns ``(head, marker, tail)``, or ``None`` when ``text`` already fits and
+    no cut is needed. Callers join the three parts; the split is exposed rather
+    than the joined string because a Markdown-aware caller must repair the head
+    and the tail INDEPENDENTLY (an opener stranded in the head is a different
+    artifact from an orphan closer stranded in the tail), and it cannot recover
+    that boundary from joined output — model text may contain the marker itself.
+
+    ``reserve`` is space the caller will spend on its own repairs, subtracted
+    from the budget BEFORE the cut. That ordering is the whole point: a clamp
+    that cuts to ``cap`` and then appends a fence closer emits ``cap + 4`` and
+    recreates the 422 it exists to prevent. The Notifier reserves its closer
+    unconditionally for the same reason (``workers/notifier/main.py``).
+
+    Half the remaining budget goes to each side, odd character to the tail. Tail
+    preservation is not symmetry for its own sake — see
+    :func:`normalize_rollback_reason` for what lives at the end of a rationale.
+    """
+    if cap <= 0:
+        # A generic helper cannot inherit the single-caller fallback that used
+        # to live below: ``text[:negative]`` slices from the END under Python's
+        # negative-index semantics and would emit almost the whole string while
+        # claiming to have clamped it. Callers pass a module constant, so a
+        # non-positive cap is a programming error, not an input to absorb.
+        raise ValueError(f"cap must be positive, got {cap}")
+    # ``cap``, NOT ``cap - reserve``. The reserve pays for repairs a CUT makes,
+    # so it has no bearing on whether a cut is needed — subtracting it here
+    # truncated bodies the consumer would have accepted verbatim (9993..10000
+    # against a 10000 cap, found in Codex review of this change).
+    if len(text) <= cap:
+        return None
+
+    # Size the marker against the WHOLE length first, so the real marker (whose
+    # number is smaller) can never be longer than the space reserved for it.
+    reserved = len(_OMISSION_MARKER.format(n=len(text))) + reserve
+    budget = cap - reserved
+    if budget <= 0:
+        # Cap too small to hold a marker at all. Emit head-only, still bounded.
+        return text[: max(0, cap - reserve)], "", ""
+    head_budget = budget // 2
+    tail_budget = budget - head_budget
+    omitted = len(text) - head_budget - tail_budget
+    return (
+        text[:head_budget],
+        _OMISSION_MARKER.format(n=omitted),
+        text[len(text) - tail_budget :],
+    )
+
+
 def normalize_rollback_reason(scrubbed: str) -> str:
     """Bound an already-SCRUBBED rationale to the worker's ``reason`` contract.
 
@@ -323,23 +376,142 @@ def normalize_rollback_reason(scrubbed: str) -> str:
     text = (scrubbed or "").strip()
     if not text:
         return ROLLBACK_REASON_ABSENT
-    if len(text) <= ROLLBACK_REASON_MAX_CHARS:
+    parts = clamp_middle_out(text, ROLLBACK_REASON_MAX_CHARS)
+    if parts is None:
         return text
-
-    # Size the marker against the WHOLE length first, so the real marker (whose
-    # number is smaller) can never be longer than the space reserved for it.
-    reserved = len(_OMISSION_MARKER.format(n=len(text)))
-    budget = ROLLBACK_REASON_MAX_CHARS - reserved
-    if budget <= 0:  # pragma: no cover — only if the cap is set absurdly low
-        return text[:ROLLBACK_REASON_MAX_CHARS]
-    head_budget = budget // 2
-    tail_budget = budget - head_budget
-    omitted = len(text) - head_budget - tail_budget
+    head, marker, tail = parts
     return (
-        text[:head_budget]
-        + _OMISSION_MARKER.format(n=omitted)
-        + text[len(text) - tail_budget:]
+        head
+        + marker
+        + tail
     )
+
+
+# The Notifier's ``NotifyRequest.body`` bound (ds-thm). Mirrored here and
+# pinned equal by tests/unit/test_worker_bound_mirrors.py. Mirrored rather than
+# imported for the reason stated at ``agent/validator.py``: the coordinator must
+# not take a BUILD-time dependency on a worker package. A TEST-time import is
+# fine, and is exactly what keeps the two honest.
+NOTIFIER_BODY_MAX_CHARS = 10000
+
+# Fence repair, deliberately DUPLICATED from ``workers/notifier/main.py``
+# instead of hoisted into ``driftscribe_lib``. That package is split
+# coordinator/worker, so sharing this would couple their deploys (the
+# infra-drift worker-skew canary is the prior incident) to share a heuristic
+# the two sides may legitimately want to evolve apart.
+#
+# Runs of three-or-more backticks, not occurrences of the literal "```": a
+# six-backtick run is ONE delimiter opening a block, while ``count("```")``
+# reports two and concludes, wrongly, that nothing needs repairing.
+_FENCE_RUN = re.compile(r"`{3,}")
+_FENCE_OPEN = "```\n"
+# Reserved UNCONDITIONALLY, before the cut. A clamp that cuts to the cap and
+# THEN prepends an opener emits cap+4 and recreates the 422 it exists to
+# prevent. Only the TAIL repair needs budget — the head repair below removes
+# text rather than adding it. Cost is 4 unused characters on the common path.
+_FENCE_RESERVE = len(_FENCE_OPEN)
+
+
+def _fence_delimiters(text: str) -> int:
+    return len(_FENCE_RUN.findall(text))
+
+
+def _close_open_fence_in_head(head: str) -> str:
+    """Drop an unmatched fence opener from ``head`` instead of closing it.
+
+    The obvious repair — append ``\\n``` `` — is WRONG for a longer delimiter:
+    CommonMark requires a closing fence at least as long as the opening one, so
+    a block opened with four or six backticks is NOT closed by three. It looks
+    repaired to a backtick counter while a real parser leaves the block open
+    through the approval URL, rendering it inert. Codex reproduced exactly that
+    against a Markdown parser; the six-backtick test that "passed" was
+    asserting regex parity, not parse state.
+
+    Removing the unmatched run and everything after it in the head is correct
+    for ANY delimiter length, and it can only shrink the output — which is why
+    the head needs no share of the reserve. The discarded text was the start of
+    a code block whose remainder the cut had already deleted.
+    """
+    runs = list(_FENCE_RUN.finditer(head))
+    if len(runs) % 2 == 0:
+        return head
+    return head[: runs[-1].start()]
+
+
+def normalize_notifier_body(body: str) -> str:
+    """Bound a notification body to the Notifier's ``body`` contract (ds-thm).
+
+    The Notifier already fits bodies to Discord's 2000-char ``content`` limit,
+    so this is not that cut — it is the one that keeps the request from being
+    rejected by ``NotifyRequest`` at 10000 with a 422, before any of the
+    worker's own handling runs.
+
+    **Why this cut must be Markdown-aware even though the worker repairs
+    fences.** ``_discord_safe_content`` repairs only the ``content`` field. The
+    handler sets ``text`` to the FULL body, on purpose — *"Only ``content`` is
+    capped. ``text`` deliberately carries the FULL body … so a non-Discord
+    receiver loses nothing to a limit that isn't theirs."* So a cut here that
+    strands a code fence reaches Slack and every generic receiver as malformed
+    Markdown, with nothing downstream to fix it.
+
+    Two distinct artifacts, repaired independently:
+
+    - an opener retained in the HEAD whose closer fell in the deleted middle —
+      DROPPED, not closed (see :func:`_close_open_fence_in_head`: a four- or
+      six-backtick opener cannot be closed by three);
+    - an orphan closer retained in the TAIL whose opener was deleted — that
+      closer would otherwise act as an OPENER in the reassembled text. Prepend
+      a three-backtick opener so it closes what it was always closing. Safe at
+      any delimiter length, because a closing fence may be LONGER than its
+      opener. This faithfully reproduces the original: a tail holding an orphan
+      closer *was* inside a code block before the cut.
+
+    After both repairs the delimiter count preceding the tail's final segment
+    is even, so the approval URL sits outside any block — which is the property
+    ``tests/integration/test_notify_preserves_approval_url.py`` pins end to end
+    against the real renderer.
+
+    **Honest about what this is:** a parity heuristic, not a Markdown parser,
+    exactly as the Notifier's own copy says of itself. It counts backtick runs
+    that may be inline spans rather than fences, and it ignores ``~~~`` fences
+    entirely. It is a best effort on a last-resort path — the alternative to a
+    cut here is no notification at all.
+    """
+    text = body or ""
+    parts = clamp_middle_out(text, NOTIFIER_BODY_MAX_CHARS, reserve=_FENCE_RESERVE)
+    if parts is None:
+        return text
+    head, marker, tail = parts
+    head = _close_open_fence_in_head(head)
+    if _fence_delimiters(tail) % 2:
+        tail = _FENCE_OPEN + tail
+    return head + marker + tail
+
+
+# The Upgrade Docs worker's ``ClosePrRequest.reason`` bound (ds-thm). Mirrored;
+# pinned equal by tests/unit/test_worker_bound_mirrors.py.
+UPGRADE_CLOSE_REASON_MAX_CHARS = 1000
+
+# The worker requires ``min_length=1``, and the model can omit the reason
+# entirely. Closing the PR is the action the OPERATOR asked for and the reason
+# is auxiliary audit context, so the action is preserved rather than failed —
+# but the text discloses that nothing was supplied instead of inventing a
+# motive the model never gave.
+UPGRADE_CLOSE_REASON_ABSENT = (
+    "Closed via DriftScribe at the operator's request; no reason was supplied."
+)
+
+
+def normalize_close_reason(reason: str) -> str:
+    """Bound a model-authored PR-close reason to the worker's contract."""
+    text = (reason or "").strip()
+    if not text:
+        return UPGRADE_CLOSE_REASON_ABSENT
+    parts = clamp_middle_out(text, UPGRADE_CLOSE_REASON_MAX_CHARS)
+    if parts is None:
+        return text
+    head, marker, tail = parts
+    return head + marker + tail
 
 
 # Tokenized rollback-approval link, wherever it hides in a served string

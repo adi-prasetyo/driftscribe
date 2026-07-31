@@ -36,9 +36,13 @@ from agent.models import (  # noqa: E402
     DecisionProposal,
     EnvDiff,
 )
-from agent.renderer import render_rollback_body  # noqa: E402
+from agent.renderer import (  # noqa: E402
+    normalize_notifier_body,
+    render_rollback_body,
+)
 from workers.notifier.main import (  # noqa: E402
     _DISCORD_CONTENT_LIMIT,
+    NotifyRequest,
     _discord_safe_content,
 )
 
@@ -54,9 +58,16 @@ _APPROVAL_URL = (
     "?t=" + "T" * 64
 )
 
-# The notifier's schema caps ``body`` at 10000 chars, so a rationale longer
-# than this could not reach the truncation code at all — it would 422 first.
+# ds-thm: this used to read "the notifier's schema caps body at 10000 chars, so
+# a rationale longer than this could not reach the truncation code at all — it
+# would 422 first", and 8000 was chosen to stay under that. It documented the
+# boundary and then arranged not to cross it: nothing enforced 8000, which was
+# an assumption about how verbose the model feels rather than a property of the
+# system. The coordinator now clamps (``normalize_notifier_body``), so the
+# fixture is free to exceed the schema cap — and must, or this suite still only
+# proves the case it chose for itself.
 _MAX_REALISTIC_RATIONALE = 8000
+_OVER_THE_SCHEMA_CAP = 30_000
 
 
 def _proposal(rationale: str) -> DecisionProposal:
@@ -150,12 +161,41 @@ def test_a_naive_head_slice_would_have_lost_the_url():
 
 
 def test_the_rendered_body_still_fits_the_notifier_schema():
-    """A body over 10000 chars 422s before truncation is ever reached.
+    """A body over the schema cap 422s before truncation is ever reached.
 
     Pins the assumption behind ``_MAX_REALISTIC_RATIONALE`` so the parametrized
-    case above stays a reachable scenario rather than a hypothetical one.
+    cases above stay reachable scenarios rather than hypothetical ones. The cap
+    is read from the worker's own model rather than hand-copied — ds-thm, where
+    a literal ``10000`` here would have kept passing after a schema change.
     """
+    cap = NotifyRequest.model_fields["body"].metadata[-1].max_length
     body = render_rollback_body(
         _proposal("R" * _MAX_REALISTIC_RATIONALE), _APPROVAL_URL
     )
-    assert len(body) <= 10000
+    assert len(body) <= cap
+
+
+def test_a_rationale_past_the_schema_cap_still_delivers_a_clickable_link():
+    """ds-thm — the case the 8000 ceiling above was chosen to avoid.
+
+    The model's rationale is unbounded, so a body over the schema cap is
+    reachable in ordinary operation. Two things have to hold at once: the
+    coordinator's clamp keeps the request valid, AND the notifier's own Discord
+    cut still lands the URL outside a code block. Either alone is insufficient
+    — this is the full path, end to end, with both cuts applied in order.
+    """
+    body = normalize_notifier_body(
+        render_rollback_body(
+            _proposal("Observed:\n```yaml\n" + "k: v\n" * _OVER_THE_SCHEMA_CAP),
+            _APPROVAL_URL,
+        )
+    )
+    cap = NotifyRequest.model_fields["body"].metadata[-1].max_length
+    assert len(body) <= cap, "the coordinator's clamp would 422"
+    NotifyRequest(channel="approval", severity="high", body=body)
+
+    content = _discord_safe_content(f"[DriftScribe/approval/high] {body}")
+    assert len(content) <= _DISCORD_CONTENT_LIMIT
+    assert _APPROVAL_URL in content, "the operator got a notification with nothing to click"
+    before = content[: content.index(_APPROVAL_URL)]
+    assert before.count("```") % 2 == 0, "the link rendered inside a code block"

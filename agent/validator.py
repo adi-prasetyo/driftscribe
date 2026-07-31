@@ -217,7 +217,12 @@ def validate(
         rev = proposal.target_revision
         if rev is None or not rev.strip():
             raise ValidationError("rollback requires target_revision")
-        if not _REVISION_NAME.match(rev):
+        # ds-thm: ``fullmatch``, not ``match``. Python's ``$`` also matches just
+        # before a final newline, so ``match`` accepted a trailing-newline
+        # revision name that the worker's pydantic pattern (Rust regex, strict
+        # end-of-text) rejects with a 422 — the AUTONOMOUS lane's version of the
+        # ds-j0i outage, in the very check meant to give a faster failure.
+        if not _REVISION_NAME.fullmatch(rev):
             raise ValidationError(
                 f"rollback target_revision {rev!r} does not match Cloud Run "
                 f"revision-name regex (see workers/rollback/main.py::_REVISION_NAME)"

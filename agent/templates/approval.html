@@ -47,7 +47,10 @@
         <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}承認 ID{% else %}Approval ID{% endif %}</span> <code class="ds-code">{{ approval.approval_id }}</code></div>
         <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}アクション{% else %}Action{% endif %}</span> {% if lang == 'ja' %}Cloud Run サービスを指定リビジョンへロールバック{% else %}Rollback Cloud Run service to revision{% endif %}</div>
         <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}対象リビジョン{% else %}Target revision{% endif %}</span> <code class="ds-code">{{ approval.target_revision }}</code></div>
-        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}理由{% else %}Reason{% endif %}</span> {{ approval.reason }}</div>
+        {# ds-thm: pre-wrap so a truncation marker's blank lines survive. The
+           expression sits flush against the tags on purpose — under pre-wrap,
+           template indentation would render as visible leading whitespace. #}
+        <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}理由{% else %}Reason{% endif %}</span><span class="ds-prewrap">{{ approval.reason }}</span></div>
         <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}提案者{% else %}Proposed by{% endif %}</span> <code class="ds-code">{{ approval.created_by }}</code></div>
         <div class="ds-field"><span class="ds-label">{% if lang == 'ja' %}有効期限{% else %}Expires at{% endif %}</span> {{ approval.expires_at }}</div>
         <div class="ds-field">
