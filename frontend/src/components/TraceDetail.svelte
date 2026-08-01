@@ -21,12 +21,13 @@
   } from '../lib/timeline';
   import type { TraceCacheEntry } from '../lib/traceCache';
   import { workerLabel } from '../lib/labels';
-  import { fmtPreview } from '../lib/format';
+  import { fmtPreview, fmtTokens } from '../lib/format';
   import { t, locale, fmtNumber } from '../lib/i18n';
   import type { Decision } from '../lib/types';
   import DriftDiffCard from './DriftDiffCard.svelte';
   import DecisionSummary from './DecisionSummary.svelte';
   import PrBodyDisclosure from './PrBodyDisclosure.svelte';
+  import ApprovalCta from './ApprovalCta.svelte';
   import Icon from './Icon.svelte';
 
   let {
@@ -69,6 +70,28 @@
   // is expected rather than a failure to load. Every other decision's empty
   // timeline means "couldn't load", and says so.
   const directlyRecorded = $derived(doc?.action === 'iac_apply');
+
+  /** Tokens the whole run spent, summed across its per-step `llm_usage` events.
+   *
+   *  interleaveTimeline drops those events (they are accounting, not a step in
+   *  the story), which is right for the ROW list and left the number rendered
+   *  nowhere once the page-level Timeline was deleted. It belongs in the
+   *  footer with the trace id: both are facts ABOUT the run rather than parts
+   *  of it. Zero/absent → '' → the span self-suppresses, so a directly-recorded
+   *  trace with no reasoning run shows nothing rather than "0 spent". */
+  const totalTokens = $derived.by((): number | null => {
+    let total = 0;
+    let saw = false;
+    for (const e of entry.events) {
+      if (e.event !== 'llm_usage') continue;
+      const n = e.total_token_count;
+      if (typeof n === 'number' && Number.isFinite(n)) {
+        total += n;
+        saw = true;
+      }
+    }
+    return saw && total > 0 ? total : null;
+  });
 
   const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));
   const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
@@ -160,6 +183,21 @@
                 <pre class="ds-pre">{JSON.stringify(row.call.tool_args ?? {}, null, 2)}</pre>
               {/if}
               {#if row.result}
+                <!-- The HITL gate, at the moment the operator asked for it. A
+                     rollback proposal's result payload carries an approval_url,
+                     and this turns it into a same-origin Approve button right
+                     under the tool call that produced it — instead of leaving
+                     the operator to find the URL inside a JSON preview.
+                     Carried over from the deleted page-level Timeline, which
+                     was its only renderer (ds-jns Task 3.3). The desk's pending
+                     hero offers the NEWEST actionable rollback, which is not
+                     the same promise: this one is about THIS proposal, and it
+                     is where an operator who just asked for a rollback is
+                     looking. ApprovalCta owns the security guard — an
+                     off-origin or non-/approvals/ URL renders nothing. -->
+                {#if str(row.result.tool_name) === 'propose_rollback_tool'}
+                  <ApprovalCta resultPreview={str(row.result.result_preview)} />
+                {/if}
                 <div class="event__label">{$t('timeline.pair.resultPreview')}</div>
                 <pre class="ds-pre">{fmtPreview(
                   str(row.result.result_preview) || $t('timeline.pair.emptyPreview'),
@@ -169,10 +207,21 @@
           </li>
         {:else}
           {@const lat = num(row.event.latency_ms)}
+          {@const docs = num(row.event.doc_count)}
           <li class="trace-row trace-row--mcp" data-testid="trace-row-mcp">
             <span class="ds-label mcp__kind">{$t('disclosure.mcpLabel')}</span>
             <span class="mcp__tool ds-code"
               >{workerLabel(str(row.event.mcp_tool || row.event.mcp_server) || '(unknown)', $t)}</span>
+            <!-- How much grounding this call actually consulted. The latency
+                 says the MCP was reached; the doc count says it ANSWERED with
+                 something, which is the half that matters for a claim the crew
+                 then makes on the strength of it. Rendered per row rather than
+                 summed per server (the deleted Timeline's shape) because this
+                 list is one call per line. -->
+            {#if docs != null && docs > 0}
+              <span class="mcp__lat" data-testid="trace-row-mcp-docs"
+                >{$t('disclosure.docs', { n: docs })}</span>
+            {/if}
             {#if lat != null}
               <span class="mcp__lat">{$t('timeline.latencyMs', { ms: lat })}</span>
             {/if}
@@ -201,6 +250,12 @@
   {/if}
 
   <div class="trace-detail__footer">
+    {#if totalTokens !== null}
+      <span class="trace-detail__tokens ds-code" data-testid="trace-tokens"
+        >{$t('disclosure.tokens', {
+          tokens: fmtTokens({ total_token_count: totalTokens }, $t, $locale),
+        })}</span>
+    {/if}
     <span class="ds-label">{$t('disclosure.traceLabel')}</span>
     <span class="trace-detail__id ds-code">{traceId}</span>
     <button
@@ -341,6 +396,12 @@
     padding-top: var(--ds-sp-2);
     border-top: 1px solid var(--ds-border);
   }
+  /* Run accounting, left of the trace id — both are facts ABOUT the run. */
+  .trace-detail__tokens {
+    color: var(--ds-faint);
+    font-size: var(--ds-fs-1);
+  }
+
   .trace-detail__id {
     flex: 1 1 auto;
     min-width: 0;

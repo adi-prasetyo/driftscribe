@@ -1072,9 +1072,15 @@
         // A `?conversation=&reasoning=` pair can name a trace this thread does
         // not contain — a hand-edited URL, or a link outliving the turn it
         // pointed at. The thread then expands nothing while the address bar
-        // goes on claiming that message, so the param stops claiming it. Only
-        // reachable on a SUCCESSFUL open; a failed one keeps its existing
-        // replay fallback.
+        // goes on claiming that message, so the param stops claiming it.
+        //
+        // Only reachable on a SUCCESSFUL open — a FAILED one hands the trace to
+        // the desk record instead (see the boot continuation). The asymmetry is
+        // deliberate and was questioned in review: the alternative is to bounce
+        // a successfully-opened thread onto the desk over a message it happens
+        // not to contain, which trades a quiet dropped param for yanking the
+        // operator off the thread they asked for and usually landing them on an
+        // empty record (a chat turn's trace carries no decision).
         if (
           autoExpandTraceId !== null &&
           !conversationTurns.some(

@@ -21,10 +21,10 @@
   import type { Decision } from '../lib/types';
   import { crewName } from '../lib/workloads';
   import { decisionActionLabel, fmtWhen } from '../lib/format';
-  import { decisionGithubLink, decisionGithubDryRun } from '../lib/approval';
+  import { decisionGithubLink, decisionGithubDryRun, iacPrHref } from '../lib/approval';
   import { modeLabel, type AutonomyMode } from '../lib/autonomy';
   import { prefersReducedMotion } from '../lib/motion';
-  import { t, locale } from '../lib/i18n';
+  import { t, locale, type MessageKey } from '../lib/i18n';
   import CrewGlyph from './CrewGlyph.svelte';
   import TraceDetail from './TraceDetail.svelte';
 
@@ -148,7 +148,25 @@
    *  The record is where a decision's detail lives now, so it lands here. The
    *  action allowlist + host allowlist that gate it moved into lib/approval.ts
    *  intact; see decisionGithubLink for why both halves are load-bearing. */
-  const github = $derived(doc ? decisionGithubLink(doc) : null);
+  /** The GitHub artifact, from whichever of the two gates owns this action.
+   *
+   *  They stay separate rather than merging into one allowlist because the two
+   *  urls have different provenance: `decisionGithubLink` reads a url the
+   *  ACTING crew wrote onto the decision, while an `iac_apply`'s comes from the
+   *  coordinator deriving it at serve time off the trusted config repo. Both
+   *  end at `safeGithubHref`.
+   *
+   *  The iac arm exists because a COMPLETED iac_apply had nowhere else to link:
+   *  DecisionSummary prints its PR as plain `#47`, and the desk's pending hero
+   *  only ever offers the one that still needs an operator. A record of work
+   *  already done is precisely the case neither covers. */
+  const github = $derived.by((): { href: string; labelKey: MessageKey } | null => {
+    if (!doc) return null;
+    const own = decisionGithubLink(doc);
+    if (own !== null) return own;
+    const iac = iacPrHref(doc);
+    return iac === null ? null : { href: iac, labelKey: 'decisions.row.githubLink.viewPr' };
+  });
 
   /** Two tokens that say a decision did LESS than its headline implies. Both
    *  rendered only in the deleted decisions rail; nothing read the fields at

@@ -101,6 +101,12 @@ export const timeline = {
     'disclosure.copyTitle': 'Copy a link to this reasoning',
     'disclosure.traceLabel': 'Trace',
     // Fail-soft: the trace is complete, only the PR description is missing.
+    // Run accounting. Both rendered in the deleted page-level Timeline and
+    // nowhere else, so ds-jns Task 3.3 took them off the only surface named
+    // "transparency" — the tokens a run spent, and how much grounding its MCP
+    // calls actually consulted.
+    'disclosure.tokens': '{tokens} spent',
+    'disclosure.docs': '{n} docs',
     'disclosure.prBodyMissing': "The PR description couldn't be loaded.",
     'disclosure.mcpLabel': 'MCP',
   },
@@ -161,6 +167,8 @@ export const timeline = {
     'disclosure.copied': 'コピーしました',
     'disclosure.copyTitle': 'この推論へのリンクをコピー',
     'disclosure.traceLabel': 'トレース',
+    'disclosure.tokens': '{tokens} 消費',
+    'disclosure.docs': 'ドキュメント {n} 件',
     'disclosure.prBodyMissing': 'PR の説明を読み込めませんでした。',
     'disclosure.mcpLabel': 'MCP',
   },

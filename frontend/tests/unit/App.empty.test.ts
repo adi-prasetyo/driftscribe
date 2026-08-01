@@ -260,24 +260,41 @@ describe('App — the empty new-chat state', () => {
     expect(pinned[0].querySelector('#chat-form')).toBeTruthy();
   });
 
-  it('is not left behind on the chat view when a bare ?reasoning= is handed to the desk', async () => {
-    // `?view=chat&reasoning=` used to open a page-level replay here, and this
-    // test's job was to keep the front door from being offered on top of
-    // someone else's past transcript. ds-jns Task 3.3 deleted that surface, so
-    // the URL now walks on to the desk record — and the failure mode it guards
-    // against inverted with it: chat must not sit there flashing a greeting and
-    // four fresh questions during the hand-off, on its way to somewhere else.
+  it('never flashes the front door on the way to a handed-off ?reasoning= record', async () => {
+    // `?view=chat&reasoning=` mounts CHAT first (deeplink's hasChatIntent honours
+    // the explicit view), then hands the trace to the desk record because chat
+    // has nothing to render a bare trace with. The window between those two is
+    // the failure this pins: chat is up, the thread is empty, and `chatEmpty`
+    // must not be true — a greeting and four questions flashing on the way
+    // somewhere else is worse than the blank it replaces.
+    //
+    // The first draft of this test awaited `decision-record` and THEN asserted
+    // the greeting was absent, which cannot fail: by then the chat branch is
+    // unmounted. Codex review caught it. The trace fetch is stalled here so the
+    // in-between state is observable at all, and the assertions run BEFORE the
+    // hand-off completes.
     const TID = 'e'.repeat(32);
-    stubFetch((url) =>
-      url.includes(`/trace/${TID}`)
-        ? okJson({ trace_id: TID, complete: true, decision: null, events: [] })
-        : null,
-    );
+    let releaseTrace!: () => void;
+    const traceArrived = new Promise<void>((r) => {
+      releaseTrace = r;
+    });
+    stubFetch(async (url) => {
+      if (!url.includes(`/trace/${TID}`)) return null;
+      await traceArrived;
+      return okJson({ trace_id: TID, complete: true, decision: null, events: [] });
+    });
     history.replaceState(null, '', `/?view=chat&reasoning=${TID}`);
     const { findByTestId, queryByTestId } = render(App);
-    await findByTestId('decision-record');
+
+    // Several ticks so this is the settled in-between state, not a race the
+    // assertion happened to win.
+    for (let i = 0; i < 8; i++) await Promise.resolve();
     expect(queryByTestId('chat-empty-greeting')).toBeNull();
     expect(queryByTestId('chat-empty-chips')).toBeNull();
+
+    releaseTrace();
+    await findByTestId('decision-record');
+    expect(queryByTestId('chat-empty-greeting')).toBeNull();
   });
 
   it('never flashes up in front of a thread that is still loading', async () => {

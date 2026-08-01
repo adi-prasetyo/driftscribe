@@ -332,6 +332,39 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
     expect(link.getAttribute('target')).toBe('_blank');
   });
 
+  it('links a COMPLETED iac_apply to its PR, which nothing else on the desk does', async () => {
+    // The gap the two allowlists leave between them. DecisionSummary prints
+    // this decision's PR as plain `#68`, and the desk's pending hero only ever
+    // offers the iac change that still needs an operator — so a record of work
+    // already applied had a PR number and no way to reach it.
+    const { findByTestId } = mount(() => res(traceResponse()), {
+      decision: {
+        decision_id: 'd-iac',
+        trace_id: TID,
+        action: 'iac_apply',
+        created_at: '2026-05-31T15:06:00Z',
+        pr_number: 68,
+        apply_status: 'applied',
+        github: { url: 'https://github.com/adi-prasetyo/driftscribe/pull/68' },
+      } as Decision,
+    });
+    const link = await findByTestId('decision-github-link');
+    expect(link.getAttribute('href')).toBe('https://github.com/adi-prasetyo/driftscribe/pull/68');
+    // …and it is still host-allowlisted on this arm too.
+    cleanup();
+    const evil = mount(() => res(traceResponse()), {
+      decision: {
+        decision_id: 'd-iac-evil',
+        trace_id: TID,
+        action: 'iac_apply',
+        created_at: '2026-05-31T15:06:00Z',
+        github: { url: 'https://evil.example/x/y/pull/68' },
+      } as Decision,
+    });
+    await evil.findByTestId('decision-record');
+    expect(evil.queryByTestId('decision-github-link')).toBeNull();
+  });
+
   it('renders no link for an off-allowlist host, and none for a decision with no artifact', async () => {
     // Not a restatement of lib/approval's own coverage: this asserts the card
     // renders NOTHING rather than an empty or href-less anchor, which is the
