@@ -260,41 +260,42 @@ describe('App — the empty new-chat state', () => {
     expect(pinned[0].querySelector('#chat-form')).toBeTruthy();
   });
 
-  it('never flashes the front door on the way to a handed-off ?reasoning= record', async () => {
-    // `?view=chat&reasoning=` mounts CHAT first (deeplink's hasChatIntent honours
-    // the explicit view), then hands the trace to the desk record because chat
-    // has nothing to render a bare trace with. The window between those two is
-    // the failure this pins: chat is up, the thread is empty, and `chatEmpty`
-    // must not be true — a greeting and four questions flashing on the way
-    // somewhere else is worse than the blank it replaces.
+  it('hands a ?view=chat&reasoning= to the desk SYNCHRONOUSLY, so no front door can flash', async () => {
+    // Third attempt at this claim, and the first that establishes its own
+    // premise. The first version awaited `decision-record` and only then
+    // checked the greeting — unfailable, since chat is unmounted by then. The
+    // second stalled `/trace`, which does not help: `openDeskRecord` navigates
+    // BEFORE DecisionRecord starts that fetch, so the stall observes a loading
+    // DESK, not the hand-off. Codex caught both.
     //
-    // The first draft of this test awaited `decision-record` and THEN asserted
-    // the greeting was absent, which cannot fail: by then the chat branch is
-    // unmounted. Codex review caught it. The trace fetch is stalled here so the
-    // in-between state is observable at all, and the assertions run BEFORE the
-    // hand-off completes.
+    // What actually makes a flash impossible is that the hand-off is
+    // synchronous — the boot continuation reaches `openDeskRecord` with no
+    // await in front of it on this URL shape. So that is what gets pinned,
+    // rather than a window that does not exist: chat must already be gone at
+    // the FIRST moment anything can be observed, and the greeting must never
+    // have rendered. Make the hand-off async and this goes red (verified).
     const TID = 'e'.repeat(32);
-    let releaseTrace!: () => void;
-    const traceArrived = new Promise<void>((r) => {
-      releaseTrace = r;
-    });
-    stubFetch(async (url) => {
-      if (!url.includes(`/trace/${TID}`)) return null;
-      await traceArrived;
-      return okJson({ trace_id: TID, complete: true, decision: null, events: [] });
-    });
+    stubFetch((url) =>
+      url.includes(`/trace/${TID}`)
+        ? okJson({ trace_id: TID, complete: true, decision: null, events: [] })
+        : null,
+    );
     history.replaceState(null, '', `/?view=chat&reasoning=${TID}`);
     const { findByTestId, queryByTestId } = render(App);
 
-    // Several ticks so this is the settled in-between state, not a race the
-    // assertion happened to win.
-    for (let i = 0; i < 8; i++) await Promise.resolve();
+    // ONE microtask — the earliest point at which onMount's continuation has
+    // run at all. The premise assertion comes first: if chat were still up here
+    // the greeting check below would be measuring the wrong moment.
+    // (`#chat-area` / `#chat-form` are IDs, not testids — queryByTestId on
+    //  either would be null unconditionally, which is how the previous drafts
+    //  of this test managed to assert nothing twice over.)
+    await Promise.resolve();
+    expect(document.getElementById('chat-area'), 'the chat surface must already be gone').toBeNull();
+    expect(document.getElementById('chat-form')).toBeNull();
     expect(queryByTestId('chat-empty-greeting')).toBeNull();
     expect(queryByTestId('chat-empty-chips')).toBeNull();
 
-    releaseTrace();
     await findByTestId('decision-record');
-    expect(queryByTestId('chat-empty-greeting')).toBeNull();
   });
 
   it('never flashes up in front of a thread that is still loading', async () => {

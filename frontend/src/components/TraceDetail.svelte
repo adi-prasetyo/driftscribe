@@ -173,6 +173,7 @@
           </li>
         {:else if row.kind === 'tool'}
           {@const ok = row.result ? row.result.result_ok !== false : null}
+          {@const toolLat = num(row.result?.latency_ms)}
           <li class="trace-row trace-row--tool" data-testid="trace-row-tool">
             <details class="event" data-insert-id={eventKey((row.call ?? row.result)!)}>
               <summary class="event__summary">
@@ -184,6 +185,15 @@
                   <span class="pair-result-err">{$t('timeline.status.error')}</span>
                 {:else}
                   <span class="event__pending">{$t('timeline.status.pending')}</span>
+                {/if}
+                <!-- Current ADK tool events do not stamp this, so it is usually
+                     absent and this renders nothing. Legacy and replayed traces
+                     DO carry it, and the deleted Timeline showed it — a tool
+                     call that took 1.8s is the answer to "why did that turn feel
+                     slow", and there is no other place to read it. -->
+                {#if toolLat != null}
+                  <span class="event__lat" data-testid="trace-row-tool-latency"
+                    >{$t('timeline.latencyMs', { ms: toolLat })}</span>
                 {/if}
               </summary>
               {#if row.call}
@@ -404,6 +414,13 @@
     padding-top: var(--ds-sp-2);
     border-top: 1px solid var(--ds-border);
   }
+  .event__lat {
+    margin-left: auto;
+    font-size: var(--ds-fs-1);
+    color: var(--ds-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
   /* Run accounting, left of the trace id — both are facts ABOUT the run. */
   .trace-detail__tokens {
     color: var(--ds-faint);

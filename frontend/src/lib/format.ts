@@ -108,8 +108,8 @@ export function iacStatusLabel(status: string | null | undefined, t: TranslateFn
 /**
  * Plain-language help for the iac_apply statuses a non-engineer operator can't
  * decode from the label alone. Surfaced as the HelpHint tooltip/accessible
- * description next to the status token (DecisionsRail face-meta + lifecycle
- * steps). The self-evident status `applied` and unknown values return null →
+ * description next to the status token, on whichever surface renders one.
+ * The self-evident status `applied` and unknown values return null →
  * no help affordance is rendered. Keyed on the raw backend enum, the
  * same input iacStatusLabel takes.
  */
@@ -383,12 +383,13 @@ export function fmtClock(iso: string, l?: Locale): string {
 /**
  * Compact absolute stamp — `Aug 1, 14:32`. Used by a conversation turn that
  * opens a new calendar day inside its thread (ConversationThread renders
- * `fmtClock` alone for the rest of that day's run) and by both rails' card
- * timestamps. No year: these surfaces span hours or days, not decades.
+ * `fmtClock` alone for the rest of that day's run) and by the conversation
+ * rail's card timestamps. No year: these surfaces span hours or days, not decades.
  *
  * Absorbed FOUR byte-identical copies of this shape that had accumulated in
- * components — `fmtTime` (ConversationsRail), `fmtCreatedAt` (DecisionsRail),
- * and `fmtUpdatedAt` twice over (PauseBanner, AutonomyPill) — none of which
+ * components — `fmtTime` (ConversationsRail), `fmtCreatedAt` (the decisions
+ * rail, since deleted), and `fmtUpdatedAt` twice over (PauseBanner,
+ * AutonomyPill) — none of which
  * pinned `hourCycle`. That was survivable while nothing
  * else on the chat view showed a time, and stopped being so the moment the
  * thread started showing one (ds-jns PR 3): `localeTag('en')` is `'en-US'`,

@@ -21,7 +21,14 @@
   import type { Decision } from '../lib/types';
   import { crewName } from '../lib/workloads';
   import { decisionActionLabel, fmtWhen } from '../lib/format';
-  import { decisionGithubLink, decisionGithubDryRun, iacPrHref } from '../lib/approval';
+  import {
+    decisionGithubLink,
+    decisionGithubDryRun,
+    iacPrHref,
+    iacApprovalHref,
+    iacApproveLabel,
+    supersededWaitingIds,
+  } from '../lib/approval';
   import { modeLabel, type AutonomyMode } from '../lib/autonomy';
   import { prefersReducedMotion } from '../lib/motion';
   import { t, locale, type MessageKey } from '../lib/i18n';
@@ -33,6 +40,7 @@
     cache,
     decision = null,
     note = null,
+    decisions = null,
   }: {
     traceId: string;
     cache: TraceCache;
@@ -40,6 +48,11 @@
      *  which has only a trace id until GET /trace answers. */
     decision?: Decision | null;
     note?: 'outOfWindow' | null;
+    /** The snapshot this record was opened from, for the ONE question a single
+     *  decision cannot answer about itself: has a newer PR superseded this
+     *  change while it waited? Omitted → the approval-page link below is not
+     *  offered at all, rather than offered with a label that would guess. */
+    decisions?: ReadonlyArray<Decision | null | undefined> | null;
   } = $props();
 
   // Absent until the cache has been touched for this id — one frame, since the
@@ -160,6 +173,33 @@
    *  DecisionSummary prints its PR as plain `#47`, and the desk's pending hero
    *  only ever offers the one that still needs an operator. A record of work
    *  already done is precisely the case neither covers. */
+  /** The app's OWN record of an infra change: the plan it applied, who
+   *  approved it, and — when it failed — why.
+   *
+   *  Restored from the deleted decisions rail (Codex review round 2). The
+   *  GitHub link above reaches the PR; this reaches `/iac-approvals/<n>`, which
+   *  is where the plan, the approval history and the failure details live. An
+   *  operator looking at an applied or failed change had neither until the PR
+   *  link landed, and still had to hand-build this URL.
+   *
+   *  The label is STATE-AWARE (`iacApproveLabel`) because the same href means
+   *  different things: "Apply the change" on a merged rebake, "View approval
+   *  history" once applied, "View failure details" on a terminal failure,
+   *  "Superseded by PR #N" when a newer change overtook it. A single "Approve"
+   *  would offer an action on a change that has already ended.
+   *
+   *  Follows the rail's own href rule: a superseded row links to the PR that
+   *  superseded it, not to its own dead page. */
+  const iacApproval = $derived.by((): { href: string; label: string } | null => {
+    if (!doc || doc.action !== 'iac_apply' || decisions === null) return null;
+    const sup = doc.superseded_by_pr;
+    const target =
+      typeof sup === 'number' && Number.isInteger(sup) && sup > 0 ? sup : doc.pr_number;
+    const href = iacApprovalHref(target, $locale);
+    if (href === null) return null;
+    return { href, label: iacApproveLabel(doc, supersededWaitingIds(decisions), $t) };
+  });
+
   const github = $derived.by((): { href: string; labelKey: MessageKey } | null => {
     if (!doc) return null;
     const own = decisionGithubLink(doc);
@@ -263,14 +303,24 @@
     </div>
   {/if}
 
-  {#if github !== null}
+  {#if iacApproval !== null || github !== null}
     <p class="record__github">
+      {#if iacApproval !== null}
+        <a
+          class="record__github-link"
+          data-testid="iac-approve-link"
+          href={iacApproval.href}
+          target="_blank"
+          rel="noopener">{iacApproval.label}</a>
+      {/if}
+      {#if github !== null}
       <a
         class="record__github-link"
         data-testid="decision-github-link"
         href={github.href}
         target="_blank"
         rel="noopener noreferrer">{$t(github.labelKey)}</a>
+      {/if}
     </p>
   {/if}
 
@@ -341,6 +391,9 @@
   }
 
   .record__github {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ds-sp-3);
     margin: 0;
   }
   /* Directly under the header, above everything the decision claims — these

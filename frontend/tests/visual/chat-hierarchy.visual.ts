@@ -238,10 +238,14 @@ for (const locale of ['ja', 'en'] as const) {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${SHOTS}/${locale}-chat-disclosure-open.png`, fullPage: true });
 
+    // `li` scopes this to the ROWS. A bare `[data-testid^="trace-row-"]` also
+    // matches things INSIDE a row — `trace-row-tool-latency` is one — so the
+    // prefix alone turns "what order are the rows in" into "what order is
+    // everything in", and adding a detail to a row would read as a reordering.
     const kinds = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-testid="trace-detail"] [data-testid^="trace-row-"]')].map(
-        (n) => n.getAttribute('data-testid'),
-      ),
+      [
+        ...document.querySelectorAll('[data-testid="trace-detail"] li[data-testid^="trace-row-"]'),
+      ].map((n) => n.getAttribute('data-testid')),
     );
     const expected = ['trace-row-thought', 'trace-row-mcp', 'trace-row-tool'];
     if (JSON.stringify(kinds) !== JSON.stringify(expected)) {

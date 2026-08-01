@@ -2251,6 +2251,7 @@
       <DecisionRecord
         traceId={deskPinnedRecord}
         cache={traceCache}
+        {decisions}
         note={$overview.settled ? 'outOfWindow' : null}
       />
     </div>

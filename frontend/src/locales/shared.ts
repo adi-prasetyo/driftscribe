@@ -137,19 +137,6 @@ export const shared = {
       'the ops-contract, the dependency lockfile, and developer docs, then reports. ' +
       'Changes nothing.',
 
-    // rail.ts's own display strings (not shared with format.ts/approval.ts/
-    // workloads.ts, but still cross-surface: only DecisionsRail.svelte renders
-    // them). `{n}`/`{composition}` are interpolated; `.one`/`.other` follow the
-    // i18n.ts `plural()` convention even though this call composes the params
-    // itself (it needs `composition` alongside `n`, which `plural()` doesn't
-    // pass through).
-    'shared.rail.lifecycle.summary.one': '{n} earlier step · {composition}',
-    'shared.rail.lifecycle.summary.other': '{n} earlier steps · {composition}',
-    'shared.rail.lifecycle.statusNotRecorded': 'status not recorded',
-    'shared.rail.lifecycle.itemSeparator': ', ',
-
-    'shared.rail.traceButton.viewDetails': 'view details →',
-    'shared.rail.traceButton.viewReasoning': 'view reasoning →',
   },
   ja: {
     'shared.iac.applied': '適用済み',
@@ -241,12 +228,6 @@ export const shared = {
     // JA carries no grammatical plural, so .one/.other are identical (i18n.ts
     // `plural()` convention). '・' (not '·') per the glossary's JA punctuation
     // list.
-    'shared.rail.lifecycle.summary.one': '前のステップ {n}件・{composition}',
-    'shared.rail.lifecycle.summary.other': '前のステップ {n}件・{composition}',
-    'shared.rail.lifecycle.statusNotRecorded': '状態未記録',
-    'shared.rail.lifecycle.itemSeparator': '、',
 
-    'shared.rail.traceButton.viewDetails': '詳細を見る →',
-    'shared.rail.traceButton.viewReasoning': '推論を見る →',
   },
 };

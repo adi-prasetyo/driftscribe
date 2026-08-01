@@ -365,6 +365,72 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
     expect(evil.queryByTestId('decision-github-link')).toBeNull();
   });
 
+  it("links an infra change to the app's OWN record of it, labelled by its state", async () => {
+    // The other half of an iac_apply's story. The GitHub link reaches the PR;
+    // `/iac-approvals/<n>` is where the plan, the approval history and the
+    // failure details live, and an operator had to hand-build that URL.
+    //
+    // The LABEL is the point: one href means different things depending on
+    // where the change got to, and a flat "Approve" would offer an action on a
+    // change that already ended.
+    const base = {
+      decision_id: 'd-iac',
+      trace_id: TID,
+      action: 'iac_apply',
+      created_at: '2026-05-31T15:06:00Z',
+      pr_number: 68,
+    };
+    for (const [state, expected] of [
+      [{ apply_status: 'applied', merge_state: 'merged' }, /history/i],
+      [{ apply_status: 'failed' }, /failure/i],
+      [{ apply_status: 'waiting_for_rebake', merge_state: 'merged' }, /apply/i],
+    ] as const) {
+      const d = { ...base, ...state } as Decision;
+      const view = mount(() => res(traceResponse()), { decision: d, decisions: [d] });
+      const link = await view.findByTestId('iac-approve-link');
+      expect(link.getAttribute('href')).toContain('/iac-approvals/68');
+      expect(link.textContent, JSON.stringify(state)).toMatch(expected);
+      cleanup();
+    }
+  });
+
+  it('points a SUPERSEDED change at the change that overtook it, and says so', async () => {
+    // Linking a superseded row to its own dead page would send the operator to
+    // a plan nobody will ever apply. The rail's rule travelled with the link.
+    const d = {
+      decision_id: 'd-old',
+      trace_id: TID,
+      action: 'iac_apply',
+      created_at: '2026-05-31T15:06:00Z',
+      pr_number: 68,
+      apply_status: 'waiting_for_rebake',
+      superseded_by_pr: 71,
+    } as Decision;
+    const { findByTestId } = mount(() => res(traceResponse()), { decision: d, decisions: [d] });
+    const link = await findByTestId('iac-approve-link');
+    expect(link.getAttribute('href')).toContain('/iac-approvals/71');
+    expect(link.textContent).toContain('71');
+  });
+
+  it('offers no approval link at all when it cannot tell whether the change was superseded', async () => {
+    // `decisions` is the only input that answers "did a newer PR overtake this
+    // while it waited". Without it the label would guess, and the guess is
+    // ACTIONABLE ("Apply the change" on a change nobody should apply). Absent
+    // beats wrong.
+    const d = {
+      decision_id: 'd-iac',
+      trace_id: TID,
+      action: 'iac_apply',
+      created_at: '2026-05-31T15:06:00Z',
+      pr_number: 68,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    } as Decision;
+    const { findByTestId, queryByTestId } = mount(() => res(traceResponse()), { decision: d });
+    await findByTestId('decision-record');
+    expect(queryByTestId('iac-approve-link')).toBeNull();
+  });
+
   it('renders no link for an off-allowlist host, and none for a decision with no artifact', async () => {
     // Not a restatement of lib/approval's own coverage: this asserts the card
     // renders NOTHING rather than an empty or href-less anchor, which is the

@@ -224,7 +224,7 @@
         {/if}
         {#if traceId !== null && traceId === recordTraceId && cache !== null}
           <div class="ledger-strip__record" id={recordDomId(traceId)}>
-            <DecisionRecord {traceId} {cache} decision={row.decision} />
+            <DecisionRecord {traceId} {cache} {decisions} decision={row.decision} />
           </div>
         {/if}
       {/each}
