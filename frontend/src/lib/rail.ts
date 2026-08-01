@@ -240,7 +240,7 @@ export function railItemMatches(item: RailItem, query: string, t: TranslateFn): 
  * coordinator reasoning run behind them — so "view reasoning →" would
  * over-promise. The predicate deliberately matches the `directlyRecorded`
  * gate the Timeline consumes (App.svelte:903 —
- * `historicalDecision?.action === 'iac_apply'`), so the button's promise and
+ * the record's own decision doc), so the button's promise and
  * the destination's empty-state copy can never disagree.
  */
 export function traceButtonLabel(action: string | null | undefined, t: TranslateFn): string {

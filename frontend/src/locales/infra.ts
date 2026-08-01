@@ -88,7 +88,7 @@ export const infra = {
       'Ask Provision to investigate this declaration (opens a draft, sends nothing)',
     'infra.unmatched.trailer': '+{n} more declarations not shown',
 
-    'infra.disabledHint': 'Unavailable while the chat is busy or reviewing past reasoning.',
+    'infra.disabledHint': 'Unavailable while the chat is busy.',
 
     'infra.hero.noSupportedResources': 'No resources in supported types yet.',
     'infra.hero.noResourcesIndexed': 'No resources indexed yet.',
@@ -297,7 +297,7 @@ export const infra = {
       'Provision にこの定義の調査を依頼します（下書きを開くだけで送信しません）',
     'infra.unmatched.trailer': 'ほかに {n}件の定義があります（表示されていません）',
 
-    'infra.disabledHint': 'チャットが処理中、または過去の実行を表示している間は利用できません。',
+    'infra.disabledHint': 'チャットが処理中の間は利用できません。',
 
     'infra.hero.noSupportedResources': '対応する種類のリソースはまだありません。',
     'infra.hero.noResourcesIndexed': 'まだリソースがインデックスされていません。',

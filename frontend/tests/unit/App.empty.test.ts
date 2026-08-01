@@ -71,6 +71,12 @@ function lastChatPostWorkload(): string | undefined {
   return JSON.parse(String(post[1].body)).workload;
 }
 
+/** document.querySelector by testid — the render helpers are scoped to their
+ *  own container, and this test asks about the whole document. */
+function queryByTestIdIn(root: ParentNode, id: string): Element | null {
+  return root.querySelector(`[data-testid="${id}"]`);
+}
+
 function chatPosts(): unknown[] {
   const calls = (fetch as unknown as { mock: { calls: [RequestInfo | URL, RequestInit?][] } })
     .mock.calls;
@@ -217,6 +223,41 @@ describe('App — the empty new-chat state', () => {
       expect(queryByTestId('chat-empty-chips')).toBeNull();
       expect(queryByTestId('capability-link')).toBeNull();
     });
+  });
+
+  it("the tour's composer spotlight resolves in BOTH the empty and the pinned state", async () => {
+    // `data-tour="composer"` is the last tour step's target, and the composer is
+    // the one thing on this view that MOVES between states: centred with a
+    // greeting above it on a fresh chat, pinned to the bottom once a turn
+    // lands. The marker rides the composer's own wrapper so both states resolve
+    // it — but nothing else would notice if a later layout change put it on a
+    // node that only exists in one of them, and the tour would silently
+    // spotlight nothing on the state it could not find.
+    stubFetch((url) =>
+      url.includes('/chat')
+        ? okJson({ reply: 'nothing has drifted', trace_id: 'a'.repeat(32), conversation_id: 'c9' })
+        : null,
+    );
+    const { findByTestId, container } = render(App);
+    await findByTestId('chat-empty-chips');
+
+    const empty = document.querySelector('[data-tour="composer"]');
+    expect(empty).toBeTruthy();
+    // And it is the composer it names, not some ancestor that happens to
+    // contain it — a spotlight on the whole column is not a spotlight.
+    expect(empty!.querySelector('#chat-form')).toBeTruthy();
+    expect(empty!.querySelector('[data-testid="chat-empty-chip"]')).toBeNull();
+
+    const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'what changed?' } });
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    await waitFor(() => expect(queryByTestIdIn(document, 'chat-empty-chips')).toBeNull());
+
+    const pinned = document.querySelectorAll('[data-tour="composer"]');
+    // Exactly one, still wrapping the form: two would make the spotlight's
+    // querySelector pick whichever came first in the document.
+    expect(pinned).toHaveLength(1);
+    expect(pinned[0].querySelector('#chat-form')).toBeTruthy();
   });
 
   it('is not left behind on the chat view when a bare ?reasoning= is handed to the desk', async () => {

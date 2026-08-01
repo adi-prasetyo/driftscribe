@@ -7,11 +7,13 @@ import { test, type Page, type Route } from '@playwright/test';
 // and after this it should read composer-first with two boxes (composer +
 // reasoning) and everything else a quiet disclosure.
 //
-// ds-jns PR 3 took that further for a FRESH chat, which is now the empty
-// new-chat state: greeting, composer, four example questions, and nothing else
-// at all. The estate diagram and the capability drawer that used to open here
-// are gone from it (the desk owns the estate; the drawer becomes a modal in
-// Task 3.2), so the first capture below is a one-box page.
+// ds-jns PR 3 took that further, and for a FRESH chat the count is now ONE.
+// The empty new-chat state is a greeting, the composer, four example questions
+// and a link — nothing else. The estate diagram and the capability drawer that
+// used to open here are gone: the desk owns the estate (with the
+// unmatched-declarations group, ds-zld), and the drawer is a modal behind that
+// link. Task 3.3 deleted both mounts along with the page-level replay cluster,
+// so there is no longer a state of this view that shows more than one box.
 //
 //   npx playwright test --config tests/visual/playwright.visual.config.ts \
 //     chat-hierarchy.visual.ts

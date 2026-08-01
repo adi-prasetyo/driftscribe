@@ -150,14 +150,15 @@ export const tour = {
     'tour.card.ariaLabel': 'Guided tour',
     'tour.card.closeAria': 'Close tour',
     'tour.card.progress': '{current} of {total}',
-    'tour.card.adoptDisabledTitle':
-      'Unavailable while the chat is busy or reviewing past reasoning.',
+    // "reviewing past reasoning" named the page-level replay, which ds-jns
+    // deleted — chatDisabled is `busy || resumingConversation` now, and both are
+    // "the chat is working on something".
+    'tour.card.adoptDisabledTitle': 'Unavailable while the chat is busy.',
     'tour.card.adoptButton': 'Prefill the request',
     'tour.card.adoptNote':
       'This only prefills the chat. Nothing is sent until you press Send.',
     'tour.card.busyNote':
-      'The chat is busy or showing past reasoning right now, so sending becomes ' +
-      'available when it finishes.',
+      'The chat is busy right now, so sending becomes available when it finishes.',
     'tour.card.back': 'Back',
     'tour.card.next': 'Next',
     'tour.card.finish': 'Finish',
@@ -287,12 +288,12 @@ export const tour = {
     'tour.card.closeAria': 'ツアーを閉じる',
     'tour.card.progress': '全{total}ステップ中 {current}',
     'tour.card.adoptDisabledTitle':
-      'チャットが処理中か、過去の実行を表示している間は利用できません。',
+      'チャットが処理中の間は利用できません。',
     'tour.card.adoptButton': 'リクエストを入力欄に反映',
     'tour.card.adoptNote':
       'これは入力欄に反映するだけです。送信ボタンを押すまで何も送信されません。',
     'tour.card.busyNote':
-      '現在チャットが処理中か過去の実行を表示しているため、完了すると送信できる' +
+      '現在チャットが処理中のため、完了すると送信できる' +
       'ようになります。',
     'tour.card.back': '戻る',
     'tour.card.next': '次へ',

@@ -42,7 +42,7 @@
     /** See OverviewState.approvalsStale — suppresses the adopt suggestion,
      *  which is an absence claim over `pendingApprovals`. */
     approvalsStale?: boolean;
-    /** Same condition that disables ChatForm/Adopt (busy / historical replay). */
+    /** Same condition that disables ChatForm/Adopt (a busy chat). */
     adoptDisabled?: boolean;
     /** Routes through App.handleAdopt — prefills the composer, never sends. */
     onAdoptPrefill?: (prefill: string) => void;
@@ -147,7 +147,7 @@
 
   {#if step.id === 'next' && adoptDisabled}
     <!-- Honesty (Codex MF3): the copy says "when you send" but Send is
-         disabled right now (busy stream / historical replay) — say so. -->
+         disabled right now (a busy stream, a resuming thread) — say so. -->
     <p class="ds-subtle tour-card__note" data-testid="tour-busy-note">
       {$t('tour.card.busyNote')}
     </p>

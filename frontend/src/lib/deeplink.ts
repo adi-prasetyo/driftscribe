@@ -4,7 +4,7 @@
 // linkable pointer to one past reasoning timeline rides a query param on that
 // same root. That is deliberate: it needs NO extra backend route and NO
 // Cloudflare demo-allowlist entry — the "/" shell is un-gated and the GET
-// /trace/{id} the replay fetches is already on the demo allowlist. A pretty
+// /trace/{id} the record fetches is already on the demo allowlist. A pretty
 // /reasoning/{id} PATH would have cost both (see the design discussion).
 
 // A DriftScribe trace id is a Cloud-trace id: exactly 32 lowercase hex chars.
@@ -19,7 +19,7 @@ const HEX32_RE = /^[0-9a-f]{32}$/;
  *
  * Exported so a component that OFFERS a reasoning link can gate on the same
  * rule the parser applies, rather than each side owning its own idea of a
- * well-formed id. Without it a caller can render a link that opens the replay
+ * well-formed id. Without it a caller can render a link that opens the record
  * once (openTrace takes any string) but silently fails to restore when the
  * resulting URL is shared or reloaded, because `reasoningTraceFromSearch`
  * rejects what `syncReasoningParam` just wrote. The desk's pending card
@@ -30,7 +30,7 @@ export function isReplayableTraceId(id: unknown): id is string {
 }
 
 /**
- * The trace id to replay from a `?reasoning=<hex32>` query string, or null when
+ * The trace id to open as a record from a `?reasoning=<hex32>` query string, or null when
  * the param is absent or malformed. Pure — the caller decides what to do with it
  * (App.svelte calls openTrace on boot; syncReasoningParam writes it back).
  */
@@ -151,10 +151,13 @@ export function viewFromSearch(search: string): AppView {
   // until the next navigate() drops it. Landing on the desk is the only reading
   // under which the link means anything.
   //
-  // Deliberately NOT extended to `?view=chat&reasoning=`, which looks like the
-  // symmetric case and is not: chat still renders that one as the page-level
-  // replay (App.svelte's boot continuation), so the stated view and the param
-  // agree there and the legacy link keeps working until PR 3 removes replay.
+  // Deliberately NOT extended to `?view=chat&reasoning=`, and the reason
+  // outlived its original one. It used to be that chat DID render that shape,
+  // as a page-level replay, so the stated view and the param agreed. ds-jns
+  // Task 3.3 deleted replay — but the explicit `view=chat` is still honoured
+  // here, and App's boot continuation hands the trace on to the desk record
+  // once chat has had its say. That ordering is deliberate: an explicit view
+  // request is answered, then the app admits it has nothing to render.
   // The rule is "a param with no rendering on the stated view wins", not
   // "desk params always win".
   //
