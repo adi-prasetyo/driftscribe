@@ -77,7 +77,6 @@
   let tokenState = $state<TokenState>(getStoredToken() ? 'ok' : 'missing');
   let traceId = $state<string | null>(null);
   let finalReply = $state<string | null>(null);
-  let finalIsError = $state(false);
   // Set from the `done` frame's `iac_pr` when a run just opened an infra PR —
   // drives the clickable first-authoring "Review & approve" CTA.
   let iacPr = $state<{ pr_number: number; pr_url: string } | null>(null);
@@ -310,7 +309,6 @@
     resumingConversation = false;
     traceId = null;
     finalReply = null;
-    finalIsError = false;
     iacPr = null;
     liveExchange = null;
     ephemeralExchange = null;
@@ -1039,7 +1037,6 @@
     resumingConversation = true;
     traceId = null;
     finalReply = null;
-    finalIsError = false;
     iacPr = null;
     liveExchange = null; // cancel any in-flight optimistic exchange
     ephemeralExchange = null; // the failed/paused turn belonged to the old screen
@@ -1169,7 +1166,6 @@
     // trace they belong to.
     let liveTraceId: string | null = null;
     finalReply = null;
-    finalIsError = false;
     iacPr = null;
 
     // Typing IS an answer to an outstanding suggestion: the operator was asked
@@ -1244,7 +1240,6 @@
       // half-applied (the persisted turns already carry the reply).
       liveExchange = null;
       finalReply = null; // now the last bubble in the thread above
-      finalIsError = false;
       iacPr = null; // the thread's crew bubble carries the PR CTA
       void loadConversations(); // the new/updated thread floats to the rail top
     };
@@ -1264,7 +1259,6 @@
       } catch {
         if (myRun !== runSeq) return;
         finalReply = $t('header.chatError.network');
-        finalIsError = true;
         // Never reached the coordinator, so there is no trace and no reasoning
         // line — just the failed exchange, in the thread where it happened.
         setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: null });
@@ -1279,7 +1273,6 @@
           resp.status === 429
             ? $t('header.chatError.rateLimit')
             : $t('header.chatError.requestFailed', { status: resp.status });
-        finalIsError = true;
         setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: null });
         // The crew lock refused this turn and said who holds the thread. Adopt
         // it. This is the LAST line of defence, not the usual route: every
@@ -1340,7 +1333,6 @@
         } catch {
           if (myRun !== runSeq) return;
           finalReply = $t('header.chatError.malformed');
-          finalIsError = true;
           // liveTraceId is still null here: the header read happens AFTER
           // resp.json(), so a malformed body means we never learned the trace.
           setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: liveTraceId });
@@ -1383,7 +1375,6 @@
             sawDone = true;
             if (myRun !== runSeq) return;
             finalReply = d.reply;
-            finalIsError = false;
             iacPr = d.iac_pr ?? null;
             // A paused refusal echoes conversation_id for crew-lock symmetry but
             // persists NO turn — never settle it into conversationTurns (it
@@ -1412,7 +1403,6 @@
             sawErrorFrame = true;
             if (myRun !== runSeq) return;
             finalReply = er.detail || $t('header.chatError.coordinatorError');
-            finalIsError = true;
             setEphemeral({
               prompt,
               workload,
@@ -1482,7 +1472,6 @@
         finalReply = streamErrored
           ? $t('header.chatError.streamInterrupted')
           : $t('header.chatError.streamEnded');
-        finalIsError = true;
         // The stream may still have carried reasoning before it died, so this
         // ephemeral turn keeps its trace id and its disclosure.
         setEphemeral({ prompt, workload, reply: finalReply, isError: true, traceId: liveTraceId });
@@ -1598,7 +1587,6 @@
       liveExchange = null;
       ephemeralExchange = carry == null ? null : reseated(carry, conversationTurns);
       finalReply = null;
-      finalIsError = false;
       iacPr = null; // the persisted crew turn carries the PR CTA now
       adoptCrew(detail.workload);
       // The redeemed proposal is burned; anything here is a NEW one the joining
@@ -1642,7 +1630,6 @@
     // disclosure must stream exactly like a first crew's.
     let liveTraceId: string | null = null;
     finalReply = null;
-    finalIsError = false;
     iacPr = null;
     // Only an ACCEPT runs a crew, so only an accept gets a thinking bubble. A
     // decline is a bookkeeping POST with a one-line canned reply; showing it
@@ -1692,7 +1679,6 @@
           // changed while the composer still submits as the crew that left.
           adoptCrew(offer.to);
           finalReply = $t('conversations.handoff.error.joinFailed', crews);
-          finalIsError = true;
           setEphemeral({
             prompt: '',
             workload: offer.to as Workload,
@@ -1774,7 +1760,6 @@
         } catch {
           if (myRun !== runSeq) return;
           finalReply = $t('header.chatError.malformed');
-          finalIsError = true;
           setEphemeral({
             prompt: '',
             workload: offer.to as Workload,
@@ -1806,7 +1791,6 @@
               sawDone = true;
               if (myRun !== runSeq) return;
               finalReply = d.reply;
-              finalIsError = false;
               iacPr = d.iac_pr ?? null;
               joinHandoff = readHandoffOffer(d.handoff);
               refusedByPause = d.paused === true;
@@ -1816,7 +1800,6 @@
               sawErrorFrame = true;
               if (myRun !== runSeq) return;
               finalReply = er.detail || $t('header.chatError.coordinatorError');
-              finalIsError = true;
               setEphemeral({
                 prompt: '',
                 workload: offer.to as Workload,
@@ -1849,7 +1832,6 @@
           finalReply = streamErrored
             ? $t('header.chatError.streamInterrupted')
             : $t('header.chatError.streamEnded');
-          finalIsError = true;
           setEphemeral({
             prompt: '',
             workload: offer.to as Workload,
