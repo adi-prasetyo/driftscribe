@@ -684,6 +684,51 @@
         events.length > 0),
   );
 
+  // A fresh chat with nothing on it yet: the greeting + suggestion chips show
+  // and the composer sits in the MIDDLE of the column instead of pinned to the
+  // bottom of an empty one (ds-jns PR 3).
+  //
+  // Derived from composerNewChat rather than re-listing its terms, so "there is
+  // something here to clear" and "there is nothing here" cannot drift apart —
+  // one expression, two readings. handoffOffer and iacPr are deliberately NOT
+  // extra terms: neither can exist before a turn has landed, and a turn is
+  // something composerNewChat already sees.
+  //
+  // resumingConversation is a SECOND arm over the same window, and measured
+  // against today's code it never fires: openConversation writes
+  // setConversationId(id) BEFORE awaiting the detail, so composerNewChat is
+  // already true for the whole fetch and a `?conversation=` deep link cannot
+  // flash the greeting in front of the thread it is loading. Injecting the
+  // reorder (id written after the fetch) proves the arm real rather than
+  // decorative: with it, still no flash; with it removed as well, the greeting
+  // and four chips appear for the length of the request and are then yanked
+  // away. That ordering is load-bearing for a different reason of its own (a
+  // failed rehydrate must not leave a stale crew lock), which makes it exactly
+  // the kind of thing a later change moves without thinking about this rule.
+  const chatEmpty = $derived(!historicalActive && !resumingConversation && !composerNewChat);
+
+  // Suggestion chips. Frozen order, one per crew's flavour, broadest first —
+  // see locales/chat.ts for why none of them names its crew.
+  const EMPTY_CHIP_KEYS = [
+    'chat.empty.chip.explore',
+    'chat.empty.chip.anchor',
+    'chat.empty.chip.patch',
+    'chat.empty.chip.provision',
+  ] as const;
+
+  /**
+   * Clicking a chip PREFILLS the composer; it does not send. The operator reads
+   * what they are about to ask, edits it if they want, and presses Send — the
+   * same contract Adopt has had since Phase 4 (design §6, "the operator stays
+   * in charge"), reusing the same mechanism rather than inventing a second one.
+   *
+   * No `workload`: a chip is an example question, not a routing decision. See
+   * ChatPrefill.workload for why absent and 'explore' are different claims.
+   */
+  function useSuggestion(text: string): void {
+    chatPrefill = { text, epoch: (chatPrefill?.epoch ?? 0) + 1 };
+  }
+
   // Adopt-button bridge + ?ask_pr boot seed (item 12): an Adopt click — or
   // arriving from the approval page's "ask about this change" link — prefills
   // (NOT sends) the composer. epoch bumps so the same/another Adopt re-applies
@@ -2342,7 +2387,12 @@
        near the top and the reply grew DOWNWARD below it, so the thing the
        operator was waiting for walked off the bottom of the window while they
        watched — on a long run they had to chase it by scrolling. -->
-  <section id="chat-area" class="chat-area" aria-label={$t('header.chatArea.ariaLabel')}>
+  <section
+    id="chat-area"
+    class="chat-area"
+    class:chat-area--empty={chatEmpty}
+    aria-label={$t('header.chatArea.ariaLabel')}
+  >
     <!-- Deliberately OUTSIDE the scroll region. The pause banner is the reason
          the composer below it is refusing input; if it could scroll away, the
          operator would be left looking at a dead Send button with the
@@ -2358,20 +2408,29 @@
       {#if historicalActive}
         {@render traceOutput()}
       {/if}
-      <div class="tour-target">
-        <!-- No `previewPr` here: the estate preview belongs to the desk now
-             (ds-jns Task 2.4), and `?preview_pr=` routes there. Passing it would
-             put the same ghost overlay on two pages. -->
-        <InfraDiagram
-          {call}
-          {appliedEpoch}
-          onExitPreview={exitPreview}
-          onAdopt={handleAdopt}
-          onInvestigate={handleAdopt}
-          adoptDisabled={chatDisabled}
-        />
-      </div>
-      <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
+      <!-- Both of these yield to the empty state on a fresh chat: a greeting and
+           four questions are a better front door than an estate diagram and a
+           shut disclosure, and neither belongs to the conversation anyway. They
+           are gated rather than deleted only because Task 3.3 deletes them
+           outright, in its own commit, with the test sweep that needs. Nothing
+           pops into view on first send: the thread follows its own tail, so by
+           the time these mount they are already scrolled off the top. -->
+      {#if !chatEmpty}
+        <div class="tour-target">
+          <!-- No `previewPr` here: the estate preview belongs to the desk now
+               (ds-jns Task 2.4), and `?preview_pr=` routes there. Passing it would
+               put the same ghost overlay on two pages. -->
+          <InfraDiagram
+            {call}
+            {appliedEpoch}
+            onExitPreview={exitPreview}
+            onAdopt={handleAdopt}
+            onInvestigate={handleAdopt}
+            adoptDisabled={chatDisabled}
+          />
+        </div>
+        <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
+      {/if}
       {#if !historicalActive && displayTurns.length > 0}
         <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} {autoExpandTraceId} />
       {/if}
@@ -2395,6 +2454,14 @@
         {@render traceOutput()}
       {/if}
     </div>
+    <!-- The empty state's greeting. Outside .chat-composer so the tour's
+         "composer" spotlight keeps hugging the form itself rather than growing
+         to swallow a greeting and four chips the moment the chat is fresh. -->
+    {#if chatEmpty}
+      <h2 class="chat-empty__greeting" data-testid="chat-empty-greeting">
+        {$t('chat.empty.greeting')}
+      </h2>
+    {/if}
     <div class="chat-composer tour-target" data-tour="composer">
       <ChatForm
         disabled={chatDisabled}
@@ -2405,6 +2472,25 @@
         onNewChat={newChat}
       />
     </div>
+    <!-- Below the composer, not above it: the greeting introduces the box and
+         the chips elaborate on it, so reading order is greeting -> where you
+         type -> things you could type. Above, they would push the input the
+         operator came here to use down the page behind four sentences. -->
+    {#if chatEmpty}
+      <ul class="chat-empty__chips" data-testid="chat-empty-chips"
+        aria-label={$t('chat.empty.chipsAriaLabel')}>
+        {#each EMPTY_CHIP_KEYS as key (key)}
+          <li>
+            <button
+              type="button"
+              class="chat-empty__chip"
+              data-testid="chat-empty-chip"
+              onclick={() => useSuggestion($t(key))}
+            >{$t(key)}</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   </section>
   {:else if view === 'desk'}
   <!-- The real approval desk (Task 3.5). Data comes exclusively from the
@@ -2798,6 +2884,88 @@
   .chat-composer {
     flex: 0 0 auto;
     padding-bottom: var(--ds-sp-5);
+  }
+
+  /* ── The empty new-chat state ──────────────────────────────────────────────
+     A fresh chat has no transcript, so pinning the composer to the bottom would
+     leave the operator looking at a screen of nothing with a lone input bar
+     under it. Instead the composer moves to the MIDDLE and brings a greeting
+     and four example questions with it — the front door, not the tail of an
+     empty log.
+
+     Centred with auto margins rather than `justify-content: center`, and that
+     distinction is load-bearing: PauseBanner is a flex child of this same
+     column, and justify-content would centre it too — floating the explanation
+     for why the composer is refusing input into the middle of the page instead
+     of leaving it at the top where an alert belongs. Two auto margins split the
+     free space between them, so only what sits BETWEEN them is centred.
+
+     overflow-y because auto margins collapse to 0 when the content no longer
+     fits: on a short viewport the group would otherwise grow past the column
+     and be clipped by `.layout--chat`'s overflow: hidden, taking the chips (and
+     on a really short one, the Send button) with it. */
+  .chat-area--empty {
+    overflow-y: auto;
+  }
+  /* Not `flex: 0 0 auto` + zero height: the thread still carries `padding` and
+     would leave a band of dead space between the greeting and whatever is above
+     it. It has no children in this state anyway. */
+  .chat-area--empty .chat-thread {
+    display: none;
+  }
+  .chat-area--empty .chat-empty__greeting {
+    margin-top: auto;
+  }
+  .chat-area--empty .chat-empty__chips {
+    margin-bottom: auto;
+  }
+  .chat-empty__greeting {
+    margin: 0 0 var(--ds-sp-4);
+    font-size: var(--ds-fs-4);
+    font-weight: var(--ds-fw-semibold);
+    letter-spacing: -0.01em;
+    color: var(--ds-fg);
+    text-align: center;
+  }
+  .chat-empty__chips {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--ds-sp-2);
+    list-style: none;
+    margin: 0;
+    padding: 0 0 var(--ds-sp-5);
+  }
+  /* Quiet by construction: one saturated control on this screen is the Send
+     button, and four blue pills either side of it would turn the front door
+     into a menu of things the agent would rather you asked. */
+  .chat-empty__chip {
+    appearance: none;
+    display: block;
+    text-align: left;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface);
+    color: var(--ds-fg-soft);
+    font-family: inherit;
+    font-size: var(--ds-fs-1);
+    line-height: 1.35;
+    padding: 0.45em 0.95em;
+    cursor: pointer;
+    transition:
+      background-color var(--ds-dur) var(--ds-ease),
+      border-color var(--ds-dur) var(--ds-ease),
+      color var(--ds-dur) var(--ds-ease);
+  }
+  /* No :disabled treatment, deliberately. A chip is only ever on screen while
+     chatEmpty holds, and chatEmpty implies !busy / !resuming / !historical —
+     which is the whole of chatDisabled. A `disabled={chatDisabled}` here (and
+     the greyed-out rule to match) would be a state that cannot be reached and
+     therefore cannot be tested. */
+  .chat-empty__chip:hover {
+    background: var(--ds-surface-2);
+    border-color: var(--ds-border-strong);
+    color: var(--ds-fg);
   }
   /* The out-of-window record, pinned above the desk. Width + centring copied
      from ApprovalDesk/EstateView rather than left to shrink-to-fit: those two

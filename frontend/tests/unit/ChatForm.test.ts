@@ -47,6 +47,30 @@ describe('ChatForm — prefill', () => {
     expect(await submittedWorkload(onSubmit, input)).toBe('provision');
   });
 
+  it('a prefill with NO workload leaves the composer on the crew it was already on', async () => {
+    // Suggestion chips (ds-jns PR 3) prefill text and nothing else. The crew
+    // they must not touch is the thread's: a resumed thread is crew-LOCKED, and
+    // a prefill that quietly wrote 'explore' over that lock would send the next
+    // turn to the wrong crew and earn a 409 from the server.
+    //
+    // Started on Provision deliberately — on the Explore default, "left alone"
+    // and "overwritten with the default" are the same observation, which is the
+    // shape of test that would have let this ship.
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: {
+        onSubmit,
+        workload: 'provision',
+        prefill: { text: 'What is running in this project right now?', epoch: 1 },
+      },
+    });
+    const input = getByTestId('chat-prompt') as HTMLInputElement;
+    await waitFor(() =>
+      expect(input.value).toBe('What is running in this project right now?'),
+    );
+    expect(await submittedWorkload(onSubmit, input)).toBe('provision');
+  });
+
   it('re-applies when the epoch bumps with new text (overwrites the draft)', async () => {
     const onSubmit = vi.fn();
     const { getByTestId, rerender } = render(ChatForm, {

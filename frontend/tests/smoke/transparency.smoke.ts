@@ -29,6 +29,36 @@ const ORIGIN = 'http://127.0.0.1:8765';
 // being every test's incidental starting point.
 const CHAT_URL = '/?view=chat';
 
+/**
+ * Chat, on an OPEN thread.
+ *
+ * A FRESH chat is the empty new-chat state (ds-jns PR 3): a greeting, the
+ * composer, and four example questions, with the whole transcript region
+ * unrendered. Anything that lives IN the transcript — the reasoning groups, the
+ * infrastructure panel — is therefore not on a bare `?view=chat` any more, so
+ * the specs that exercise those open a persisted thread first. Registration
+ * order matches the resume test below: the list glob first, the `/<id>` glob
+ * last so it wins for the detail request.
+ */
+async function gotoOpenThread(page: Page) {
+  await page.route('**/conversations**', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(conversationsListResponse()),
+    }),
+  );
+  await page.route('**/conversations/**', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(conversationDetailResponse()),
+    }),
+  );
+  await page.goto(`/?conversation=${CONVERSATION_ID}`);
+  await expect(page.locator(`[data-testid="${TESTIDS.conversationThread}"]`)).toBeVisible();
+}
+
 // Seed the operator token the way the deployed e2e does (sessionStorage), before
 // any page script runs.
 async function seedToken(page: Page, token = 'smoke-token') {
@@ -310,10 +340,13 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`)).toBeVisible();
     await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toBeVisible();
     await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionsPane}"]`)).toBeVisible();
-    // three reasoning groups are real <details>
-    await expect(page.locator('#group-coordinator')).toBeVisible();
-    await expect(page.locator('#group-tools')).toBeVisible();
-    await expect(page.locator('#group-mcp')).toBeVisible();
+    // The front door a fresh chat actually shows (ds-jns PR 3): greeting plus
+    // four example questions. This replaced the three empty reasoning groups
+    // that used to be asserted here — they live inside the transcript, which a
+    // fresh chat does not render, and they are checked with real content in the
+    // SSE test below rather than as empty <details> nobody has filled yet.
+    await expect(page.getByTestId('chat-empty-greeting')).toBeVisible();
+    await expect(page.getByTestId('chat-empty-chip')).toHaveCount(4);
     expect(bad, `static assets must load with no 4xx/5xx: ${bad.join(', ')}`).toHaveLength(0);
   });
 
@@ -469,7 +502,10 @@ test.describe('transparency UI (mock smoke)', () => {
   test('infrastructure panel: glanceable drift badge, then expand renders the resource cards', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    // On an open thread: the panel is a child of the transcript, which a fresh
+    // chat does not render (see gotoOpenThread). PR 3 Task 3.3 deletes this
+    // mount outright — see bead ds-zld for where the unmatched band lands.
+    await gotoOpenThread(page);
 
     // Collapsed panel shows a glanceable drift badge (data fetched on mount).
     // Scope-aware: 1 drift in the adoptable Cloud Run type (NOT the secret, which
@@ -511,7 +547,7 @@ test.describe('transparency UI (mock smoke)', () => {
     page.on('request', (req) => {
       if (req.url().includes('/chat') && req.method() === 'POST') chatPosts++;
     });
-    await page.goto(CHAT_URL);
+    await gotoOpenThread(page);
 
     // The collapsed summary carries a SEPARATE "N IaC unmatched" badge, distinct
     // from the drift badge (both present, never merged into one number).

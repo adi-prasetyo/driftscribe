@@ -67,7 +67,12 @@
     lastPrefillEpoch = p.epoch;
     untrack(() => {
       prompt = p.text;
-      workload = p.workload;
+      // Only a prefill that NAMES a crew moves the composer. A text-only
+      // prefill (a suggestion chip) leaves `workload` exactly as it was, which
+      // on a resumed thread is the crew that thread is locked to — writing
+      // 'explore' here instead of nothing would send the next turn to the wrong
+      // crew and earn a 409.
+      if (p.workload !== undefined) workload = p.workload;
       inputEl?.focus();
     });
     // Re-fit the textarea AFTER the bind:value DOM write commits. The prompt-

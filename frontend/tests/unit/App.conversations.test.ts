@@ -742,9 +742,17 @@ describe('App — composer New chat + crew lock', () => {
     // specific resource, so routing it through Explore would cost the operator
     // an extra turn and a confirmation to say what they already said. The
     // picker used to prove this with a checked radio; the wire proves it now.
+    //
+    // Driven from the DESK's estate section, which is where Adopt lives since
+    // Task 4.1 — and the only place it lives on a FRESH chat, because the chat
+    // view's copy of the diagram yields to the empty state (and PR 3 Task 3.3
+    // deletes it outright). Both buttons call the same handleAdopt, so the
+    // claim under test is unchanged; the door it is driven through is now the
+    // one an operator would actually find.
     stubResumeFetch(ADOPT_GRAPH);
+    history.replaceState(null, '', '/?view=desk');
     const { findByTestId, container } = render(App);
-    await fireEvent.click(await findByTestId('card-adopt-btn'));
+    await fireEvent.click(await findByTestId('estate-adopt-btn'));
     await waitFor(() => {
       const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
       expect(input.value).toContain('my-old-uploads');

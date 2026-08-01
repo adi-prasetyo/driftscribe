@@ -7,6 +7,7 @@ import { common } from './common';
 import { shared } from './shared';
 import { header } from './header';
 import { composer } from './composer';
+import { chat } from './chat';
 import { conversations } from './conversations';
 import { decisions } from './decisions';
 import { timeline } from './timeline';
@@ -26,6 +27,7 @@ export const NAMESPACES = {
   shared,
   header,
   composer,
+  chat,
   conversations,
   decisions,
   timeline,
@@ -44,6 +46,7 @@ export const enMessages = {
   ...shared.en,
   ...header.en,
   ...composer.en,
+  ...chat.en,
   ...conversations.en,
   ...decisions.en,
   ...timeline.en,
@@ -61,6 +64,7 @@ export const jaMessages = {
   ...shared.ja,
   ...header.ja,
   ...composer.ja,
+  ...chat.ja,
   ...conversations.ja,
   ...decisions.ja,
   ...timeline.ja,

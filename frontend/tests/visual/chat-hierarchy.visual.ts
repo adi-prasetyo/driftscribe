@@ -7,6 +7,12 @@ import { test, type Page, type Route } from '@playwright/test';
 // and after this it should read composer-first with two boxes (composer +
 // reasoning) and everything else a quiet disclosure.
 //
+// ds-jns PR 3 took that further for a FRESH chat, which is now the empty
+// new-chat state: greeting, composer, four example questions, and nothing else
+// at all. The estate diagram and the capability drawer that used to open here
+// are gone from it (the desk owns the estate; the drawer becomes a modal in
+// Task 3.2), so the first capture below is a one-box page.
+//
 //   npx playwright test --config tests/visual/playwright.visual.config.ts \
 //     chat-hierarchy.visual.ts
 
@@ -82,14 +88,16 @@ for (const locale of ['ja', 'en'] as const) {
     await seed(page, locale);
     await mock(page);
     await page.goto('/?view=chat');
-    await page.locator('#chat-form').waitFor();
+    await page.getByTestId('chat-empty-chips').waitFor();
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${SHOTS}/${locale}-chat-empty.png`, fullPage: true });
 
-    // Open the capability drawer: its body must sit on a well, not in a card.
-    await page.getByTestId('cap-summary').click();
+    // A chip fills the composer without sending, so the capture shows the state
+    // an operator lands in after one click: their question in the box, ready to
+    // edit, nothing on the wire.
+    await page.getByTestId('chat-empty-chip').first().click();
     await page.waitForTimeout(300);
-    await page.screenshot({ path: `${SHOTS}/${locale}-chat-cap-open.png`, fullPage: true });
+    await page.screenshot({ path: `${SHOTS}/${locale}-chat-empty-prefilled.png`, fullPage: true });
   });
 }
 
