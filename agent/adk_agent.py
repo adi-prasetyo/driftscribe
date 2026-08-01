@@ -590,8 +590,13 @@ _DEMO_ANON_EXTRA_DENY: frozenset[str] = frozenset({"provision_open_infra_pr"})
 # risk-accepted exception (operator decision 2026-07-09, docs/plans/
 # 2026-07-09-operator-seat-demo-window.md), reversing audit H1 for that one tool:
 # the worker merges fail-closed (repo pinned server-side, requires the driftscribe
-# label + upgrade/ head + main base + green CI) and the lodash baseline
-# self-restores within ~2h, so the blast radius is one line of a demo fixture.
+# label + upgrade/ head + main base + green CI) and the target is one line of a
+# demo fixture. 2026-08-01: this acceptance also cited "the lodash baseline
+# self-restores within ~2h" — demo-reset.yml is gone, so it does not. The
+# RESOURCE scope is unchanged (still one line of demo/upgrade-target/
+# package.json); the TIME bound is not — a merged fix now stands until the
+# operator re-pins by hand (demo-window.sh open checklist, step 0). Reopening
+# the window at this tier is a live decision, not a grandfathered one.
 # Kept as a function (not a module constant) so the derived apply-tier set always
 # reflects the current TOOL_TIERS.
 _DEMO_ANON_APPLY_ALLOW: frozenset[str] = frozenset({"upgrade_merge_pr"})
@@ -630,8 +635,12 @@ _DEMO_ANON_NOTE = (
 # not this). Honest framing (operator decision 2026-07-09): the visitor holds
 # the operator seat, so approving a rollback and merging the upgrade PR are real
 # and open to them; only the IaC apply gate and free-form infra authoring stay
-# with the project owner, because a merged infra change cannot be unwound by the
-# demo's resets.
+# with the project owner, because a merged infra change cannot be undone the way
+# a demo fixture can. 2026-08-01: demo-reset.yml was removed, so all four notes
+# below say "restored by the project owner between public windows" instead of
+# a schedule. The gating rationale is UNCHANGED and in fact stronger — nothing
+# reverts a merged infra PR either way — but the crews must not tell a visitor
+# their change will be healed in two hours when nothing will heal it.
 _EXPLORE_DEMO_ANON_NOTE = (
     "DEMO NOTE: you are serving a visitor in DriftScribe's public demo window. "
     "This is normally a single-operator console, opened to the public for the "
@@ -642,14 +651,16 @@ _EXPLORE_DEMO_ANON_NOTE = (
     "dependency-upgrade pull request, really changes the live demo services. Two "
     "things stay with the project owner: applying an infrastructure change behind "
     "the IaC approval gate, and free-form infrastructure authoring, because a "
-    "merged infrastructure change cannot be unwound by the demo's resets. The "
-    "demo heals itself: scheduled resets restore the service baselines, close "
-    "adoption pull requests after a couple of hours, and restore the vulnerable "
-    "dependency after it has been fixed, so work a visitor did earlier may have "
-    "been reset by design. This is background: only bring it up when the "
-    "visitor's question touches it (what they are allowed to do, why drift "
-    "returned or a PR closed, or whether the infrastructure is real), otherwise "
-    "just answer their actual question."
+    "merged infrastructure change cannot be undone the way a demo fixture can. "
+    "The demo fixtures are restored by the project owner between public windows, "
+    "not on a schedule, so what the visitor sees may already reflect what an "
+    "earlier visitor did, and a change they make now stays in place for later "
+    "visitors in this window rather than being reset out from under them. This "
+    "is background: "
+    "only bring it up when the visitor's question touches it (what they are "
+    "allowed to do, why something already looks fixed or a pull request is "
+    "already open, or whether the infrastructure is real), otherwise just "
+    "answer their actual question."
 )
 
 
@@ -682,9 +693,11 @@ _ANCHOR_DEMO_ANON_NOTE = (
     "returned in this conversation, never reconstruct or invent one, and present "
     "the link rather than quoting the bare token. Approvals expire after about "
     "fifteen minutes; if one lapses, the visitor can simply ask you to propose "
-    "again. Scheduled resets restore the service's configuration to its "
-    "documented contract baseline every couple of hours, so a rollback a visitor "
-    "ran, or drift they saw earlier, may have been healed since. This is "
+    "again. The service's configuration is restored to its documented contract "
+    "baseline by the project owner between public windows, not on a schedule, so "
+    "the drift the visitor is looking at may be exactly what an earlier visitor "
+    "left behind, and a rollback they run now stays in place for later visitors "
+    "in this window. This is "
     "background: only raise it when the visitor's question touches it, otherwise "
     "just answer their actual question."
 )
@@ -694,9 +707,10 @@ _ANCHOR_DEMO_ANON_NOTE = (
 # ``upgrade_merge_pr`` (see ``_DEMO_ANON_APPLY_ALLOW``), an anonymous visitor can
 # now actually merge the upgrade PR, so Patch keeps its full tool set and never
 # receives the drop-gated ``_DEMO_ANON_NOTE``. This context-gated note tells it
-# merging is allowed and expected, and explains the ~2h self-heal (the lodash
-# re-pin) so a "why did the vulnerability come back" question has an honest
-# answer. Runtime-composed, demo_anon-gated, self-removes at window close; never
+# merging is allowed and expected, and tells it the lodash pin is restored by
+# hand between sessions so a "is there anything to upgrade" question has an
+# honest answer even when an earlier visitor already merged the fix.
+# Runtime-composed, demo_anon-gated, self-removes at window close; never
 # touches the served prompt file or the byte-golden pins; names no tool.
 _PATCH_DEMO_ANON_NOTE = (
     "DEMO NOTE: you are serving a visitor in DriftScribe's public demo window. "
@@ -704,13 +718,13 @@ _PATCH_DEMO_ANON_NOTE = (
     "sits in the operator's seat. The dependency-upgrade demo is real: proposing "
     "a fix opens a real pull request, and asking you to merge it performs a real "
     "merge once its checks pass. Merging is allowed and expected here. The "
-    "upgrade fixture heals itself: within a couple of hours of a fix being "
-    "merged, a scheduled job restores the vulnerable pin so the next visitor gets "
-    "the same demo, which means a vulnerability the visitor fixed earlier may "
-    "have reappeared by design. This is background: only raise it when the "
-    "visitor's question touches it (whether they can merge, why the vulnerable "
-    "dependency came back, or whether the pull request is real), otherwise just "
-    "answer their actual question."
+    "vulnerable pin is restored by the project owner between public windows, not "
+    "on a schedule, so if an earlier visitor already merged the fix the dependency may "
+    "already be current and there is genuinely nothing to upgrade; say so plainly "
+    "rather than inventing a finding. This is background: only raise it when the "
+    "visitor's question touches it (whether they can merge, why there may be "
+    "nothing left to upgrade, or whether the pull request is real), otherwise "
+    "just answer their actual question."
 )
 
 
@@ -732,11 +746,12 @@ _PROVISION_DEMO_ANON_NOTE = (
     "free-form infrastructure authoring (drafting a new infrastructure change "
     "from scratch) is not available to you in this window, and applying or "
     "merging an infrastructure pull request happens behind the owner's approval "
-    "gate, because merged infrastructure changes cannot be unwound by the demo's "
-    "resets. Adoption pull requests are closed automatically after a couple of "
-    "hours so the next visitor can run the same demo. This is background: only "
-    "raise it when the visitor's question touches it, otherwise just answer their "
-    "actual question."
+    "gate, because a merged infrastructure change cannot be undone the way a "
+    "demo fixture can. An adoption pull request stays open until the project "
+    "owner closes it, so a resource an earlier visitor already proposed adopting "
+    "shows as pending rather than offering the button again. This is background: "
+    "only raise it when the visitor's question touches it, otherwise just answer "
+    "their actual question."
 )
 
 

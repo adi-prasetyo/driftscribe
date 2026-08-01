@@ -846,6 +846,74 @@ def is_pr_merged_at_head(repo: Repository, pr_number: int, head_sha: str) -> boo
     return bool(pull.merged) and pull.head.sha == head_sha
 
 
+# Blocker keys returned by :func:`fresh_apply_blocker`. Stable identifiers — the
+# coordinator maps them to operator-facing copy (agent/approval_i18n.py).
+FRESH_APPLY_MERGED = "merged"
+FRESH_APPLY_CLOSED = "closed"
+FRESH_APPLY_DRAFT = "draft"
+FRESH_APPLY_HEAD_MOVED = "head_moved"
+FRESH_APPLY_BASE_MOVED = "base_moved"
+
+# Every FRESH_APPLY_* value. Callers that map blockers to copy assert totality
+# against THIS, not against a hand-listed set — a new blocker with no copy must
+# fail CI rather than degrade to "nothing blocks it" at runtime.
+FRESH_APPLY_BLOCKERS: frozenset[str] = frozenset(
+    {
+        FRESH_APPLY_MERGED,
+        FRESH_APPLY_CLOSED,
+        FRESH_APPLY_DRAFT,
+        FRESH_APPLY_HEAD_MOVED,
+        FRESH_APPLY_BASE_MOVED,
+    }
+)
+
+
+def fresh_apply_blocker(
+    repo: Repository,
+    pr_number: int,
+    expected_head_sha: str,
+    *,
+    required_base: str = "main",
+) -> str | None:
+    """Why a FRESH apply of ``expected_head_sha`` cannot succeed, or ``None``.
+
+    ONE ``get_pull``. Returns a ``FRESH_APPLY_*`` key when the PR's own lifecycle
+    already guarantees that :func:`assert_pr_ready_at_sha` would refuse a plan
+    with no recorded decision; ``None`` when nothing observable here blocks it.
+
+    **This is a deliberate SUBSET of** :func:`assert_pr_ready_at_sha`, not a
+    duplicate of it, and callers must not treat ``None`` as "ready". It covers
+    the PR-lifecycle refusals that a single ``get_pull`` settles: merged, closed,
+    draft, head moved off the artifact, and a base retargeted away from
+    ``required_base``. It does NOT cover required-check status (a second API
+    path, and transient by nature: a pending check turns green on its own) or the
+    empty-``required_checks`` configuration refusal. Those stay with the POST,
+    which remains the authorization boundary. The point of this helper is only to
+    stop a page from OFFERING a button whose POST is already doomed.
+
+    ``required_base`` mirrors :func:`assert_pr_ready_at_sha`'s default so the two
+    cannot silently diverge; a caller that changes one must change both.
+
+    Ordering is most-permanent-first so the reported reason is the durable one: a
+    merged PR that was also force-pushed reads as ``merged``, not ``head_moved``.
+    ``closed`` is reported for an unmerged closed PR — reopening is possible, and
+    a later render simply stops reporting it, which is the correct behavior for a
+    check that describes the PR *right now*.
+    """
+    pull = repo.get_pull(pr_number)
+    if pull.merged:
+        return FRESH_APPLY_MERGED
+    if pull.state != "open":
+        return FRESH_APPLY_CLOSED
+    if pull.draft:
+        return FRESH_APPLY_DRAFT
+    if pull.base.ref != required_base:
+        return FRESH_APPLY_BASE_MOVED
+    if pull.head.sha != expected_head_sha:
+        return FRESH_APPLY_HEAD_MOVED
+    return None
+
+
 # Defaults for list_pr_iac_tf_files: a Firestore cache doc must stay under the
 # 1 MiB limit, and IaC files are small, so these caps are generous-but-bounded.
 _PR_SOURCE_MAX_FILES = 25

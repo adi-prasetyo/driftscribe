@@ -658,8 +658,18 @@ def propose_rollback_tool(target_revision: str, reason: str) -> dict:
     # the rollback link: the link is the point of the demo (asking Anchor to roll
     # back really moves payment-demo traffic once approved). Bounds that make this
     # safe: single-use token, 15-min TTL, the worker refuses no-op targets, and
-    # demo-reset.yml restores the payment-demo baseline within ~2h. That parity
-    # survives the ds-y5i allowlist: both seats receive the SAME four fields.
+    # payment-demo is a demo fixture, not a real workload. NOTE (2026-08-01): the
+    # fourth bound used to be "demo-reset.yml restores the baseline within ~2h";
+    # that workflow was removed, so a visitor's rollback now PERSISTS until the
+    # operator restores it (demo-window.sh's open checklist, step 0). Be precise
+    # about what did and did not change: the RESOURCE scope is identical
+    # (payment-demo, a fixture). The TIME bound is gone — recovery went from
+    # "bounded at ~2h" to "unbounded until an operator notices". The surviving
+    # bounds do not replace it: a 15-min TTL limits when a link can be redeemed,
+    # not how long its effect lasts, and single-use stops replay of ONE approval,
+    # not a stream of fresh proposals. Reopening the window at this tier is a live
+    # decision, not a grandfathered one. That parity survives the ds-y5i
+    # allowlist: both seats receive the SAME four fields.
     return approval
 
 
