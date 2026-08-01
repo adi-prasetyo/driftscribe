@@ -72,6 +72,7 @@
   import { hasDecisionForTrace } from './lib/ledger';
   import { turnOwnsReasoning } from './lib/conversations';
   import { prefersReducedMotion } from './lib/motion';
+  import { stickToBottom } from './lib/stickToBottom';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
   import TourCard from './components/TourCard.svelte';
@@ -2036,17 +2037,27 @@
     // Reflect the open replay in the address bar so it can be copied / shared /
     // bookmarked. Idempotent on the boot deep-link path (param already set).
     syncReasoningParam(tid);
-    // When historicalActive flips true the replay renders at the TOP of the chat
-    // column (see the {#if historicalActive}{@render traceOutput()} branch), so
-    // bringing the page to the top reveals it — no jarring jump down. Scroll the
-    // WINDOW (the chat column is page-flow, not its own scroll container) rather
-    // than scrollIntoView. await tick() first so the {#if active} block has
-    // flushed and #historical-badge exists for the focus() below. Scrolling here
-    // (pre-fetch) gives instant feedback; the trace body fills in above as it
-    // resolves.
+    // When historicalActive flips true the replay renders at the TOP of the
+    // thread (see the {#if historicalActive}{@render traceOutput()} branch), so
+    // going to the top reveals it — no jarring jump down. await tick() first so
+    // the {#if active} block has flushed and #historical-badge exists for the
+    // focus() below. Scrolling here (pre-fetch) gives instant feedback; the
+    // trace body fills in above as it resolves.
+    //
+    // The THREAD region, not the window: since the chat shell was pinned
+    // (ds-jns PR 3) the window has nothing to scroll on this view, so
+    // window.scrollTo is a no-op here and the replay would be left wherever the
+    // transcript happened to be sitting. This path is still reachable — a
+    // ?reasoning= deep link at boot with view=chat — until Task 3.3 removes
+    // replay mode outright.
+    //
+    // Instant, and it must stay instant: this scroll fires a scroll event that
+    // stickToBottom reads to arm/disarm the follow. An animated one reports its
+    // own intermediate positions and the two fight (see stickToBottom's
+    // toBottom comment for what that measured).
     await tick();
     if (myRun !== runSeq) return; // a newer run superseded us during the tick
-    window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    document.querySelector('[data-testid="chat-thread"]')?.scrollTo({ top: 0, behavior: 'auto' });
     // Move focus into the replay region (banner is tabindex=-1) so keyboard/SR
     // users land in the new content instead of being stranded on the rail button.
     // preventScroll: the window.scrollTo above already positioned the viewport;
@@ -2249,11 +2260,12 @@
 
 <!-- The trace/replay output cluster. Each child's own {#if} already gates on
      historicalActive, so the same snippet renders correctly whether it sits at
-     the TOP (historical replay) or the BOTTOM (live chat) of the chat column —
+     the TOP (historical replay) or the BOTTOM (live chat) of the thread —
      the only thing that changes is WHERE it mounts. Mutually-exclusive call
      sites below ({#if historicalActive} vs {#if !historicalActive}) mean only
      one instance is ever live, so there is no double-mount. Rendered inline, so
-     the components stay direct children of .chat-area (the margin rule applies). -->
+     the components stay direct children of .chat-thread, which is what carries
+     the inter-component spacing rule. -->
 {#snippet traceOutput()}
   <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
   <TraceBadge {traceId} {status} />
@@ -2296,14 +2308,22 @@
      for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, so no shared link
      can strand a visitor on a railless desk (see App.test.ts's
      "rails come off the desk" suite, which pins that guarantee). -->
-<main class="layout" class:layout--full={view !== 'chat'}>
-  <!-- Renders on ANY view (Task 3.5 flipped the bare-URL default to desk, so a
-       first-run visitor who never touches chat must still be offered the
-       tour). shouldOfferTour's own errand-suppression semantics are
-       untouched — this only moved WHERE the offer renders, not when. -->
-  {#if tourOffered && !tourOpen}
-    <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
-  {/if}
+<!-- Renders on ANY view (Task 3.5 flipped the bare-URL default to desk, so a
+     first-run visitor who never touches chat must still be offered the tour).
+     shouldOfferTour's own errand-suppression semantics are untouched — this
+     only moved WHERE the offer renders, not when.
+
+     It sits OUTSIDE `.layout`, as a sibling in the #app column, for two
+     reasons. Grid auto-placement was dropping it into the first cell — the
+     280px rails column — and pushing the rails and the chat area onto separate
+     rows. And `.layout--chat` is now a height-constrained single-row grid
+     (ds-jns PR 3): a banner inside it would land in an implicit second row
+     that `overflow: hidden` would simply swallow. -->
+{#if tourOffered && !tourOpen}
+  <TourBanner onStart={startTour} onDismiss={dismissTourOffer} />
+{/if}
+
+<main class="layout" class:layout--full={view !== 'chat'} class:layout--chat={view === 'chat'}>
   {#if view === 'chat'}
   <div class="rails" data-testid="rails">
     <ConversationsRail
@@ -2316,30 +2336,66 @@
   {/if}
 
   {#if view === 'chat'}
+  <!-- Chat is a chat APP now, not a document (ds-jns PR 3): the composer is
+       pinned to the bottom of the viewport and the transcript scrolls above it,
+       oldest-first, newest against the composer. Before this the composer sat
+       near the top and the reply grew DOWNWARD below it, so the thing the
+       operator was waiting for walked off the bottom of the window while they
+       watched — on a long run they had to chase it by scrolling. -->
   <section id="chat-area" class="chat-area" aria-label={$t('header.chatArea.ariaLabel')}>
-    <!-- Historical replay renders FIRST so an opened trace lands at the top of
-         the chat column (openTrace scrolls the window to top to reveal it). -->
-    {#if historicalActive}
-      {@render traceOutput()}
-    {/if}
-    <!-- The autonomy dial moved to the header pill; the "controls" spotlight
-         marker moved with it. PauseBanner stays here (only shown when paused). -->
+    <!-- Deliberately OUTSIDE the scroll region. The pause banner is the reason
+         the composer below it is refusing input; if it could scroll away, the
+         operator would be left looking at a dead Send button with the
+         explanation parked somewhere off-screen. (The autonomy dial moved to
+         the header pill; the "controls" spotlight marker moved with it.) -->
     <PauseBanner {pause} />
-    <div class="tour-target">
-      <!-- No `previewPr` here: the estate preview belongs to the desk now
-           (ds-jns Task 2.4), and `?preview_pr=` routes there. Passing it would
-           put the same ghost overlay on two pages. -->
-      <InfraDiagram
-        {call}
-        {appliedEpoch}
-        onExitPreview={exitPreview}
-        onAdopt={handleAdopt}
-        onInvestigate={handleAdopt}
-        adoptDisabled={chatDisabled}
-      />
+    <!-- The chat view's ONE scroll container — see .chat-thread. Everything
+         that accumulates lives in here; the composer is a sibling pinned
+         beneath it, so it never moves and never has to be scrolled back to. -->
+    <div class="chat-thread" data-testid="chat-thread" use:stickToBottom={!historicalActive}>
+      <!-- Historical replay renders FIRST so an opened trace lands at the top of
+           the thread (openTrace scrolls to reveal it). -->
+      {#if historicalActive}
+        {@render traceOutput()}
+      {/if}
+      <div class="tour-target">
+        <!-- No `previewPr` here: the estate preview belongs to the desk now
+             (ds-jns Task 2.4), and `?preview_pr=` routes there. Passing it would
+             put the same ghost overlay on two pages. -->
+        <InfraDiagram
+          {call}
+          {appliedEpoch}
+          onExitPreview={exitPreview}
+          onAdopt={handleAdopt}
+          onInvestigate={handleAdopt}
+          adoptDisabled={chatDisabled}
+        />
+      </div>
+      <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
+      {#if !historicalActive && displayTurns.length > 0}
+        <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} {autoExpandTraceId} />
+      {/if}
+      <!-- The confirmation sits at the END of the transcript, directly under the
+           crew reply that proposed it and directly above the composer — where
+           the operator's eye already is. Hidden in historical replay: a past
+           trace is a record, not a live decision. -->
+      {#if !historicalActive && handoffOffer !== null}
+        <HandoffChip
+          offer={handoffOffer}
+          pending={handoffBusy}
+          disabled={chatDisabled || handoffDead}
+          errorText={handoffError}
+          onConfirm={() => void redeemHandoff(true)}
+          onDecline={() => void redeemHandoff(false)}
+        />
+      {/if}
+      <!-- Live output is the tail of the transcript, so it renders last — which
+           now puts it immediately above the composer rather than below it. -->
+      {#if !historicalActive}
+        {@render traceOutput()}
+      {/if}
     </div>
-    <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
-    <div class="tour-target" data-tour="composer">
+    <div class="chat-composer tour-target" data-tour="composer">
       <ChatForm
         disabled={chatDisabled}
         onSubmit={submitChat}
@@ -2349,28 +2405,6 @@
         onNewChat={newChat}
       />
     </div>
-    {#if !historicalActive && displayTurns.length > 0}
-      <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} {autoExpandTraceId} />
-    {/if}
-    <!-- The confirmation sits at the END of the transcript, directly under the
-         crew reply that proposed it — the thread runs oldest-first below the
-         composer, so that is where the operator's eye already is. Hidden in
-         historical replay: a past trace is a record, not a live decision. -->
-    {#if !historicalActive && handoffOffer !== null}
-      <HandoffChip
-        offer={handoffOffer}
-        pending={handoffBusy}
-        disabled={chatDisabled || handoffDead}
-        errorText={handoffError}
-        onConfirm={() => void redeemHandoff(true)}
-        onDecline={() => void redeemHandoff(false)}
-      />
-    {/if}
-    <!-- Live chat output stays BELOW the composer (the natural type-then-stream
-         flow); the historical branch above relocates it to the top instead. -->
-    {#if !historicalActive}
-      {@render traceOutput()}
-    {/if}
   </section>
   {:else if view === 'desk'}
   <!-- The real approval desk (Task 3.5). Data comes exclusively from the
@@ -2688,6 +2722,42 @@
   .layout--full {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* Chat is a fixed-height app shell (ds-jns PR 3): the window does not scroll,
+     the transcript does. Desk keeps document flow — it is a landing page you
+     read top to bottom, and pinning it would only invent a second scrollbar.
+     Hence the modifier rather than a change to `.layout` itself.
+
+     The definite height comes from base.css (`#app:has(> .layout--chat)`); what
+     these two declarations add is passing it DOWN. `align-items: stretch`
+     overrides `.layout`'s `start` so .chat-area takes the row's full height
+     instead of shrink-wrapping its content, and `min-height: 0` opts out of the
+     flex item's default "never smaller than my content".
+
+     Deliberately NOT an explicit `grid-template-rows: minmax(0, 1fr)`: measured
+     against the real cascade, the implicit auto row already resolves to exactly
+     the container height (align-content defaults to stretch, and .chat-thread's
+     own min-height: 0 keeps the track from being pushed up by the transcript).
+     Pinning ONE explicit row would buy nothing and cost something — a future
+     third child of `.layout` would land in an implicit auto row and be swallowed
+     whole by the overflow: hidden below, where today it merely squeezes the
+     thread and is at least visible.
+
+     Desktop only: below the breakpoint the rails stack BELOW the chat, and
+     clipping the layout would make them unreachable. Mobile gets its own shell
+     when the rail becomes a modal. */
+  @media (min-width: 761px) {
+    .layout--chat {
+      align-items: stretch;
+      min-height: 0;
+      overflow: hidden;
+    }
+    /* The rails column is now height-constrained too, so it needs somewhere for
+       a long history to go. Each rail already caps its own list; this catches
+       the sum of them. */
+    .layout--chat .rails {
+      overflow-y: auto;
+    }
+  }
   /* Left column holds two stacked rails: conversation history above past
      decisions. Each owns its own internal scroll; the column spaces + insets
      them so neither hugs the very edge. */
@@ -2699,8 +2769,35 @@
     min-height: 0;
   }
   .chat-area {
-    padding: var(--ds-sp-5) var(--ds-sp-6) var(--ds-sp-8);
+    display: flex;
+    flex-direction: column;
+    /* A flex item's default min-height is `auto` — "never smaller than my
+       content" — which lets the transcript push this column past the viewport
+       and hands the scroll back to the window, the exact thing the pinned
+       composer exists to prevent. THIS one is load-bearing (removing it is the
+       one min-height: 0 in the chain that reddens the geometry spec); the
+       siblings on .layout--chat and .chat-thread are the same canonical guard,
+       kept because their redundancy is a fact about today's descendants'
+       min-content sizes, not a property of the shell. */
+    min-height: 0;
+    padding: 0 var(--ds-sp-6);
     max-width: var(--ds-page-max);
+  }
+  /* The chat view's single scroll container. Vertical padding lives here rather
+     than on .chat-area so the scrollbar runs the full height of the column
+     instead of floating inside an inset box. */
+  .chat-thread {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--ds-sp-5) 0 var(--ds-sp-4);
+  }
+  /* flex: 0 0 auto — the composer keeps its natural height no matter how long
+     the transcript gets. Without it the composer would be the flex item that
+     yields, shrinking a multi-line draft to nothing as the thread grows. */
+  .chat-composer {
+    flex: 0 0 auto;
+    padding-bottom: var(--ds-sp-5);
   }
   /* The out-of-window record, pinned above the desk. Width + centring copied
      from ApprovalDesk/EstateView rather than left to shrink-to-fit: those two
@@ -2722,7 +2819,7 @@
     border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius);
   }
-  .chat-area > :global(*) {
+  .chat-thread > :global(*) {
     margin-bottom: var(--ds-sp-4);
   }
   /* Wrappers exist only as [data-tour] spotlight targets. flow-root makes

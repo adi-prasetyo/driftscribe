@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   distanceFromBottom,
   shouldFollow,
+  stickToBottom,
   STICK_THRESHOLD_PX,
   type ScrollGeometry,
 } from '../../src/lib/stickToBottom';
@@ -91,5 +92,176 @@ describe('shouldFollow', () => {
     // should is a live run that appears to stop updating — which reads as the
     // agent having hung, the one impression this product cannot afford.
     expect(shouldFollow(g({ scrollHeight: NaN }))).toBe(true);
+  });
+});
+
+// ── The action's wiring ──────────────────────────────────────────────────────
+// The rule above is pure and easy; what is actually load-bearing is WHEN the
+// action consults it. jsdom reports every scroll property as 0, so a bare
+// element can only ever sit at the bottom — these tests shadow the three
+// getters with an own-property view onto a mutable struct, which is enough to
+// drive the arm/disarm state machine without a layout engine. The follow itself
+// is observed through a spy on scrollTo (setup.ts stubs it; jsdom has no
+// Element.scrollTo), never through a scroll POSITION, which stays 0 regardless.
+
+interface Region {
+  el: HTMLElement;
+  geo: ScrollGeometry;
+  scrollTo: ReturnType<typeof vi.spyOn>;
+}
+
+function region(over: Partial<ScrollGeometry> = {}): Region {
+  const geo = g(over);
+  const el = document.createElement('div');
+  for (const key of ['scrollTop', 'scrollHeight', 'clientHeight'] as const) {
+    Object.defineProperty(el, key, {
+      configurable: true,
+      get: () => geo[key],
+      set: (v: number) => {
+        geo[key] = v;
+      },
+    });
+  }
+  document.body.appendChild(el);
+  return { el, geo, scrollTo: vi.spyOn(el, 'scrollTo') };
+}
+
+/** Let jsdom deliver the queued MutationObserver records. */
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+/** Content arriving — a streamed token, a thought row, a tool call. */
+function grow(r: Region, byPx = 200): void {
+  r.geo.scrollHeight += byPx;
+  r.el.appendChild(document.createElement('p'));
+}
+
+/** The operator dragging the scrollbar / spinning the wheel. */
+function userScrollTo(r: Region, top: number): void {
+  r.geo.scrollTop = top;
+  r.el.dispatchEvent(new Event('scroll'));
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  document.body.innerHTML = '';
+});
+
+describe('stickToBottom action', () => {
+  it('follows content that arrives while the operator is at the bottom', async () => {
+    const r = region({ scrollTop: 600 });
+    const handle = stickToBottom(r.el);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).toHaveBeenCalledTimes(1);
+    handle.destroy();
+  });
+
+  it('leaves the viewport alone once the operator has scrolled up', async () => {
+    // The behaviour the module exists for. A crew turn streams for tens of
+    // seconds; an operator reading an earlier decision must not be dragged
+    // back to the bottom on every token that lands.
+    const r = region({ scrollTop: 600 });
+    const handle = stickToBottom(r.el);
+    userScrollTo(r, 200);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).not.toHaveBeenCalled();
+    handle.destroy();
+  });
+
+  it('does NOT let content growth disarm the follow', async () => {
+    // The subtle one, and the reason the arm/disarm rule is consulted on user
+    // scrolls ONLY. Growth raises scrollHeight before the follow scroll lands,
+    // so an observer that re-read the geometry would measure a distance it had
+    // just created itself, conclude the operator had scrolled up, and disarm —
+    // permanently, after the very first chunk of a streaming reply.
+    const r = region({ scrollTop: 600 });
+    const handle = stickToBottom(r.el);
+    for (let i = 0; i < 3; i++) {
+      grow(r, 500);
+      await flush();
+    }
+    expect(r.scrollTo).toHaveBeenCalledTimes(3);
+    handle.destroy();
+  });
+
+  it('re-arms when the operator scrolls back down', async () => {
+    const r = region({ scrollTop: 600 });
+    const handle = stickToBottom(r.el);
+    userScrollTo(r, 200);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).not.toHaveBeenCalled();
+
+    userScrollTo(r, r.geo.scrollHeight - r.geo.clientHeight);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).toHaveBeenCalledTimes(1);
+    handle.destroy();
+  });
+
+  it('follows content nested deep inside a turn, not just new turns', async () => {
+    // subtree/characterData, not just childList: a streaming reply grows an
+    // EXISTING turn's text node. A childList-only watch on the region would
+    // see nothing at all for the whole run.
+    const r = region({ scrollTop: 600 });
+    const turn = document.createElement('div');
+    const text = document.createTextNode('half a sen');
+    turn.appendChild(text);
+    r.el.appendChild(turn);
+    const handle = stickToBottom(r.el);
+
+    text.data = 'half a sentence more';
+    await flush();
+    expect(r.scrollTo).toHaveBeenCalledTimes(1);
+    handle.destroy();
+  });
+
+  it('does not follow at all when disabled', async () => {
+    // Historical replay. A past run is a static record — there is no tail to
+    // follow, and following one measurably harmed it: the replay opened
+    // scrolled to its own bottom with the "reading a past run" banner pushed
+    // off the top edge of the region, because the follow beat openTrace's
+    // scroll-to-top to the punch.
+    const r = region({ scrollTop: 600 });
+    const handle = stickToBottom(r.el, false);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).not.toHaveBeenCalled();
+    handle.destroy();
+  });
+
+  it('stands down when switched off mid-life, and re-arms when switched back', async () => {
+    const r = region({ scrollTop: 600 });
+    const handle = stickToBottom(r.el, true);
+
+    handle.update(false);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).not.toHaveBeenCalled();
+
+    // Leaving the replay for a live thread. It starts armed REGARDLESS of where
+    // the replay was left sitting — that scroll offset belongs to a record the
+    // operator just closed, and is not a statement about the new thread.
+    userScrollTo(r, 0);
+    handle.update(true);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).toHaveBeenCalledTimes(1);
+    handle.destroy();
+  });
+
+  it('stops observing and listening once destroyed', async () => {
+    const r = region({ scrollTop: 600 });
+    stickToBottom(r.el).destroy();
+    grow(r);
+    await flush();
+    expect(r.scrollTo).not.toHaveBeenCalled();
+    // And the scroll listener is gone too: a post-destroy scroll must not be
+    // able to leave state behind that a later observer could act on.
+    userScrollTo(r, 0);
+    grow(r);
+    await flush();
+    expect(r.scrollTo).not.toHaveBeenCalled();
   });
 });

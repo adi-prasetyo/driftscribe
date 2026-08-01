@@ -220,10 +220,16 @@ describe('App — tour wiring (smoke)', () => {
   });
 });
 
-describe('App — open-trace puts the replay at the top and scrolls the window up', () => {
-  // The historical replay renders at the TOP of the chat column, and openTrace
-  // scrolls the WINDOW to top (top:0) to reveal it — no jump down to the
+describe('App — open-trace puts the replay at the top and scrolls the thread up', () => {
+  // The historical replay renders at the TOP of the thread, and openTrace
+  // scrolls that region to top (top:0) to reveal it — no jump down to the
   // bottom. The replay region is #historical-badge.
+  //
+  // It scrolls the THREAD, not the window, and the distinction is not cosmetic:
+  // since the chat shell was pinned (ds-jns PR 3) the window has nothing to
+  // scroll on this view, so the old window.scrollTo silently did nothing and
+  // left the replay wherever the transcript was sitting. Asserting the target
+  // is what makes this suite able to notice that at all.
   //
   // ds-jns took away the button that used to open this: the rail now opens a
   // desk record. The replay itself is still reachable, by the one URL shape
@@ -263,11 +269,12 @@ describe('App — open-trace puts the replay at the top and scrolls the window u
     );
   }
 
-  it('a ?view=chat&reasoning= replay scrolls the window to top (top:0, reduced-motion → auto) and renders above the composer', async () => {
+  it('a ?view=chat&reasoning= replay scrolls the THREAD to top (top:0, instant) and renders above the composer', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     stubFetchWithIacDecision();
-    const scrollSpy = vi.fn();
-    window.scrollTo = scrollSpy as unknown as typeof window.scrollTo;
+    const windowSpy = vi.fn();
+    window.scrollTo = windowSpy as unknown as typeof window.scrollTo;
+    const threadSpy = vi.spyOn(Element.prototype, 'scrollTo');
 
     history.replaceState(null, '', `/?view=chat&reasoning=${REPLAY_TID}`);
     const { getByTestId } = render(App);
@@ -275,12 +282,27 @@ describe('App — open-trace puts the replay at the top and scrolls the window u
     // The banner enters the DOM (proves historicalActive flipped + tick flushed).
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
 
-    // The window scrolled to the top. setup.ts forces matchMedia('reduce') →
-    // matches:true, so prefersReducedMotion() picks 'auto'.
-    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
-    // Exactly one scroll per open-trace.
-    expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ top: 0, behavior: 'auto' });
+    // The thread region scrolled to the top...
+    await waitFor(() =>
+      expect(threadSpy.mock.contexts).toContain(getByTestId('chat-thread')),
+    );
+    const onThread = threadSpy.mock.calls.filter(
+      (_c, i) => threadSpy.mock.contexts[i] === getByTestId('chat-thread'),
+    );
+    // Exactly one scroll per open-trace, and instant — an animated one would
+    // fire intermediate scroll events that stickToBottom reads as the operator
+    // having scrolled, and the two would fight over the viewport.
+    //
+    // "Exactly one" is also what pins the OTHER half of that: stickToBottom is
+    // handed `!historicalActive`, so a replay disables the follow entirely. A
+    // second call here would mean the follow is still live and racing this one
+    // — which is what it did, and it won (measured: the replay opened scrolled
+    // to its own bottom, banner at -11px, above the region's top edge).
+    expect(onThread).toHaveLength(1);
+    expect(onThread[0][0]).toEqual({ top: 0, behavior: 'auto' });
+    // ...and the WINDOW was left alone. It has nothing to scroll here, so a
+    // call on it would be the silent no-op this suite exists to rule out.
+    expect(windowSpy).not.toHaveBeenCalled();
     // Focus follows the scroll so keyboard/SR users land in the replay region
     // instead of being stranded on the rail button they just clicked.
     const banner = document.getElementById('historical-badge');

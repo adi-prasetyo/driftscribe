@@ -55,6 +55,34 @@ body {
   flex-direction: column;
 }
 
+/* ...except on chat, which is an app shell rather than a document: the composer
+   is pinned to the bottom of the viewport and the transcript scrolls inside it
+   (App.svelte `.layout--chat`, ds-jns PR 3).
+
+   `min-height` is not enough to hold that, and the reason is easy to get wrong.
+   `.layout` is `flex: 1 1 0%`, so it looks like it should simply take whatever
+   the header leaves — but an auto-height flex container still counts each
+   item's CONTENT when computing its own intrinsic height, flex basis or not.
+   Measured: a 2400px transcript inside a height-constrained `minmax(0, 1fr)`
+   grid row still grew #app to 3193px in an 800px viewport, and every clamp
+   below it dutifully resolved against that. The chain only holds if something
+   at the top is definite.
+
+   Scoped by :has() rather than a class toggled from JS so the shell has no
+   lifecycle of its own — the view is already expressed in the markup, and a
+   class written imperatively into a node App does not own is one more thing
+   that can be left behind on a view change. Desk keeps `min-height` and scrolls
+   the window as before. base.css is also <link>ed by the Jinja approval pages,
+   where `.layout--chat` never exists and this simply never matches.
+
+   Desktop only: below the breakpoint the rails stack BELOW the chat, and a
+   clipped shell would put them somewhere unreachable. */
+@media (min-width: 761px) {
+  #app:has(> .layout--chat) {
+    height: 100dvh;
+  }
+}
+
 h1,
 h2,
 h3,

@@ -14,8 +14,6 @@
 // it created itself and disarm on its own output. Mutations ask a different
 // question ("are we following? then follow"), and never revise the answer.
 
-import { prefersReducedMotion } from './motion';
-
 /** How far from the bottom the operator may sit and still count as "reading the
  *  newest". Roughly one turn header — far enough that a stray trackpad nudge or
  *  the browser's own scroll anchoring does not disarm the follow, close enough
@@ -70,29 +68,55 @@ function geometryOf(node: HTMLElement): ScrollGeometry {
 }
 
 export interface StickToBottomHandle {
+  update(enabled?: boolean): void;
   destroy(): void;
 }
 
 /**
- * Svelte action: `<div use:stickToBottom>`.
+ * Svelte action: `<div use:stickToBottom={enabled}>`.
  *
  * Owns a MutationObserver (content growth) and a scroll listener (the operator's
  * intent), and tears both down on destroy. Kept as an action rather than an
  * `$effect` in the component because the lifetime that matters is the NODE's,
  * and an action is handed the node and its teardown together.
+ *
+ * `enabled` exists because not everything that renders into this region is a
+ * live thread. A historical replay is a static record: there is no tail to
+ * follow, and following it actively does harm — measured, the replay opened
+ * scrolled to its own bottom with the "you are reading a past run" banner at
+ * -11px, above the top edge of the region. Whoever placed the operator there
+ * (openTrace scrolls to the top to reveal the banner) lost a race it should
+ * never have been in. Turning the follow OFF for the whole mode settles it
+ * without either side having to know about the other.
  */
-export function stickToBottom(node: HTMLElement): StickToBottomHandle {
+export function stickToBottom(node: HTMLElement, enabled = true): StickToBottomHandle {
   let following = true;
+  let active = enabled;
 
+  // ALWAYS instant, for everyone — not `prefersReducedMotion() ? 'auto' :
+  // 'smooth'`, which is what this was and which broke the module's entire
+  // purpose in the default case.
+  //
+  // A smooth scroll animates over ~300ms and fires scroll events THROUGHOUT,
+  // carrying intermediate positions. Those reach onScroll below, which reads a
+  // distance of hundreds of pixels — the animation's own backlog, not the
+  // operator — and disarms. Measured against a 60ms/chunk stream: the distance
+  // from the bottom climbed 11 → 131 → 276 → … → 3808px and never recovered,
+  // because each re-target restarted an animation that the next chunk
+  // immediately outran. Following stopped on the SECOND chunk of every reply,
+  // for every user without reduced-motion set — which is nearly all of them.
+  //
+  // Instant is also simply right here. Smooth is for a one-off navigation the
+  // operator asked for; this fires on every token of a streaming reply, where
+  // an animation has no time to mean anything and only ever arrives late.
   const toBottom = (): void => {
-    node.scrollTo({
-      top: node.scrollHeight,
-      // A smooth scroll re-entering on every streamed token would never
-      // arrive; instant is also what reduced-motion asks for.
-      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
-    });
+    node.scrollTo({ top: node.scrollHeight, behavior: 'auto' });
   };
 
+  // Fires for programmatic scrolls too, including toBottom()'s own. That is
+  // safe only because the scroll above is instant: by the time the event is
+  // dispatched the position has already landed, so the distance it measures is
+  // ~0 and the follow stays armed. It is the reason this module cannot animate.
   const onScroll = (): void => {
     following = shouldFollow(geometryOf(node));
   };
@@ -101,12 +125,21 @@ export function stickToBottom(node: HTMLElement): StickToBottomHandle {
   // calls) — a childList watch on the region alone would miss a turn growing
   // in place, which is exactly what a streaming run does.
   const observer = new MutationObserver(() => {
-    if (following) toBottom();
+    if (active && following) toBottom();
   });
   observer.observe(node, { childList: true, subtree: true, characterData: true });
   node.addEventListener('scroll', onScroll, { passive: true });
 
   return {
+    update(next = true): void {
+      if (next === active) return;
+      active = next;
+      // Coming back to a live thread starts ARMED, whatever position the
+      // disabled mode left behind. The operator asked for this thread; its
+      // first reply has to land where they can see it, and inheriting the
+      // scroll offset of a replay they just closed is not a signal about that.
+      if (active) following = true;
+    },
     destroy(): void {
       observer.disconnect();
       node.removeEventListener('scroll', onScroll);
