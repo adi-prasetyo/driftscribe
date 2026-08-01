@@ -504,6 +504,49 @@ jobs:
             --artifact-uri-iac-tree="$ARTIFACT_URI_IAC_TREE" \
             --iac-tree-hash="$IAC_TREE_HASH" \
             < /tmp/plan.txt > /tmp/comment.md
+
+          # ds-2wy: RE-CHECK the PR immediately before commenting. The OPEN/head
+          # assertions near the top of this job ran at PLAN time, minutes ago,
+          # and the per-PR concurrency group serializes plan-builder runs against
+          # EACH OTHER but not against an operator's approval POST. So a run that
+          # started while the PR was open can finish after that PR was merged (or
+          # force-pushed) — and the C2 marker it would post here becomes the
+          # NEWEST comment, which is what agent/iac_artifacts.py's
+          # find_latest_c2_comment resolves and what /iac-approvals/{n} then
+          # binds to. That poisons the approval page with a generation whose
+          # apply can never succeed.
+          #
+          # Skipping is strictly correct: an artifact for a merged/moved head has
+          # no approval path left, and the artifacts themselves are already
+          # uploaded (a later run for the real head posts its own marker).
+          # Residual TOCTOU between this read and the POST below is milliseconds
+          # instead of minutes; the coordinator's GET carries the fail-safe for
+          # that remainder (agent/main.py _resolve_iac_fresh_apply_blocker).
+          NOW_JSON=$(gh pr view "$PR_NUMBER" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json state,headRefOid,baseRefName)
+          NOW_STATE=$(printf '%s' "$NOW_JSON" | jq -r .state)
+          NOW_HEAD=$(printf '%s' "$NOW_JSON" | jq -r .headRefOid)
+          NOW_BASE=$(printf '%s' "$NOW_JSON" | jq -r .baseRefName)
+          SKIP_REASON=""
+          if [ "$NOW_STATE" != "OPEN" ]; then
+            SKIP_REASON="PR is no longer OPEN (state=${NOW_STATE})"
+          elif [ "$NOW_HEAD" != "$HEAD_SHA" ]; then
+            SKIP_REASON="PR head moved to ${NOW_HEAD} (planned against ${HEAD_SHA})"
+          elif [ "$NOW_BASE" != "main" ]; then
+            SKIP_REASON="PR base is ${NOW_BASE}, not main"
+          fi
+          if [ -n "$SKIP_REASON" ]; then
+            {
+              echo "### :information_source: C2 plan comment SKIPPED"
+              echo "${SKIP_REASON} since this plan was built, so posting the plan"
+              echo "marker would bind the approval page to a generation that can"
+              echo "never be applied (ds-2wy). Artifacts were still uploaded."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::C2 comment skipped — ${SKIP_REASON}"
+            exit 0
+          fi
+
           # POST via the REST issues/comments endpoint, NOT `gh pr comment`:
           # the latter uses the GraphQL addComment mutation, which fails under
           # the Actions GITHUB_TOKEN with "Resource not accessible by

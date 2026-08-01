@@ -3673,6 +3673,47 @@ def _resolve_pr_merged(
     return merged
 
 
+# ds-2wy: FRESH_APPLY_* blocker key -> approval_i18n.REASON_EN key. Kept TOTAL
+# over driftscribe_lib.github's FRESH_APPLY_* constants by
+# tests/unit/test_iac_fresh_apply_blocker.py, so adding a blocker without adding
+# operator copy fails CI rather than silently degrading to "no blocker".
+_FRESH_APPLY_REASON_KEY: dict[str, str] = {
+    github.FRESH_APPLY_MERGED: "pr_merged",
+    github.FRESH_APPLY_CLOSED: "pr_closed",
+    github.FRESH_APPLY_DRAFT: "pr_draft",
+    github.FRESH_APPLY_HEAD_MOVED: "pr_head_moved",
+    github.FRESH_APPLY_BASE_MOVED: "pr_base_moved",
+}
+
+
+def _resolve_iac_fresh_apply_blocker(
+    settings: Settings, pr_number: int, head_sha: str
+) -> str | None:
+    """Fail-soft :func:`github.fresh_apply_blocker` for the always-200 GET.
+
+    ``None`` means "nothing observable blocks a fresh apply" OR "could not tell"
+    — the two are deliberately indistinguishable to the caller, because both lead
+    to the same decision (leave the page as it is and let the POST rule). See the
+    call site in ``iac_approval_get`` for why fail-soft is the right direction
+    here. Uncached on purpose: ``_read_merge_status_cache`` is keyed
+    ``(pr_number, head_sha)`` and this question is partly head-INDEPENDENT, so
+    reusing that cache would be the same key-skew shape that caused the Eventarc
+    cache-poisoning incident."""
+    if not (settings.github_token and settings.github_repo):
+        return None
+    repo = _memoized_repo_provider(settings)()
+    if repo is None:
+        return None
+    try:
+        return github.fresh_apply_blocker(repo, pr_number, head_sha)
+    except Exception as e:  # noqa: BLE001 — advisory probe; never break the 200
+        log.warning(
+            "iac_fresh_apply_blocker_probe_failed",
+            extra={"error": type(e).__name__, "pr_number": pr_number},
+        )
+        return None
+
+
 def reconcile_merge_state(decision: object, *, repo_provider, settings: Settings) -> object:
     """Serve-time, COMPUTE-ONLY merge_state reconcile (2026-06-27 follow-up).
 
@@ -6147,6 +6188,13 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
     _anonymous_only = not can_approve and reason_severity == "operator_only"
     if (can_approve or _anonymous_only) and view is not None and s.github_repo:
         existing = None
+        # THREE states, not two. `existing is None` alone conflates "the store
+        # says there is no decision" with "the store did not answer", and the
+        # ds-2wy gate below MUST NOT fire on the second: a Firestore outage while
+        # a real waiting_for_rebake decision exists would otherwise suppress the
+        # C6 resume form on a (correctly) merged PR — turning a read failure into
+        # a lost operator action. Found by Codex reviewing this fix.
+        _lookup_answered = True
         try:
             _event_key = _iac_event_key(
                 s.github_repo, pr_number, view.head_sha, view.generation_metadata
@@ -6157,6 +6205,34 @@ def iac_approval_get(request: Request, pr_number: int) -> Response:
                 "iac_decision_state_lookup_failed", extra={"pr_number": pr_number}
             )
             existing = None
+            _lookup_answered = False
+        if existing is None and _lookup_answered and can_approve:
+            # ds-2wy: no decision for THIS generation means the POST would take
+            # its fresh-apply branch, which runs assert_pr_ready_at_sha and 409s
+            # if the PR has moved on. Reachable because a plan-builder run checks
+            # "PR is OPEN" only at plan time (.github/workflows/iac.yml) and
+            # find_latest_c2_comment is newest-wins, so a C2 comment for a later
+            # generation can land AFTER an earlier one merged the PR — and this
+            # page then binds to a generation that can never apply.
+            #
+            # Scope, stated honestly: this is a SUBSET of the POST's readiness
+            # predicate, covering only what one PR read settles (merged / closed
+            # / draft / head moved). Required-check status stays with the POST —
+            # it is transient, and a pending check goes green on its own.
+            #
+            # Fail-soft on purpose (an indeterminate answer leaves the form
+            # exactly as it is today): the POST is the authorization boundary and
+            # rejects regardless, so making this advisory check fail CLOSED would
+            # only add a GitHub availability dependency to legitimate applies
+            # without buying any backend safety.
+            _blocker = _resolve_iac_fresh_apply_blocker(s, pr_number, view.head_sha)
+            _blocker_key = _FRESH_APPLY_REASON_KEY.get(_blocker or "")
+            if _blocker_key is not None:
+                can_approve = False
+                reason_blocked = approval_i18n.REASON_EN[_blocker_key]
+                # "pending", not "error": the artifact is fine and nothing is
+                # broken — the pull request simply moved past this plan.
+                reason_severity = "pending"
         if existing is not None:
             # Serve-time merge_state reconcile (2026-06-27, Codex MF3): if the
             # PR was merged out-of-band, promote the stale applied+merge=failed
