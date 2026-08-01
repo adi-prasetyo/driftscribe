@@ -4,6 +4,7 @@ import DecisionRecord from '../../src/components/DecisionRecord.svelte';
 import { createTraceCache } from '../../src/lib/traceCache';
 import type { TraceEvent } from '../../src/lib/timeline';
 import type { Decision, TraceResponse } from '../../src/lib/types';
+import { enMessages } from '../../src/locales';
 
 // DecisionRecord — one decision opened on the DESK (ds-jns PR 2): the ledger
 // row's accordion body, and the pinned card for a `?reasoning=` deep link whose
@@ -383,7 +384,9 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
     for (const [state, expected] of [
       [{ apply_status: 'applied', merge_state: 'merged' }, /history/i],
       [{ apply_status: 'failed' }, /failure/i],
-      [{ apply_status: 'waiting_for_rebake', merge_state: 'merged' }, /apply/i],
+      // …and the two ACTIONABLE states are deliberately NOT among them: a
+      // waiting change reads as the neutral page link here. See the next test.
+      [{ apply_status: 'waiting_for_rebake', merge_state: 'merged' }, /approval page/i],
     ] as const) {
       const d = { ...base, ...state } as Decision;
       const view = mount(() => res(traceResponse()), { decision: d, decisions: [d] });
@@ -429,12 +432,16 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
       apply_status: 'waiting_for_rebake',
       merge_state: 'merged',
     } as Decision;
+    // SAME pr_number as the waiting row, because an event_key is derived per
+    // generation and includes the PR — two rows sharing a key are two attempts
+    // at ONE change, not two PRs (Codex review round 4 flagged the earlier
+    // fixture as unfaithful on exactly this).
     const newerTerminal = {
       decision_id: 'd-applied',
       trace_id: 'b'.repeat(32),
       action: 'iac_apply',
       created_at: '2026-05-31T16:00:00Z',
-      pr_number: 71,
+      pr_number: 68,
       event_key: 'ek-1',
       apply_status: 'applied',
       merge_state: 'merged',
@@ -446,26 +453,53 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
       decisions: [newerTerminal],
     });
     const link = await findByTestId('iac-approve-link');
-    expect(link.textContent).not.toMatch(/apply this change/i);
+    // Exact, not merely "not apply": the neutral page label, at the change's
+    // own approval page. A weaker assertion would also pass on a blank label
+    // or a link that had quietly moved.
+    expect(link.textContent?.trim()).toBe(enMessages['shared.approve.goToPage']);
+    expect(link.getAttribute('href')).toContain('/iac-approvals/68');
   });
 
-  it('offers no approval link at all when it cannot tell whether the change was superseded', async () => {
-    // `decisions` is the only input that answers "did a newer PR overtake this
-    // while it waited". Without it the label would guess, and the guess is
-    // ACTIONABLE ("Apply the change" on a change nobody should apply). Absent
-    // beats wrong.
-    const d = {
+  it('never says "apply" on a WAITING change, however complete the snapshot looks', async () => {
+    // The demotion, and the reason a record cannot carry this label at all.
+    // `apply`/`continue` are the only states derived from an ABSENCE — "no
+    // newer terminal row found" — and `/decisions` is limit=50, so an old
+    // record and its terminal sibling can BOTH be outside the window. That is
+    // durable, not a polling lag: the helper finds nothing and would offer the
+    // change as still yours to apply, forever (Codex review round 4).
+    //
+    // Driven with a snapshot that contains the row and nothing contradicting
+    // it, which is exactly the state that LOOKS safe and is not.
+    // BOTH actionable states, not just one: `waiting_for_rebake` splits on
+    // merge_state into `apply` (merged) and `continue` (not yet), and demoting
+    // only the first leaves the other offering an action on the same evidence.
+    const base = {
       decision_id: 'd-iac',
       trace_id: TID,
       action: 'iac_apply',
       created_at: '2026-05-31T15:06:00Z',
       pr_number: 68,
+      event_key: 'ek-1',
       apply_status: 'waiting_for_rebake',
-      merge_state: 'merged',
-    } as Decision;
-    const { findByTestId, queryByTestId } = mount(() => res(traceResponse()), { decision: d });
-    await findByTestId('decision-record');
-    expect(queryByTestId('iac-approve-link')).toBeNull();
+    };
+    const cases = [
+      { ...base, merge_state: 'merged' } as Decision, // -> apply
+      { ...base, merge_state: 'pending' } as Decision, // -> continue
+    ];
+    for (const [d, snapshot] of cases.flatMap((c) => [
+      [c, [c]] as const,
+      [c, null] as const,
+    ])) {
+      const view = mount(() => res(traceResponse()), { decision: d, decisions: snapshot });
+      const link = await view.findByTestId('iac-approve-link');
+      // Still reachable — the plan and the history are worth a click.
+      expect(link.getAttribute('href')).toContain('/iac-approvals/68');
+      // …but the copy claims nothing about what is left to do.
+      const why = `${d.merge_state} / ${snapshot === null ? 'no snapshot' : 'snapshot'}`;
+      expect(link.textContent, why).not.toMatch(/apply this change|continue/i);
+      expect(link.textContent?.trim(), why).toBe(enMessages['shared.approve.goToPage']);
+      cleanup();
+    }
   });
 
   it('renders no link for an off-allowlist host, and none for a decision with no artifact', async () => {

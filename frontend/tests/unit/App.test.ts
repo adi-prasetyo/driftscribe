@@ -1273,30 +1273,32 @@ describe('App — desk decision records (ds-jns)', () => {
     expect(queryByTestId('decision-record-outofwindow')).toBeNull();
   });
 
-  it('offers no approval action on a pinned record while the decisions list is unknown', async () => {
-    // Same ds-eh6 distinction as the out-of-window note above, on a control
-    // rather than a sentence — and therefore worse to get wrong. The store's
-    // pre-first-fetch value is NO_DECISIONS_YET: a NON-NULL empty array meaning
-    // "we have not looked". Handed to DecisionRecord it defeats that
-    // component's own absent-means-no-link guard, and a change that a newer row
-    // may already have ended renders "Apply this change" — briefly on a fast
-    // /trace, and for good if /decisions never answers (Codex review round 3).
+  it('never offers an ACTION on a pinned record, whatever the decisions list says', async () => {
+    // End to end through the real store, for the claim the component pins in
+    // isolation: `apply`/`continue` rest on "no newer terminal row was found",
+    // and a pinned record is by definition outside the `limit=50` window that
+    // finding was made in — so the absence proves nothing (Codex rounds 3-4).
+    //
+    // `hangDecisions` is the harshest version: the store's pre-first-fetch
+    // value is NO_DECISIONS_YET, a NON-NULL empty array meaning "we have not
+    // looked", which App must not pass off as a list.
     stubDesk([], { hangDecisions: true });
     history.replaceState(null, '', `/?reasoning=${TID}`);
-    const { findByTestId, queryByTestId } = render(App);
+    const { findByTestId } = render(App);
 
-    // PREMISE FIRST. Asserting the link's absence before the record has even
+    // PREMISE FIRST. Asserting anything about the label before the record has
     // resolved its decision is unfailable — the fourth time in this PR that a
     // negative assertion had to be taught to establish what it is negating.
-    // The action row only renders once `doc` is loaded, and this trace's
-    // decision is a WAITING iac_apply, i.e. exactly the shape whose label is
-    // actionable. So: the record knows what it is about…
+    // The action row renders only once `doc` is loaded, and this trace's
+    // decision is a WAITING iac_apply: exactly the shape whose label WOULD be
+    // actionable if this card were willing to make that claim.
     await findByTestId('decision-record-action');
-    // …and still offers nothing to click, because the list it would have to
-    // consult has not answered.
-    expect(queryByTestId('iac-approve-link')).toBeNull();
-    // Its GitHub link is present, proving the card is not simply blank.
-    await findByTestId('decision-github-link');
+
+    // The plan and the history stay one click away…
+    const link = await findByTestId('iac-approve-link');
+    expect(link.getAttribute('href')).toContain('/iac-approvals/68');
+    // …and the copy claims nothing about what is left to do.
+    expect(link.textContent).not.toMatch(/apply this change|continue/i);
   });
 
   it('expands the ledger row instead of pinning, when the snapshot does carry it', async () => {

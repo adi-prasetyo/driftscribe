@@ -27,6 +27,7 @@
     iacPrHref,
     iacApprovalHref,
     iacApproveLabel,
+    iacApprovalCtaState,
     supersededWaitingIds,
   } from '../lib/approval';
   import { modeLabel, type AutonomyMode } from '../lib/autonomy';
@@ -50,8 +51,10 @@
     note?: 'outOfWindow' | null;
     /** The snapshot this record was opened from, for the ONE question a single
      *  decision cannot answer about itself: has a newer PR superseded this
-     *  change while it waited? Omitted → the approval-page link below is not
-     *  offered at all, rather than offered with a label that would guess. */
+     *  change while it waited? Omitted → the link still renders, with the
+     *  neutral page label: no label this card can produce is actionable (see
+     *  `iacApproval`), so a missing snapshot costs a "Superseded by PR #N"
+     *  refinement rather than risking a claim. */
     decisions?: ReadonlyArray<Decision | null | undefined> | null;
   } = $props();
 
@@ -178,37 +181,50 @@
    *
    *  Restored from the deleted decisions rail (Codex review round 2). The
    *  GitHub link above reaches the PR; this reaches `/iac-approvals/<n>`, which
-   *  is where the plan, the approval history and the failure details live. An
-   *  operator looking at an applied or failed change had neither until the PR
-   *  link landed, and still had to hand-build this URL.
+   *  is where the plan, the approval history and the failure details live.
    *
-   *  The label is STATE-AWARE (`iacApproveLabel`) because the same href means
-   *  different things: "Apply the change" on a merged rebake, "View approval
-   *  history" once applied, "View failure details" on a terminal failure,
-   *  "Superseded by PR #N" when a newer change overtook it. A single "Approve"
-   *  would offer an action on a change that has already ended.
+   *  The label is state-aware, with ONE deliberate demotion: this card never
+   *  renders `apply` or `continue`, the two ACTIONABLE states. It offers the
+   *  neutral page label in their place.
    *
-   *  Follows the rail's own href rule: a superseded row links to the PR that
-   *  superseded it, not to its own dead page.
+   *  Those two are the only states derived from an ABSENCE — "no newer terminal
+   *  row was found, so this change is still yours to apply" — and this card
+   *  cannot support that claim (Codex review round 4). `/decisions` is
+   *  `limit=50`, so an old record and its newer terminal sibling can BOTH be
+   *  outside the window, which is durable rather than a polling lag; and a
+   *  failed refresh retains the previous array, so the list can be confidently
+   *  wrong. Either way the helper finds nothing and "Apply this change →" is
+   *  offered for work that already ended.
    *
-   *  `[...decisions, doc]` is load-bearing, and getting it wrong is how the
-   *  first version of this shipped a fail-open (Codex review round 3).
-   *  `supersededWaitingIds` can only mark a WAITING row it can see, and a
-   *  PINNED record is by definition a decision outside the recent list — so
-   *  passing the snapshot alone left the pinned doc unmarked, and a change
-   *  already ended read "Apply this change →". Adding `doc` is what lets the
-   *  helper compare it against the newer terminal row beside it. Harmless when
-   *  the doc IS in the list: the helper keys on decision identity, so a
-   *  duplicate is the same row twice. */
+   *  Demotion rather than suppression, because the division is real: a RECORD
+   *  says what happened, and the desk's pending hero says what to do next. The
+   *  hero runs the same helper safely because it only ever selects a decision
+   *  FROM the snapshot it reasons over, so its absence claim is over a list
+   *  that contains the row. Every remaining state is either read off the
+   *  decision's own fields (`history`, `failure`) or is a POSITIVE finding
+   *  (`superseded`), and those are safe under a bounded or stale list.
+   *
+   *  `[...decisions, doc]` keeps the positive `superseded` finding available
+   *  for a pinned record, which is by definition absent from the list. Exact
+   *  duplicates are harmless: terminal times are map-keyed by generation and
+   *  stale ids land in a Set.
+   *
+   *  Follows the rail's href rule: a superseded row links to the PR that
+   *  superseded it, not to its own dead page. */
   const iacApproval = $derived.by((): { href: string; label: string } | null => {
-    if (!doc || doc.action !== 'iac_apply' || decisions === null) return null;
+    if (!doc || doc.action !== 'iac_apply') return null;
     const sup = doc.superseded_by_pr;
     const target =
       typeof sup === 'number' && Number.isInteger(sup) && sup > 0 ? sup : doc.pr_number;
     const href = iacApprovalHref(target, $locale);
     if (href === null) return null;
-    const seen = supersededWaitingIds([...decisions, doc]);
-    return { href, label: iacApproveLabel(doc, seen, $t) };
+    const seen = supersededWaitingIds(decisions === null ? [doc] : [...decisions, doc]);
+    const kind = iacApprovalCtaState(doc, seen).kind;
+    const label =
+      kind === 'apply' || kind === 'continue'
+        ? $t('shared.approve.goToPage')
+        : iacApproveLabel(doc, seen, $t);
+    return { href, label };
   });
 
   const github = $derived.by((): { href: string; labelKey: MessageKey } | null => {
