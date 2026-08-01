@@ -635,7 +635,7 @@ def test_eventarc_acks_200_when_background_recheck_fails_http(
     20–120s handler that retry train saturated the service. The delivery
     is acked 200 up front; the background failure is logged for operators
     (structured, queryable) and the drift is re-discovered by the next
-    event, the demo-reset cron, or a manual /recheck. This test also
+    event or a manual /recheck. This test also
     proves the wrapper swallows the exception — a leak would propagate
     through the ASGI cycle and raise right here in TestClient."""
     caplog.set_level(logging.INFO, logger="driftscribe-agent")

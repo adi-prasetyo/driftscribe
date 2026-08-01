@@ -2950,8 +2950,8 @@ async def eventarc(
     - **_do_recheck failures** — logged, never propagated. A non-2xx here
       would make Eventarc redeliver into the same storm the fast-ack
       exists to prevent. Recovery story mirrors the pause gate: the drift
-      is re-discovered by the next audit event, the demo-reset cron, or a
-      manual /recheck. See ``_eventarc_background_recheck``.
+      is re-discovered by the next audit event or a manual /recheck. See
+      ``_eventarc_background_recheck``.
 
     Payload-blindness: the handler only reads ``(service, region)`` from
     ``resource.labels`` and intentionally does NOT branch on the audit log's
@@ -3382,7 +3382,15 @@ def list_decisions_endpoint(
     # removed here — a visitor holds the operator seat, so the rail's Approve CTA
     # must work for them. Rollback rows carry the live single-use ?t= token, same
     # as the operator sees; bounds (single-use, 15-min TTL, worker refuses no-op
-    # targets, self-healing baseline) make handing it out acceptable. Reverses
+    # targets, and payment-demo being a fixture rather than a real workload) make
+    # handing it out acceptable. 2026-08-01: "self-healing baseline" USED to be a
+    # fourth bound here; demo-reset.yml is gone, so restoring the baseline is now
+    # a manual operator step (demo-window.sh open checklist, step 0). The RESOURCE
+    # scope is unchanged (always fixture-only); the TIME bound is not — recovery
+    # went from ~2h to "until an operator notices". Do not re-cite a schedule as
+    # part of this acceptance, and do not treat it as grandfathered when the
+    # window reopens.
+    # Reverses
     # audit A.2's serve-time scrub for /decisions. (/runs stays always-scrubbed —
     # separate justification there.)
     return {"decisions": rows}

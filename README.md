@@ -150,14 +150,13 @@ without touching a terminal.
 A mutation stays open to anonymous visitors when its blast radius is bounded and
 mechanically restorable, and is gated when it is not.
 
-- **Open, self-healing:** asking Patch to fix the vulnerable dependency merges a
+- **Open, restorable:** asking Patch to fix the vulnerable dependency merges a
   real PR (one line of `demo/upgrade-target/package.json`); asking Anchor to roll
-  back really moves `payment-demo` traffic to an earlier revision. A scheduled
-  workflow ([`demo-reset.yml`](.github/workflows/demo-reset.yml)) restores all
-  three baselines: the service every two hours, the upgrade fixture within a
-  couple of hours of being fixed, and any adoption PR a visitor opens is closed
-  unmerged after about two hours so the Adopt demo stays available. Nothing a
-  visitor does is applied to real infrastructure.
+  back really moves `payment-demo` traffic to an earlier revision. Every target a
+  visitor can reach is a demo fixture whose baseline the operator restores
+  between windows: the `payment-demo` service, the upgrade fixture, and any
+  adoption PR, which is closed unmerged rather than applied. The changes are
+  real and land on live Google Cloud resources; none of them is production.
 - **Gated:** merging an infrastructure PR always requires the operator's
   identity, and free-form infrastructure authoring is operator-only during the
   public window (the one-click Adopt path, which only ever emits a bounded
