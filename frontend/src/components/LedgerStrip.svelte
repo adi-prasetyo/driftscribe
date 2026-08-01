@@ -91,8 +91,19 @@
    *  the older sibling the openable one. `decisions` comes straight from the
    *  overview store's snapshot today; anything else needs a sort first.
    *
-   *  The siblings are lifecycle stages of one reasoning run; their own status
-   *  is what the row already says.
+   *  What the suppressed row costs the operator: nothing they could not reach
+   *  from the row that stays openable. The siblings are lifecycle stages of ONE
+   *  reasoning run — same trace, same events, same prose — so the older one's
+   *  record would repeat the newer one's almost entirely. It is an intermediate
+   *  recovery pointer, not a separately-reasoned decision.
+   *
+   *  It is NOT true that the row itself shows which sibling is which, and an
+   *  earlier version of this comment claimed it did. Both classify `open`
+   *  (isIacAwaitingOperator holds for each), so titleFor and subtitleFor return
+   *  identical strings and only the time cell differs. The gate rests on the
+   *  siblings being STAGES, not on the operator being able to tell them apart.
+   *  If a change ever makes them independently-reasoned decisions, that is the
+   *  premise to re-check here — not the rendering.
    *
    *  Null means the row renders as plain text. Never a disabled control: the
    *  strip is a record, and a greyed-out button on a row whose reasoning was
@@ -107,6 +118,20 @@
   function toggle(traceId: string): void {
     onRecordChange?.(traceId === recordTraceId ? null : traceId);
   }
+
+  /** The id linking a row to the record panel it controls.
+   *
+   *  `aria-controls` is advisory in the ARIA disclosure pattern — the panel is
+   *  the row's immediate next sibling, so a screen reader moving forward
+   *  reaches it regardless. It earns its place for the readers that offer a
+   *  "jump to controlled element" command, which is worth more here than
+   *  usual: the panel is TALL (prose, a field grid, a trace timeline), so
+   *  arrowing past a collapsed-then-expanded row is a long trip.
+   *
+   *  Safe as a raw interpolation because `traceId` reached this function
+   *  through `openableTrace`'s `isReplayableTraceId` gate — 32 hex characters,
+   *  so the result is always a valid HTML id and never needs escaping. */
+  const recordDomId = (traceId: string): string => `ledger-record-${traceId}`;
 
   // Decorative next to a text title — aria-hidden on the glyph span itself
   // (below) keeps a screen reader from reading raw punctuation aloud.
@@ -170,6 +195,7 @@
             data-testid="ledger-strip-row"
             data-state={row.state}
             aria-expanded={traceId === recordTraceId}
+            aria-controls={recordDomId(traceId)}
             onclick={() => toggle(traceId)}
           >
             {@render cells(row)}
@@ -180,7 +206,7 @@
           </div>
         {/if}
         {#if traceId !== null && traceId === recordTraceId && cache !== null}
-          <div class="ledger-strip__record">
+          <div class="ledger-strip__record" id={recordDomId(traceId)}>
             <DecisionRecord {traceId} {cache} decision={row.decision} />
           </div>
         {/if}

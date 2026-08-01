@@ -239,6 +239,28 @@ describe('LedgerStrip — decision records', () => {
     expect(rows[1].getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('points each row at the panel it controls', async () => {
+    // aria-expanded alone says "something opened" without saying WHAT. The
+    // panel is tall (prose, field grid, trace timeline), so the readers that
+    // offer a jump-to-controlled-element command save a long arrow trip.
+    const { getAllByTestId, getByTestId } = render(LedgerStrip, {
+      props: { decisions: two(), cache: cache(), recordTraceId: T2, onRecordChange: vi.fn() },
+    });
+    await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
+    const rows = getAllByTestId('ledger-strip-row');
+    const target = rows[1].getAttribute('aria-controls');
+    expect(target).toBeTruthy();
+    // The id must RESOLVE — an aria-controls pointing at nothing is worse than
+    // none, so assert the document actually contains that element and that it
+    // is the record's container, not merely some node.
+    const panel = document.getElementById(target as string);
+    expect(panel).not.toBeNull();
+    expect(panel?.contains(getByTestId('decision-record'))).toBe(true);
+    // Each openable row names its OWN panel: a shared constant would collapse
+    // every row onto one id and make the association meaningless.
+    expect(rows[0].getAttribute('aria-controls')).not.toBe(target);
+  });
+
   describe('affordance gating — a row that cannot open one gets no control', () => {
     // Decision.trace_id is optional on an open shape, and the record's URL is a
     // `?reasoning=` param — so the gate is isReplayableTraceId, the very rule

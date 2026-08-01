@@ -135,6 +135,23 @@ describe('viewFromSearch', () => {
     expect(viewFromSearch('?view=desk&preview_pr=0')).toBe('desk');
   });
 
+  it('preview_pr beats an explicit ?view=chat, because chat cannot render it', () => {
+    // The one param allowed to outrank a stated view. Since the estate preview
+    // moved to the desk there is NO chat rendering for preview_pr, so honoring
+    // view=chat shows a page with no trace of why the visitor followed the link
+    // and leaves the param riding along inertly until the next navigate().
+    expect(viewFromSearch('?view=chat&preview_pr=168')).toBe('desk');
+    // Contrast with the reasoning case directly above, which is NOT symmetric:
+    // chat still renders that one as the page-level replay, so the stated view
+    // and the param agree and the legacy link is honored. The rule is "a param
+    // with no rendering on the stated view wins", not "desk params always win".
+    expect(viewFromSearch('?view=chat&reasoning=' + HEX32)).toBe('chat');
+    // A genuine chat errand still outranks it — hasChatIntent runs first.
+    expect(viewFromSearch(`?conversation=${CONV}&preview_pr=168`)).toBe('chat');
+    // Absent/empty is not "names something": no hijack of a plain chat link.
+    expect(viewFromSearch('?view=chat&preview_pr=')).toBe('chat');
+  });
+
   // A malformed conversation value is NOT a chat intent: the param is validated
   // by conversationIdFromSearch, and junk it rejects (e.g. path traversal)
   // carries no real "resume this" signal.

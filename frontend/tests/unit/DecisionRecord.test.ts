@@ -206,24 +206,66 @@ describe('DecisionRecord — the decision’s own prose', () => {
 
   it('refuses to blend two DIFFERENT decisions into one document', async () => {
     // A trace can belong to several decisions (the create-class IaC lifecycle
-    // pair), and GET /trace answers with the newest. A caller holding an older
-    // sibling would otherwise get a document that never existed — this row's
-    // status fields wearing that row's prose. The FETCHED doc wins on a
-    // mismatch: it is what the backend says this trace's decision is.
+    // pair), and GET /trace answers with the newest. Splicing them would build a
+    // document that never existed — one doc's status fields wearing the other's
+    // prose. On a mismatch ONE doc wins WHOLE, and it is the ROW's: this card is
+    // that row's accordion body, so answering with anything else leaves it
+    // contradicting the row it is expanded under.
     const { getByTestId } = mount(
       () =>
         res(
           traceResponse({
             events: [ev({ insert_id: 't1', thought_text: 'landed' })],
-            decision: { ...ROLLBACK, decision_id: 'newer', rationale: 'the newer doc' },
+            decision: {
+              ...ROLLBACK,
+              decision_id: 'fetched',
+              rationale: 'the fetched doc',
+              approver: 'fetched@example.com',
+            },
           }),
         ),
-      { decision: { ...ROLLBACK, decision_id: 'older', rationale: 'the older doc' } },
+      { decision: { ...ROLLBACK, decision_id: 'row', rationale: 'the row doc' } },
     );
     await waitFor(() => expect(getByTestId('trace-row-thought')).toBeTruthy());
     const prose = getByTestId('decision-record-prose').textContent ?? '';
-    expect(prose).toContain('the newer doc');
-    expect(prose).not.toContain('the older doc');
+    expect(prose).toContain('the row doc');
+    expect(prose).not.toContain('the fetched doc');
+    // The losing doc loses ENTIRELY: `approver` is a field only it carries, so
+    // if any part of it were spliced in, this is where it would show.
+    expect(getByTestId('decision-record').textContent).not.toContain('fetched@example.com');
+  });
+
+  it('shows the row’s CURRENT stage, not the stage the cache froze', async () => {
+    // The reachable mismatch, and the reason the ROW wins rather than the
+    // fetched doc. A record held open while the create-class pair's second
+    // document is written: the cache is fetched ONCE per trace and then frozen
+    // at the `pending` sibling, while the row re-flows from GET /decisions on
+    // every overview poll and becomes the `merged` one. Answering with the
+    // cache would leave the card describing a stage the ledger has moved past.
+    const IAC = {
+      decision_id: 'x',
+      trace_id: TID,
+      action: 'iac_apply',
+      pr_number: 68,
+      created_at: '2026-06-04T14:53:36Z',
+    } as Decision;
+    const { getByTestId } = mount(
+      () =>
+        res(
+          traceResponse({
+            events: [ev({ insert_id: 't1', thought_text: 'landed' })],
+            decision: { ...IAC, decision_id: 'older', merge_state: 'pending' },
+          }),
+        ),
+      { decision: { ...IAC, decision_id: 'newer', merge_state: 'merged' } },
+    );
+    // Waiting on the thought row proves the FETCH landed — asserting on frame 0
+    // would pass with the fetched doc still absent, which is not the state
+    // under test.
+    await waitFor(() => expect(getByTestId('trace-row-thought')).toBeTruthy());
+    const card = getByTestId('decision-record').textContent ?? '';
+    expect(card).toContain('merged');
+    expect(card).not.toContain('pending');
   });
 
   it('renders nothing at all when the decision has no prose', async () => {

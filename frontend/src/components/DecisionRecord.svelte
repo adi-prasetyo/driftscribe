@@ -72,15 +72,24 @@
    *  would otherwise get a document that never existed: this row's status
    *  fields over that row's prose. LedgerStrip makes this unreachable by
    *  offering only the newest row an affordance, and this is the guard that
-   *  keeps it unreachable if that ever changes. On a mismatch the FETCHED doc
-   *  wins: it is what the backend says this trace's decision is. */
+   *  keeps it unreachable if that ever changes.
+   *
+   *  On a mismatch the ROW wins outright — no merge, since the two documents
+   *  are different decisions and splicing them is the hybrid this guard exists
+   *  to prevent. The row is the fresher of the two, which is the opposite of
+   *  what "the backend's answer" suggests: the cache entry is fetched ONCE per
+   *  trace and then frozen, while `decision` re-flows from GET /decisions on
+   *  every overview poll. So the reachable mismatch is a record held open
+   *  across the write of a newer sibling — cache pinned to `pending`, row
+   *  refreshed to `merged` — and answering with the cached copy would leave the
+   *  card contradicting the row it is expanded under. */
   const doc = $derived.by((): Decision | null => {
     const fetched = entry.decision;
     if (!decision) return fetched ?? null;
     if (!fetched) return decision;
     return fetched.decision_id === decision.decision_id
       ? ({ ...fetched, ...decision } as Decision)
-      : fetched;
+      : decision;
   });
 
   /** The crew that produced this trace, or null.

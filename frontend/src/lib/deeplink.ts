@@ -141,7 +141,28 @@ export function viewFromSearch(search: string): AppView {
   if (hasChatIntent(search)) return 'chat';
   // URLSearchParams tolerates a leading "?" itself, so — like the two helpers
   // above — the raw search string goes straight in.
-  const raw = new URLSearchParams(search).get('view');
+  const params = new URLSearchParams(search);
+  // `?preview_pr=` outranks an explicit `?view=chat`, which is the one place
+  // this function lets a param beat a stated view.
+  //
+  // Chat has no rendering for it AT ALL since the estate preview moved to the
+  // desk (Task 2.4), so honoring `view=chat` here shows a page with no trace of
+  // why the visitor followed the link, and the param then rides along inertly
+  // until the next navigate() drops it. Landing on the desk is the only reading
+  // under which the link means anything.
+  //
+  // Deliberately NOT extended to `?view=chat&reasoning=`, which looks like the
+  // symmetric case and is not: chat still renders that one as the page-level
+  // replay (App.svelte's boot continuation), so the stated view and the param
+  // agree there and the legacy link keeps working until PR 3 removes replay.
+  // The rule is "a param with no rendering on the stated view wins", not
+  // "desk params always win".
+  //
+  // Bare `?preview_pr=` never needed this — DEFAULT_VIEW is already 'desk' —
+  // and bare is the shape the IaC approval page actually emits, so this covers
+  // a hand-written or hand-edited URL rather than a link the app produces.
+  if (params.get('preview_pr')) return 'desk';
+  const raw = params.get('view');
   // Legacy alias: the estate merged into the desk (2026-07-31 design doc). Old
   // ?view=estate links land on the merged page rather than 404-ing into a blank
   // main. Matched on the RAW string, deliberately not via VIEWS — the id is
