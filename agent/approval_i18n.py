@@ -80,6 +80,27 @@ REASON_EN: dict[str, str] = {
         "(failing closed). Applying changes is disabled until the dial can "
         "be read again."
     ),
+    # ds-2wy: the plan shown here was built for a generation that the pull
+    # request has already moved past, so approving it could never succeed. Keyed
+    # by driftscribe_lib.github.FRESH_APPLY_* (see _FRESH_APPLY_REASON_KEY).
+    "pr_merged": (
+        "this pull request is already merged, so this plan can no longer be "
+        "applied. If an apply for it is still in progress, it is tracked on the "
+        "approval desk, not here."
+    ),
+    "pr_closed": (
+        "this pull request is closed, so this plan cannot be applied. Reopening "
+        "the pull request restores this page."
+    ),
+    "pr_draft": (
+        "this pull request is a draft, so this plan cannot be applied. Marking "
+        "it ready for review restores this page."
+    ),
+    "pr_head_moved": (
+        "the pull request has moved past the revision this plan was built "
+        "against, so this plan can no longer be applied. A fresh plan is built "
+        "automatically for the new revision."
+    ),
 }
 _AUTONOMY_DIAL_JA = (
     "自律動作レベルが「{label}」に設定されているため、変更の適用は無効です。"
@@ -122,6 +143,24 @@ _REASON_JA_BY_KEY: dict[str, str] = {
         "自律動作レベルの状態を読み取れません。有効なモードは「監視のみ」です"
         "（安全側に倒しています）。ダイヤルが再び読み取れるようになるまで、"
         "変更の適用は無効です。"
+    ),
+    "pr_merged": (
+        "この Pull Request はすでにマージされているため、このプランを適用する"
+        "ことはできません。適用が進行中の場合は、このページではなく承認デスクで"
+        "追跡されています。"
+    ),
+    "pr_closed": (
+        "この Pull Request はクローズされているため、このプランを適用すること"
+        "はできません。Pull Request を再オープンすると、このページは元に戻ります。"
+    ),
+    "pr_draft": (
+        "この Pull Request はドラフトのため、このプランを適用することはできません。"
+        "レビュー可能な状態にすると、このページは元に戻ります。"
+    ),
+    "pr_head_moved": (
+        "この Pull Request は、このプランを作成した時点のリビジョンから進んで"
+        "いるため、このプランを適用することはできません。新しいリビジョン用の"
+        "プランは自動的に作成されます。"
     ),
 }
 
