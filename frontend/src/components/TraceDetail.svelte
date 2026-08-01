@@ -77,8 +77,16 @@
    *  the story), which is right for the ROW list and left the number rendered
    *  nowhere once the page-level Timeline was deleted. It belongs in the
    *  footer with the trace id: both are facts ABOUT the run rather than parts
-   *  of it. Zero/absent → '' → the span self-suppresses, so a directly-recorded
-   *  trace with no reasoning run shows nothing rather than "0 spent". */
+   *  of it. Zero/absent → null → the span self-suppresses, so a
+   *  directly-recorded trace with no reasoning run shows nothing rather than
+   *  "0 spent".
+   *
+   *  SUMMING is correct and is the part that could quietly be wrong. Each
+   *  `llm_usage` carries ONE Gemini call's `usage_metadata` — adk_agent.py's
+   *  emit doc: "Multi-turn runs surface it on each turn's final event — so the
+   *  dashboards graph per-turn cost." It is per-step, not a running total, so
+   *  taking the last event would understate every multi-step run. Same
+   *  treatment `omittedThoughtTokens` already gives `thoughts_token_count`. */
   const totalTokens = $derived.by((): number | null => {
     let total = 0;
     let saw = false;

@@ -331,6 +331,30 @@ describe('TraceDetail — a rollback proposal offers its approval inline', () =>
     expect(queryByRole('link', { name: /approve/i })).toBeNull();
   });
 
+  it('still offers it when the result arrived with no matching call', () => {
+    // interleaveTimeline pairs FIFO per tool_name and leaves an ORPHAN result
+    // at its own position with `call` unset — a real shape on a trace whose
+    // call event was lost or arrived only via backfill. The CTA reads the
+    // RESULT, so it must survive that; gating on the pair would have made the
+    // approval vanish exactly when the trace was already incomplete.
+    const { getByRole } = mount(
+      entry({
+        events: [
+          ev({
+            event: 'tool_result',
+            tool_name: 'propose_rollback_tool',
+            result_ok: true,
+            result_preview: JSON.stringify({ approval_url: APPROVAL }),
+            insert_id: 'r-orphan',
+          }),
+        ],
+      }),
+    );
+    expect((getByRole('link', { name: /approve/i }) as HTMLAnchorElement).getAttribute('href')).toContain(
+      '/approvals/ap-7',
+    );
+  });
+
   it('offers nothing when the proposal carried no approval url', () => {
     const { queryByRole } = mount(
       entry({ events: rollbackPair('propose_rollback_tool', { ok: true }) }),
