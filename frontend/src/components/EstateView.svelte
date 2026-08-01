@@ -14,6 +14,11 @@
    * ApprovalDesk. NEVER imports Mermaid (that stays InfraDiagram's preview-
    * only concern); this is a plain DOM row list.
    *
+   * Since ds-zld it also carries the unmatched-DECLARATIONS group (IaC entries
+   * with no live resource), which used to live in InfraDiagram's chat panel.
+   * Those rows are not in the `estateModel` — they are read straight off the
+   * graph — because a declaration never becomes a live node.
+   *
    * 2026-07-31 — a SECTION of the desk page, no longer a screen of its own (see
    * docs/plans/2026-07-31-desk-estate-merge-design.md). The desk owns the one
    * instrument band above; this section owns only its own loading/degraded
@@ -21,7 +26,9 @@
    * pending approval can coexist with a failed graph fetch).
    */
   import { t } from '../lib/i18n';
-  import type { InfraGraph, PendingApproval } from '../lib/infra_graph';
+  import Icon from './Icon.svelte';
+  import type { InfraGraph, PendingApproval, UnmatchedDeclaration } from '../lib/infra_graph';
+  import { infraTypeLabel, investigateUnmatchedPrefill } from '../lib/infra_graph';
   import { estateModel, firstAdoptableRow } from '../lib/estate';
   import type { Decision } from '../lib/types';
 
@@ -33,6 +40,7 @@
     approvalsStale = false,
     adoptDisabled = false,
     onAdopt,
+    onInvestigate,
   }: {
     graph: InfraGraph | null;
     decisions: ReadonlyArray<Decision | null | undefined> | null | undefined;
@@ -47,6 +55,12 @@
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
+    /** Investigate click (unmatched-declarations group) → the same prefill bridge
+     *  as `onAdopt`, kept a SEPARATE prop because it is a different errand: adopt
+     *  asks Provision to author IaC for a live resource, investigate asks it to
+     *  find out what happened to one that is declared and missing. App wires both
+     *  to handleAdopt; a future consumer can tell them apart. */
+    onInvestigate?: (prefill: string) => void;
   } = $props();
 
   // ---- row model ----
@@ -70,6 +84,38 @@
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
     onAdopt?.(prefill);
+  }
+
+  // ---- unmatched IaC declarations (moved here from InfraDiagram, ds-zld) ----
+  // Declarations that matched no live resource in the latest CAI snapshot (#244,
+  // design 2026-07-11). They are NOT part of `model`: estateModel is built from
+  // resourceCards(), which only ever sees live nodes, and a declaration never
+  // becomes one. Read straight off the graph, exactly as InfraDiagram did.
+  //
+  // They belong in this list on the merits, not merely because their old home is
+  // being deleted: this section groups the estate by how each thing stands
+  // relative to IaC, and a declaration with no resource is the mirror image of
+  // the drift group above it — live but undeclared, versus declared but not
+  // live. The chat's diagram panel only ever had them because that panel was
+  // where the infra graph happened to be rendered.
+  //
+  // A degraded graph's declaration list is exactly as untrustworthy as its
+  // resource list, and this must not become the one figure that survives a
+  // failed read (ds-eh6). That is owned by the ONE loaded-branch gate the group
+  // renders inside — the same gate every other group answers to — and NOT
+  // re-asserted here: a `graph.degraded` term in this expression is unreachable
+  // today, so it would sit there un-exercised, and an injected defect in it
+  // reddens nothing (verified). The null test is the type system's, not a
+  // second arm.
+  const unmatched = $derived(graph === null ? null : (graph.unmatched_declarations ?? null));
+  const unmatchedEntries = $derived(unmatched?.entries ?? []);
+
+  function clickInvestigate(d: UnmatchedDeclaration): void {
+    // `graph` is non-null wherever a row can be clicked (the rows only render
+    // inside the loaded branch), but the prefill builder needs it as a value,
+    // not as an assertion.
+    if (adoptDisabled || graph === null) return;
+    onInvestigate?.(investigateUnmatchedPrefill(d, graph, $t));
   }
 </script>
 
@@ -137,6 +183,54 @@
       {#if model.driftHidden > 0}
         <p class="estate-view__more" data-testid="estate-drift-more">
           {$t('desk.estate.driftMore', { n: model.driftHidden })}
+        </p>
+      {/if}
+    {/if}
+
+    <!-- Declared in IaC, no live resource — the drift group's mirror image, so
+         it sits directly under it and above the managed rows that are neither.
+         Rows carry NO status dot on purpose: a dot in this list means a live
+         resource is either managed or drifted, and these are not live resources
+         at all. The lead line is not decoration — without it "not found live"
+         reads as a deletion claim, and it is evidence (index lag, an unapplied
+         change), not proof. -->
+    {#if unmatchedEntries.length > 0}
+      <h2 class="estate-view__group" data-testid="estate-group-unmatched">
+        {$t('desk.estate.unmatchedGroup', { n: unmatched?.count ?? unmatchedEntries.length })}
+      </h2>
+      <p class="estate-view__lead" data-testid="estate-unmatched-lead">
+        {$t('infra.unmatched.lead')}
+      </p>
+      <div class="estate-view__rows" aria-label={$t('infra.unmatched.ariaLabel')}>
+        {#each unmatchedEntries as d (d.id)}
+          <div class="estate-view__row estate-view__row--decl" data-testid="estate-unmatched-row">
+            <!-- The dot's CELL, with no dot in it. Keeping the element (rather
+                 than dropping to a 3-column row) holds these names on the same
+                 left edge as every other group's, and hands the row the mobile
+                 restack's `grid-area: 1 / 1` for free. -->
+            <span class="estate-view__dot estate-view__dot--none" aria-hidden="true"></span>
+            <span class="estate-view__decl">
+              <span class="estate-view__name">{d.label}</span>
+              {#if d.address}
+                <code class="estate-view__addr">{d.address}</code>
+              {/if}
+            </span>
+            <span class="estate-view__type">{infraTypeLabel(d.asset_type, d.type_label, $t)}</span>
+            <button
+              type="button"
+              class="estate-view__chip estate-view__chip--icon"
+              data-testid="estate-unmatched-investigate"
+              disabled={adoptDisabled}
+              title={adoptDisabled ? $t('infra.disabledHint') : $t('infra.unmatched.investigateHint')}
+              onclick={() => clickInvestigate(d)}
+              ><Icon name="compass" size={12} />{$t('infra.unmatched.investigate')}</button
+            >
+          </div>
+        {/each}
+      </div>
+      {#if unmatched && unmatched.truncated > 0}
+        <p class="estate-view__more" data-testid="estate-unmatched-more">
+          {$t('infra.unmatched.trailer', { n: unmatched.truncated })}
         </p>
       {/if}
     {/if}
@@ -299,10 +393,44 @@
   .estate-view__dot--sys {
     background: var(--ds-border);
   }
+  /* An unmatched DECLARATION has no live resource to be managed or drifted, so
+     it gets no dot — only the cell, so the name still lines up with the groups
+     above and below. */
+  .estate-view__dot--none {
+    background: transparent;
+  }
 
   .estate-view__name {
     color: var(--ds-fg);
     overflow-wrap: break-word;
+  }
+
+  /* Name over HCL address, in ONE grid cell — the address is a second identity
+     for the same thing, not a fourth column. A column of its own would have to
+     be `auto` (the row's other tracks are), and a long address would then push
+     the Investigate chip off the card, which `.estate-view`'s overflow:hidden
+     would quietly clip rather than scroll (ds-cmc). */
+  .estate-view__decl {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .estate-view__addr {
+    font-family: var(--ds-font-mono);
+    font-size: 11px;
+    color: var(--ds-faint);
+    overflow-wrap: anywhere;
+  }
+  /* The lead under the group heading. These rows are EVIDENCE (index lag, an
+     unapplied change), not proof that something was deleted, and the heading
+     alone cannot carry that. */
+  .estate-view__lead {
+    margin: 0;
+    padding: 0 40px 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ds-faint);
   }
   .estate-view__type {
     font-family: var(--ds-font-mono);
@@ -325,6 +453,13 @@
   .estate-view__chip:disabled {
     cursor: not-allowed;
     opacity: 0.5;
+  }
+  /* Only the icon-bearing chip goes inline-flex: switching the plain adopt chip
+     to it would shift its text baseline for no reason. */
+  .estate-view__chip--icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
   /* The "adoption status unknown" stand-in. Muted and NOT a button: it must not
      read as an action, because the whole point is that we cannot say whether

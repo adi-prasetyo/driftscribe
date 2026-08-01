@@ -79,7 +79,33 @@ function node(
 // must stay folded. `drift_adoptable` is set explicitly on every group — leaving
 // it off would make resourceCards() fall back to raw `drift` and silently change
 // what the band and the "N drift" grouping report.
-function graphBody(opts: { drift: boolean; degraded?: boolean }) {
+// IaC declarations with no live resource (ds-zld moved this group here from
+// InfraDiagram's chat panel). Two entries against a `truncated: 1`, so the shot
+// covers both the row shape and the "+N not shown" trailer, and a long HCL
+// address that has to wrap under its name rather than push the Investigate
+// button off a card `.estate-view` would silently CLIP (overflow:hidden).
+const UNMATCHED = {
+  count: 3,
+  truncated: 1,
+  entries: [
+    {
+      id: 'u0',
+      asset_type: 'run.googleapis.com/Service',
+      type_label: 'Cloud Run service',
+      label: 'storefront-old',
+      address: 'google_cloud_run_v2_service.storefront_old',
+    },
+    {
+      id: 'u1',
+      asset_type: 'pubsub.googleapis.com/Subscription',
+      type_label: 'Pub/Sub subscription',
+      label: 'orders-retry-subscription-legacy',
+      address: 'module.messaging.google_pubsub_subscription.orders_retry_subscription_legacy',
+    },
+  ],
+};
+
+function graphBody(opts: { drift: boolean; degraded?: boolean; unmatched?: boolean }) {
   if (opts.degraded) {
     return {
       generated_at: null,
@@ -92,6 +118,11 @@ function graphBody(opts: { drift: boolean; degraded?: boolean }) {
       groups: [],
       edges: [],
       truncated: { per_type_sample: 10 },
+      // Carried on the degraded payload ON PURPOSE. A degraded read's
+      // declaration list is as untrustworthy as its resource list, so the
+      // interesting case is a body that HAS declarations and still renders
+      // none — an empty payload here would pass for the wrong reason.
+      ...(opts.unmatched ? { unmatched_declarations: UNMATCHED } : {}),
     };
   }
   const driftTopics = opts.drift ? [node('t9', 'shipping-topic', 'pubsub.googleapis.com/Topic', false)] : [];
@@ -212,6 +243,7 @@ function graphBody(opts: { drift: boolean; degraded?: boolean }) {
     ],
     edges: [],
     truncated: { per_type_sample: 10 },
+    ...(opts.unmatched ? { unmatched_declarations: UNMATCHED } : {}),
   };
 }
 
@@ -229,13 +261,17 @@ const PENDING_APPROVALS = [
 interface Fixture {
   drift: boolean;
   degraded?: boolean;
+  unmatched?: boolean;
   pendingApprovals: typeof PENDING_APPROVALS | [];
 }
 
 const FIXTURES: Record<string, Fixture> = {
-  populated: { drift: true, pendingApprovals: PENDING_APPROVALS },
+  populated: { drift: true, unmatched: true, pendingApprovals: PENDING_APPROVALS },
+  // Deliberately NO declarations here: "all clear" has to mean all clear, and a
+  // stray unmatched group under a zero-drift estate is exactly the kind of
+  // leftover that would go unnoticed in a shot nobody diffs.
   'all-clear': { drift: false, pendingApprovals: [] },
-  degraded: { drift: false, degraded: true, pendingApprovals: [] },
+  degraded: { drift: false, degraded: true, unmatched: true, pendingApprovals: [] },
 };
 
 async function mockEstate(page: Page, fx: Fixture) {
@@ -252,7 +288,7 @@ async function mockEstate(page: Page, fx: Fixture) {
   );
   await page.route('**/infra/pending-approvals', (r) => json(r, { approvals: fx.pendingApprovals }));
   await page.route('**/infra/graph', (r) =>
-    json(r, graphBody({ drift: fx.drift, degraded: fx.degraded })),
+    json(r, graphBody({ drift: fx.drift, degraded: fx.degraded, unmatched: fx.unmatched })),
   );
   await page.route(/\/conversations(\?|$)/, (r) => json(r, { conversations: [] }));
 }
@@ -285,6 +321,9 @@ for (const locale of ['en', 'ja'] as Locale[]) {
       if (fx.degraded) {
         await expect(page.getByTestId('estate-degraded')).toBeVisible();
         await expect(page.getByTestId('estate-row')).toHaveCount(0);
+        // …and the declarations the payload DID carry are gone with them.
+        await expect(page.getByTestId('estate-unmatched-row')).toHaveCount(0);
+        await expect(page.getByTestId('estate-group-unmatched')).toHaveCount(0);
       } else if (fx.drift) {
         await expect(page.getByTestId('estate-group-drift')).toBeVisible();
         // `receipts` has an open PR, so exactly one PR chip and one FEWER
@@ -303,11 +342,61 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         // button on the way in — the count above already pins that globally,
         // but this says which rows it is about.
         await expect(untracked.getByTestId('estate-adopt-btn')).toHaveCount(0);
+
+        // The unmatched-declarations group (ds-zld). Its old home measured the
+        // band against its OWN box for a reason worth restating: `.estate-view`
+        // is `overflow: hidden`, so a control pushed past the card's right edge
+        // is CLIPPED rather than scrolled to, and a document-level
+        // scrollWidth === clientWidth check calls the page clean while the
+        // Investigate button sits half off the card (ds-cmc). Measure the
+        // descendants against the card.
+        await expect(page.getByTestId('estate-group-unmatched')).toBeVisible();
+        await expect(page.getByTestId('estate-unmatched-row')).toHaveCount(2);
+        // Heading carries the SERVER count (3), not the two rows shown, and the
+        // trailer states the difference rather than dropping it silently.
+        await expect(page.getByTestId('estate-group-unmatched')).toContainText('3');
+        await expect(page.getByTestId('estate-unmatched-more')).toBeVisible();
+        // No status dot is PAINTED on a declaration row: it is not a live
+        // resource, so neither the managed fill nor the drift ring applies.
+        // jsdom pins the class; only a browser can say what it renders.
+        const dotPaint = await page
+          .getByTestId('estate-unmatched-row')
+          .first()
+          .locator('.estate-view__dot')
+          .evaluate((el) => {
+            const s = getComputedStyle(el);
+            return { bg: s.backgroundColor, borderWidth: s.borderTopWidth };
+          });
+        expect(dotPaint.bg).toBe('rgba(0, 0, 0, 0)');
+        expect(parseFloat(dotPaint.borderWidth)).toBe(0);
+
+        for (const vp of [
+          { width: 1280, height: 800 },
+          { width: 768, height: 900 },
+          { width: 390, height: 844 },
+        ]) {
+          await page.setViewportSize(vp);
+          const overflow = await estate.evaluate((el) => {
+            const right = el.getBoundingClientRect().right;
+            return Math.max(
+              0,
+              ...[...el.querySelectorAll('[data-testid="estate-unmatched-row"] *')].map(
+                (c) => c.getBoundingClientRect().right - right,
+              ),
+            );
+          });
+          expect(
+            overflow,
+            `declaration row content overflows the estate card at ${vp.width}px`,
+          ).toBeLessThanOrEqual(1);
+        }
+        await page.setViewportSize(VIEWPORT);
       } else {
         // Zero drift: the group header must be ABSENT, not rendered empty.
         await expect(page.getByTestId('estate-group-drift')).toHaveCount(0);
         await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(0);
         await expect(page.getByTestId('estate-group-managed')).toBeVisible();
+        await expect(page.getByTestId('estate-group-unmatched')).toHaveCount(0);
       }
 
       await estate.screenshot({

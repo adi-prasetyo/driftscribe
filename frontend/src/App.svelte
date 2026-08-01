@@ -2619,6 +2619,7 @@
     approvalsStale={$overview.approvalsStale}
     adoptDisabled={chatDisabled}
     onAdopt={handleAdopt}
+    onInvestigate={handleAdopt}
   />
   {/if}
 </main>
