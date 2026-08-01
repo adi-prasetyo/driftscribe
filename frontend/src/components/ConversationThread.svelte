@@ -102,7 +102,7 @@
 </script>
 
 <!-- tabindex=-1 so openConversation can move focus here on resume (mirrors the
-     open-trace focus move into #historical-badge), announcing the loaded thread
+     the retired replay's focus move into its banner), announcing the loaded thread
      to keyboard / screen-reader users instead of stranding them on the rail. -->
 <section
   id="conversation-thread"

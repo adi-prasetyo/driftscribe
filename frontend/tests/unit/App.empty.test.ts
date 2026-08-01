@@ -219,9 +219,13 @@ describe('App — the empty new-chat state', () => {
     });
   });
 
-  it('is not the state a historical replay opens in', async () => {
-    // A replay has a transcript — someone else's, from the past. Offering it a
-    // greeting and four fresh questions would misread the whole screen.
+  it('is not left behind on the chat view when a bare ?reasoning= is handed to the desk', async () => {
+    // `?view=chat&reasoning=` used to open a page-level replay here, and this
+    // test's job was to keep the front door from being offered on top of
+    // someone else's past transcript. ds-jns Task 3.3 deleted that surface, so
+    // the URL now walks on to the desk record — and the failure mode it guards
+    // against inverted with it: chat must not sit there flashing a greeting and
+    // four fresh questions during the hand-off, on its way to somewhere else.
     const TID = 'e'.repeat(32);
     stubFetch((url) =>
       url.includes(`/trace/${TID}`)
@@ -230,7 +234,7 @@ describe('App — the empty new-chat state', () => {
     );
     history.replaceState(null, '', `/?view=chat&reasoning=${TID}`);
     const { findByTestId, queryByTestId } = render(App);
-    await findByTestId('historical-banner');
+    await findByTestId('decision-record');
     expect(queryByTestId('chat-empty-greeting')).toBeNull();
     expect(queryByTestId('chat-empty-chips')).toBeNull();
   });

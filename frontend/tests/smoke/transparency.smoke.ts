@@ -163,7 +163,7 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.getByTestId('instrument-band')).toBeVisible();
     // The chat shell must be genuinely absent, not merely hidden.
     await expect(page.locator('#chat-form')).toHaveCount(0);
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionsPane}"]`)).toHaveCount(0);
+    await expect(page.locator(`[data-testid="${TESTIDS.conversationsPane}"]`)).toHaveCount(0);
 
     // …and the header nav still reaches chat from there.
     await page.getByTestId('nav-chat').click();
@@ -339,7 +339,7 @@ test.describe('transparency UI (mock smoke)', () => {
 
     await expect(page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`)).toBeVisible();
     await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toBeVisible();
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionsPane}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="${TESTIDS.conversationsPane}"]`)).toBeVisible();
     // The front door a fresh chat actually shows (ds-jns PR 3): greeting plus
     // four example questions. This replaced the three empty reasoning groups
     // that used to be asserted here — they live inside the transcript, which a
@@ -350,7 +350,7 @@ test.describe('transparency UI (mock smoke)', () => {
     expect(bad, `static assets must load with no 4xx/5xx: ${bad.join(', ')}`).toHaveLength(0);
   });
 
-  test('chat SSE renders timeline + threaded reply; sends Accept + token; backfills mcp', async ({ page }) => {
+  test('chat SSE threads the reply and its reasoning; sends Accept + token; backfills mcp', async ({ page }) => {
     const state = freshState();
     await seedToken(page);
     await mockData(page, state);
@@ -360,30 +360,38 @@ test.describe('transparency UI (mock smoke)', () => {
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
 
     // The reply lands in the thread's crew bubble (chat-native), alongside the
-    // operator's own prompt bubble — NOT the standalone hero, which stays hidden.
+    // operator's own prompt bubble. There is no standalone hero any more — ds-jns
+    // Task 3.3 deleted it — so this is the only place the reply renders at all.
     const thread = page.locator(`[data-testid="${TESTIDS.conversationThread}"]`);
     await expect(thread).toBeVisible();
     await expect(thread).toContainText('Check payment-demo for drift');
     await expect(thread).toContainText('Found 3 drifted env vars.');
-    await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();
 
     // the request advertised SSE + carried the token from sessionStorage
     expect(state.chatHeaders['accept'] ?? '').toContain('text/event-stream');
     expect(state.chatHeaders['x-driftscribe-token']).toBe('smoke-token');
 
-    // tools group: open and see the worker (read_live_env_tool → "Reader (drift)")
-    await page.locator('#group-tools').evaluate((el) => {
-      (el as HTMLDetailsElement).open = true;
-    });
-    await expect(page.locator('[data-group="tools"]')).toBeVisible();
-    await expect(page.locator('#group-tools')).toContainText('Reader (drift)');
+    // The reasoning hangs off the turn that produced it now, not off three
+    // page-level group accordions. Expanding it is what asks for the trace.
+    await page.getByTestId('reasoning-disclosure').click();
+    const detail = page.getByTestId('trace-detail');
+    await expect(detail).toBeVisible();
 
-    // mcp group: the side-channel mcp_call only arrives via the /trace backfill
-    await page.locator('#group-mcp').evaluate((el) => {
-      (el as HTMLDetailsElement).open = true;
-    });
-    await expect(page.locator('[data-group="mcp"]')).toBeVisible();
-    await expect(page.locator('#group-mcp')).toContainText('search_documents');
+    // One INTERLEAVED list, in run order, rather than three sibling panels
+    // binned by kind — which is the whole point of the disclosure: what the
+    // coordinator thought, then what it called, reads as one sequence.
+    await expect(detail.getByTestId('trace-row-thought')).toContainText(
+      'Comparing live env to the ops contract',
+    );
+    // The tool row names the WORKER, not the raw tool symbol
+    // (read_live_env_tool -> "Reader (drift)").
+    await expect(detail.getByTestId('trace-row-tool')).toContainText('Reader (drift)');
+    // …and the side-channel mcp_call, which the STREAM never carries — it only
+    // arrives via the /trace backfill, so its presence here proves the merge.
+    // Named by SERVER, not by the raw `search_documents` symbol: this surface
+    // says what was consulted, not which function was called (the tool-name
+    // grounding rule).
+    await expect(detail.getByTestId('trace-row-mcp')).toContainText('Developer Knowledge');
   });
 
   test('a thinking bubble streams in the thread until the reply lands, then fills in place', async ({ page }) => {
@@ -398,19 +406,18 @@ test.describe('transparency UI (mock smoke)', () => {
 
     // While the coordinator is working (request in flight, no reply yet) the
     // exchange is already in the thread: the prompt bubble + a live "thinking"
-    // crew bubble. The standalone hero stays out of the way.
+    // crew bubble.
     const thread = page.locator(`[data-testid="${TESTIDS.conversationThread}"]`);
     const typing = page.locator(`[data-testid="${TESTIDS.threadTyping}"]`);
-    const final = page.locator(`[data-testid="${TESTIDS.finalResponse}"]`);
     await expect(thread).toBeVisible();
     await expect(typing).toBeVisible();
-    await expect(final).toBeHidden();
 
     // Once the reply lands, the typing indicator is replaced by the prose in the
-    // SAME bubble — no separate hero, no position hop.
+    // SAME bubble — no position hop. The standalone hero this used to also
+    // assert against is gone (ds-jns Task 3.3), which is the stronger version
+    // of the same claim: there is no second place for a reply to appear.
     await expect(thread).toContainText('Found 3 drifted env vars.');
     await expect(typing).toBeHidden();
-    await expect(final).toBeHidden();
   });
 
   test('auth-required (401) shows the inline AuthPanel instead of window.prompt', async ({ page }) => {
@@ -431,57 +438,85 @@ test.describe('transparency UI (mock smoke)', () => {
   });
 
   test('malicious off-origin approval URL renders NO link', async ({ page }) => {
+    // Moved to the desk with the decisions themselves: ds-jns Task 3.3 deleted
+    // the chat's decisions rail, and the desk's pending hero is what offers an
+    // operator the Approve link now. The claim is unchanged and is the reason
+    // this test exists — a decision document is coordinator-shaped data, and an
+    // `approval_url` pointing off-origin must never become a clickable anchor.
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    await page.goto('/');
 
-    // five seeded decisions render (two rollbacks + one iac_apply + two drift_issue)
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(5);
-    // the off-origin approval_url must NOT become an anchor
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
+    // The seeded decisions reached the page (the ledger lists them)…
+    await expect(page.locator(`[data-testid="${TESTIDS.ledgerRow}"]`).first()).toBeVisible();
+    // …and the off-origin approval_url did not become an anchor ANYWHERE on it.
     await expect(page.locator('a[href*="evil.example"]')).toHaveCount(0);
-    // the same-origin one DOES render an Approve link
-    await expect(page.locator('a.past-approve-btn[href*="/approvals/ap-1"]')).toHaveCount(1);
+    // The same-origin one DOES render as a real link. Not pinned to a count:
+    // the desk offers it from more than one place (the pending hero and the
+    // ledger row for the same decision), and how many doors it has is a layout
+    // question, not the security claim under test.
+    await expect(page.locator('a[href*="/approvals/ap-1"]').first()).toBeVisible();
   });
 
   test('decision github.url: valid github.com link renders, javascript: url does not', async ({ page }) => {
+    // Also re-homed by Task 3.3: the rail listed every decision at once and
+    // could show all their links side by side. A record shows ONE decision, so
+    // the two halves of this claim are now two openings — which is a better
+    // test of the gate anyway, since each row is judged on its own.
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    await page.goto('/');
 
-    // Exactly one safe github link — the valid github.com issue. The
-    // javascript: row is rejected by safeGithubHref and renders no anchor.
-    const ghLinks = page.getByTestId('decision-github-link');
-    await expect(ghLinks).toHaveCount(1);
-    await expect(ghLinks.first()).toHaveAttribute('href', 'https://github.com/acme/ops/issues/99');
-    await expect(ghLinks.first()).toHaveAttribute('rel', 'noopener noreferrer');
-    await expect(ghLinks.first()).toHaveAttribute('target', '_blank');
-    // Belt-and-suspenders: no anchor anywhere carries the javascript: payload.
+    const rows = page.locator(`[data-testid="${TESTIDS.ledgerRow}"]`).filter({ hasText: 'drift' });
+    await expect(rows.first()).toBeVisible();
+
+    // Two seeded drift_issue rows: one with a real github.com issue, one with a
+    // `javascript:` payload. Open each and collect what its record offered,
+    // rather than indexing by position — the pass/fail must not depend on which
+    // way the ledger happens to sort two rows a minute apart.
+    const hrefs: (string | null)[] = [];
+    const n = await rows.count();
+    expect(n, 'both drift_issue rows must reach the ledger').toBe(2);
+    for (let i = 0; i < n; i++) {
+      await rows.nth(i).click();
+      await expect(page.getByTestId('decision-record')).toBeVisible();
+      const link = page.getByTestId('decision-github-link');
+      hrefs.push((await link.count()) === 1 ? await link.getAttribute('href') : null);
+      if ((await link.count()) === 1) {
+        await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+        await expect(link).toHaveAttribute('target', '_blank');
+      }
+      await rows.nth(i).click(); // collapse before opening the next
+    }
+    // Exactly one anchor, and it is the github.com one. The javascript: row is
+    // rejected by safeGithubHref and renders nothing at all.
+    expect(hrefs.filter(Boolean)).toEqual(['https://github.com/acme/ops/issues/99']);
+    // Belt: no anchor ANYWHERE on the page ever carried the payload.
     await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
   });
 
-  // ds-jns re-pointed the rail's view-reasoning: an iac_apply opens as a RECORD
-  // on the desk that lists it, not as a replay in the chat column. Everything
-  // this test was about survives the move — the curated decision fields, and
-  // the note explaining that an empty timeline here is expected rather than a
-  // failure to load — so the assertions follow the content to its new home.
+  // ds-jns re-pointed every route to a past decision at a RECORD on the desk
+  // that lists it, rather than a replay in the chat column — first the rail's
+  // view-reasoning (PR 2), then the rail itself (Task 3.3), which leaves the
+  // ledger row as the one door. Everything this test was about survives the
+  // move: the curated decision fields, and the note explaining that an empty
+  // timeline here is expected rather than a failure to load.
   test('historical iac_apply: desk record with the decision summary + "recorded directly" note', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    // Reached by DEEP LINK rather than by a ledger row, because that is the
+    // route this decision actually has: the strip caps its rows, and this
+    // iac_apply is older than the four the fixture puts above it. A
+    // `?reasoning=` naming a decision the list does not show is exactly what
+    // the desk's PINNED record exists for, so this doubles as its smoke.
+    await page.goto(`/?reasoning=${IAC_TRACE_ID}`);
 
-    // Open the iac_apply decision specifically (not .first(), which is a rollback).
-    await page
-      .locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)
-      .filter({ hasText: 'iac_apply' })
-      .locator(`[data-testid="${TESTIDS.openTraceButton}"]`)
-      .click();
-
-    // The desk, with the record open on it. No replay, no status pill: a record
-    // is not a run, so there is no lifecycle to label.
+    // The desk, with the record open on it. No status pill: a record is not a
+    // run, so there is no lifecycle to label.
     await expect(page.getByTestId('approval-desk')).toBeVisible();
     const record = page.getByTestId('decision-record');
     await expect(record).toBeVisible();
-    await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toHaveCount(0);
 
     // The DecisionSummary card renders the curated, safe fields.
     const summary = record.locator('[data-testid="decision-summary"]');
@@ -636,14 +671,17 @@ test.describe('transparency UI (mock smoke)', () => {
   // described a MODE the chat column entered. ds-jns replaced the mode with a
   // destination: the record opens on the desk, and the way back is the nav. No
   // disabled composer, because the composer is not on that page at all.
-  test('the rail’s view-reasoning opens the record on the desk; the nav comes back', async ({ page }) => {
+  test('a ledger row opens its record and puts it in the URL; the nav takes it back off', async ({ page }) => {
+    // The route, twice re-pointed and now one click: the decisions rail this
+    // used to start from is gone (Task 3.3) and the ledger is on the same page
+    // as the record it opens. The round trip is what matters — an operator has
+    // to be able to share what they are looking at, and to stop looking at it.
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    await page.goto('/');
 
-    await page.locator(`[data-testid="${TESTIDS.openTraceButton}"]`).first().click();
+    await page.locator(`[data-testid="${TESTIDS.ledgerRow}"]`).first().click();
     await expect(page.getByTestId('decision-record')).toBeVisible();
-    await expect(page.locator('#chat-form')).toHaveCount(0);
     await expect(page).toHaveURL(/reasoning=/);
 
     await page.getByTestId('nav-chat').click();
@@ -705,15 +743,13 @@ test.describe('transparency UI (mock smoke)', () => {
   test('drift decision: env-diff card shows non-secret values, redacts secret-named + credentialed-URL values, leaks no raw secret', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
-
-    // Open d-drift-1 specifically. Filter by its exact github href so the
-    // selector is unambiguous even if another row later also renders a link.
-    await page
-      .locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)
-      .filter({ has: page.locator('a[data-testid="decision-github-link"][href="https://github.com/acme/ops/issues/99"]') })
-      .locator(`[data-testid="${TESTIDS.openTraceButton}"]`)
-      .click();
+    // d-drift-1's record, by deep link. Both seeded drift_issue rows render an
+    // identical ledger line (same time-and-action shape), so clicking "the
+    // drift row" is genuinely ambiguous — and this decision is named by trace
+    // id everywhere else in the fixture. Unlike the iac_apply deep link above,
+    // this decision IS in the listed rows, so it opens INLINE under its own row
+    // rather than pinned above the desk: the same URL, the two placements.
+    await page.goto(`/?reasoning=${DRIFT_CARD_TRACE_ID}`);
 
     const card = page.getByTestId('drift-diff-card');
     await expect(card).toBeVisible();

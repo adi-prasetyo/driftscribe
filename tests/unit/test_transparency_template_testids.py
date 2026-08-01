@@ -18,14 +18,22 @@ _FRONTEND_SRC = Path("frontend/src")
 REQUIRED_TESTIDS_TRANSPARENCY = {
     "chat-prompt",
     "chat-submit",
-    "final-response",
-    # A live chat reply now settles into the conversation thread (chat-native);
-    # the cloud e2e keys off this in addition to the still-present hero.
+    # A chat reply settles into the conversation thread and carries its own
+    # reasoning disclosure; there is no standalone "final-response" hero any
+    # more (ds-jns Task 3.3 deleted it, along with the decisions rail and the
+    # page-level replay it fed).
     "conversation-thread",
-    "past-decisions-pane",
-    "past-decision-item",
-    "open-trace-button",
-    "historical-banner",
+    "reasoning-disclosure",
+    "turn-time",
+    # The front door of a fresh chat, and the one link off it.
+    "chat-empty-chip",
+    "capability-link",
+    "rail-new-chat",
+    # Every route to a past decision ends here: a row on the desk's ledger,
+    # opening that decision as a record.
+    "approval-desk",
+    "ledger-strip-row",
+    "decision-record",
 }
 
 
@@ -48,18 +56,26 @@ def test_transparency_source_has_required_testids():
     assert not missing, f"missing data-testids in frontend/src: {missing}"
 
 
-def test_three_reasoning_groups_present():
-    """The three reasoning groups must exist as Group instances keyed
-    coordinator/tools/mcp (Timeline.svelte), each rendered as a real
-    <details id="group-{key}"> with a child <div data-group="{key}"> (Group.svelte).
-    The Playwright spec sets `.open = true` on #group-tools and asserts
-    [data-group="tools"] becomes visible — runtime-verified by the smoke."""
-    timeline = (_FRONTEND_SRC / "components/Timeline.svelte").read_text()
-    for key in ("coordinator", "tools", "mcp"):
-        assert f'key="{key}"' in timeline, f"Timeline missing Group key={key!r}"
-    group = (_FRONTEND_SRC / "components/Group.svelte").read_text()
-    assert "data-group={key}" in group, "Group.svelte must render data-group={key}"
-    assert "group-${key}" in group, "Group.svelte must render id=group-{key}"
+def test_reasoning_rows_are_interleaved_not_grouped():
+    """Reasoning renders as ONE ordered list of rows, not three sibling panels.
+
+    Until ds-jns Task 3.3 this pinned the opposite shape: a Timeline.svelte with
+    three Group instances keyed coordinator/tools/mcp, each a
+    <details id="group-{key}"> wrapping a <div data-group="{key}">. Both
+    components are deleted. A turn's reasoning now hangs off the turn itself and
+    reads in RUN order -- what the coordinator thought, then what it called --
+    which is the point of the redesign and is why the bins had to go.
+
+    Pinned here because it is a claim about a SHAPE that a passing render test
+    cannot make: TraceDetail would render perfectly happily if someone re-binned
+    its rows by kind."""
+    detail = (_FRONTEND_SRC / "components/TraceDetail.svelte").read_text()
+    for row in ("trace-row-thought", "trace-row-tool", "trace-row-mcp"):
+        assert f'data-testid="{row}"' in detail, f"TraceDetail missing {row!r}"
+    # One list, driven by the single interleaving function -- not three.
+    assert "interleaveTimeline" in detail, "TraceDetail must render interleaveTimeline's rows"
+    assert not list(_FRONTEND_SRC.glob("components/Group.svelte")), "Group.svelte is retired"
+    assert not list(_FRONTEND_SRC.glob("components/Timeline.svelte")), "Timeline.svelte is retired"
 
 
 def test_sessionstorage_key_documented():

@@ -68,30 +68,27 @@ function geometryOf(node: HTMLElement): ScrollGeometry {
 }
 
 export interface StickToBottomHandle {
-  update(enabled?: boolean): void;
   destroy(): void;
 }
 
 /**
- * Svelte action: `<div use:stickToBottom={enabled}>`.
+ * Svelte action: `<div use:stickToBottom>`.
  *
  * Owns a MutationObserver (content growth) and a scroll listener (the operator's
  * intent), and tears both down on destroy. Kept as an action rather than an
  * `$effect` in the component because the lifetime that matters is the NODE's,
  * and an action is handed the node and its teardown together.
  *
- * `enabled` exists because not everything that renders into this region is a
- * live thread. A historical replay is a static record: there is no tail to
- * follow, and following it actively does harm — measured, the replay opened
- * scrolled to its own bottom with the "you are reading a past run" banner at
- * -11px, above the top edge of the region. Whoever placed the operator there
- * (openTrace scrolls to the top to reveal the banner) lost a race it should
- * never have been in. Turning the follow OFF for the whole mode settles it
- * without either side having to know about the other.
+ * It took an `enabled` flag until ds-jns, for one caller: historical replay put
+ * a static record in this region, where there is no tail to follow and
+ * following did measurable harm (the replay opened scrolled to its own bottom,
+ * with the "you are reading a past run" banner at -11px, above the top edge of
+ * the region). That mode is gone — everything rendering here is a live thread
+ * again — so the flag went with it rather than staying on as a parameter no
+ * call site passes (ds-1pu).
  */
-export function stickToBottom(node: HTMLElement, enabled = true): StickToBottomHandle {
+export function stickToBottom(node: HTMLElement): StickToBottomHandle {
   let following = true;
-  let active = enabled;
 
   // ALWAYS instant, for everyone — not `prefersReducedMotion() ? 'auto' :
   // 'smooth'`, which is what this was and which broke the module's entire
@@ -125,21 +122,12 @@ export function stickToBottom(node: HTMLElement, enabled = true): StickToBottomH
   // calls) — a childList watch on the region alone would miss a turn growing
   // in place, which is exactly what a streaming run does.
   const observer = new MutationObserver(() => {
-    if (active && following) toBottom();
+    if (following) toBottom();
   });
   observer.observe(node, { childList: true, subtree: true, characterData: true });
   node.addEventListener('scroll', onScroll, { passive: true });
 
   return {
-    update(next = true): void {
-      if (next === active) return;
-      active = next;
-      // Coming back to a live thread starts ARMED, whatever position the
-      // disabled mode left behind. The operator asked for this thread; its
-      // first reply has to land where they can see it, and inheriting the
-      // scroll offset of a replay they just closed is not a signal about that.
-      if (active) following = true;
-    },
     destroy(): void {
       observer.disconnect();
       node.removeEventListener('scroll', onScroll);

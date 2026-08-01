@@ -1,4 +1,4 @@
-import type { TranslateFn } from './i18n';
+import type { MessageKey, TranslateFn } from './i18n';
 import type { DecisionApproval, DecisionNotify } from './types';
 
 // SECURITY-CRITICAL. Same-origin guard for HITL approval links, ported
@@ -237,6 +237,46 @@ export function safeGithubHref(raw: unknown): string | null {
   if (u.username !== '' || u.password !== '') return null;
   if (!GITHUB_ARTIFACT_PATH.test(u.pathname)) return null;
   return u.href;
+}
+
+/**
+ * The GitHub artifact a decision produced — the issue Anchor filed, the PR
+ * Patch or the docs crew opened — as an href plus the catalog key naming it.
+ *
+ * Lifted out of DecisionsRail when ds-jns deleted that component, so the gate
+ * itself did not go with the markup. The rule is unchanged and both halves of
+ * it matter: `action` must be one of the allowlisted keys, so `github.url` is
+ * never read off an unrelated row, AND the url must survive `safeGithubHref`'s
+ * host allowlist before it can become an anchor.
+ *
+ * IMPORTANT: `Object.hasOwn`, NOT the `in` operator — `'toString' in obj` is
+ * true, so `in` would let an unexpected action string slip the gate (Codex
+ * review). Object.hasOwn is own-key-only.
+ *
+ * Returns null when the decision produced no linkable artifact, which is the
+ * common case (a rollback links to its approval, an iac_apply to its PR
+ * through `iacPrHref`).
+ */
+const GITHUB_LINK_LABEL: Record<string, MessageKey> = {
+  drift_issue: 'decisions.row.githubLink.viewIssue',
+  escalation: 'decisions.row.githubLink.viewIssue',
+  docs_pr: 'decisions.row.githubLink.viewPr',
+  // `upgrade_pr` is NOT emitted by /recheck in this build (the upgrade workload
+  // is unimplemented — agent/main.py:1139), so no such decision currently
+  // persists a github.url. Listed for forward-compat only: it renders nothing
+  // today and lights up automatically if a future build starts persisting
+  // upgrade_pr decisions with a github.url.
+  upgrade_pr: 'decisions.row.githubLink.viewPr',
+};
+
+export function decisionGithubLink(decision: {
+  action?: string;
+  github?: { url?: string | null } | null;
+}): { href: string; labelKey: MessageKey } | null {
+  const action = decision?.action;
+  if (typeof action !== 'string' || !Object.hasOwn(GITHUB_LINK_LABEL, action)) return null;
+  const href = safeGithubHref(decision.github?.url);
+  return href === null ? null : { href, labelKey: GITHUB_LINK_LABEL[action] };
 }
 
 /**

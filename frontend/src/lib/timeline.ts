@@ -7,7 +7,8 @@
 //   llm_thought / llm_usage  -> 'coordinator'
 //   tool_call  / tool_result -> 'tools'   (sub-grouped by tool_name)
 //   mcp_call                 -> 'mcp'     (sub-grouped by mcp_tool || mcp_server)
-//   final_response           -> null (skipped; rendered in #final-response-card)
+//   final_response           -> null (skipped; the reply renders as the turn's
+//                               own crew bubble, never as a timeline row)
 //   unknown                  -> null (dropped — the server is authoritative)
 //
 // CRITICAL: MCP routing is by `event === 'mcp_call'`, NOT by any tool-name
@@ -64,99 +65,6 @@ export function groupOf(e: TraceEvent): GroupKey | null {
   }
 }
 
-/**
- * Sub-group key for an event within its group:
- *   tools -> tool_name || '(unknown)'
- *   mcp   -> mcp_tool || mcp_server || '(unknown)'
- * For coordinator events (no sub-grouping) we still return a stable string so
- * the function is total; callers only use it for tools/mcp.
- */
-export function subKey(e: TraceEvent): string {
-  if (e.event === 'mcp_call') {
-    return e.mcp_tool || e.mcp_server || '(unknown)';
-  }
-  // tool_call / tool_result (and any other caller use) key by tool_name.
-  return e.tool_name || '(unknown)';
-}
-
-/**
- * Partition a mixed event list into the three display groups, preserving the
- * incoming (chronological) order within each group. final_response and unknown
- * kinds are dropped. Always returns all three keys (possibly empty arrays).
- */
-export function groupEvents(events: TraceEvent[]): Record<GroupKey, TraceEvent[]> {
-  const out: Record<GroupKey, TraceEvent[]> = {
-    coordinator: [],
-    tools: [],
-    mcp: [],
-  };
-  for (const e of events) {
-    const g = groupOf(e);
-    if (g !== null) {
-      out[g].push(e);
-    }
-  }
-  return out;
-}
-
-/**
- * Pair tool_call -> next tool_result with the SAME tool_name (FIFO per tool),
- * a single forward pass with a per-tool "open call" queue. Unmatched calls
- * (in-flight) and orphan results (call out of window) are still emitted as
- * singletons so nothing vanishes from the UI.
- *
- * Faithful port of legacy `_pairToolEvents` (transparency.html ~944). A call
- * has `result` undefined; an orphan result has `call` null.
- */
-export function pairToolEvents(
-  events: TraceEvent[],
-): Array<{ call?: TraceEvent; result?: TraceEvent }> {
-  const pending = new Map<string, Array<{ call?: TraceEvent; result?: TraceEvent }>>();
-  const pairs: Array<{ call?: TraceEvent; result?: TraceEvent }> = [];
-
-  for (const e of events) {
-    const tn = e.tool_name ?? '';
-    if (e.event === 'tool_call') {
-      const q = pending.get(tn) ?? [];
-      q.push({ call: e, result: undefined });
-      pending.set(tn, q);
-    } else if (e.event === 'tool_result') {
-      const q = pending.get(tn) ?? [];
-      const head = q.shift();
-      if (head) {
-        head.result = e;
-        pairs.push(head);
-        pending.set(tn, q);
-      } else {
-        // Orphan result (the matching call is out of the polling window).
-        pairs.push({ call: undefined, result: e });
-      }
-    }
-    // Non tool_call/tool_result events are ignored here; callers feed this
-    // only the tools-group events for a single sub-group.
-  }
-
-  // Flush remaining un-resulted (in-flight) calls.
-  for (const q of pending.values()) {
-    for (const p of q) pairs.push(p);
-  }
-  return pairs;
-}
-
-/**
- * Number of logical tool invocations in a tools-group event list.
- *
- * A single tool run emits TWO trace events (a `tool_call` and its
- * `tool_result`), so counting raw events double-counts every resolved call.
- * This collapses each call+result into one via `pairToolEvents`, so the tools
- * group header agrees with the "N call(s)" shown inside each sub-group. Pairing
- * is per-`tool_name`, so running over the whole tools list equals the sum of
- * the per-sub-group pair counts. In-flight calls and orphan results each count
- * as one (they render as singletons and must not vanish from the tally).
- */
-export function toolCallCount(events: TraceEvent[]): number {
-  return pairToolEvents(events).length;
-}
 
 /**
  * Stable per-event DOM/open-state key.

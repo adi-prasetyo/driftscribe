@@ -217,40 +217,6 @@ describe('stickToBottom action', () => {
     handle.destroy();
   });
 
-  it('does not follow at all when disabled', async () => {
-    // Historical replay. A past run is a static record — there is no tail to
-    // follow, and following one measurably harmed it: the replay opened
-    // scrolled to its own bottom with the "reading a past run" banner pushed
-    // off the top edge of the region, because the follow beat openTrace's
-    // scroll-to-top to the punch.
-    const r = region({ scrollTop: 600 });
-    const handle = stickToBottom(r.el, false);
-    grow(r);
-    await flush();
-    expect(r.scrollTo).not.toHaveBeenCalled();
-    handle.destroy();
-  });
-
-  it('stands down when switched off mid-life, and re-arms when switched back', async () => {
-    const r = region({ scrollTop: 600 });
-    const handle = stickToBottom(r.el, true);
-
-    handle.update(false);
-    grow(r);
-    await flush();
-    expect(r.scrollTo).not.toHaveBeenCalled();
-
-    // Leaving the replay for a live thread. It starts armed REGARDLESS of where
-    // the replay was left sitting — that scroll offset belongs to a record the
-    // operator just closed, and is not a statement about the new thread.
-    userScrollTo(r, 0);
-    handle.update(true);
-    grow(r);
-    await flush();
-    expect(r.scrollTo).toHaveBeenCalledTimes(1);
-    handle.destroy();
-  });
-
   it('stops observing and listening once destroyed', async () => {
     const r = region({ scrollTop: 600 });
     stickToBottom(r.el).destroy();

@@ -220,104 +220,6 @@ describe('App — tour wiring (smoke)', () => {
   });
 });
 
-describe('App — open-trace puts the replay at the top and scrolls the thread up', () => {
-  // The historical replay renders at the TOP of the thread, and openTrace
-  // scrolls that region to top (top:0) to reveal it — no jump down to the
-  // bottom. The replay region is #historical-badge.
-  //
-  // It scrolls the THREAD, not the window, and the distinction is not cosmetic:
-  // since the chat shell was pinned (ds-jns PR 3) the window has nothing to
-  // scroll on this view, so the old window.scrollTo silently did nothing and
-  // left the replay wherever the transcript was sitting. Asserting the target
-  // is what makes this suite able to notice that at all.
-  //
-  // ds-jns took away the button that used to open this: the rail now opens a
-  // desk record. The replay itself is still reachable, by the one URL shape
-  // that still means it (`?view=chat&reasoning=`), and PR 3 deletes both the
-  // mode and this suite. Driving it from that URL keeps the guarantee pinned
-  // for as long as the code it describes is still shipping.
-  const REPLAY_TID = 'e'.repeat(32);
-  function stubFetchWithIacDecision(): void {
-    const iac = {
-      decision_id: 'd1',
-      trace_id: REPLAY_TID,
-      action: 'iac_apply',
-      pr_number: 47,
-      apply_status: 'applied',
-      approver: 'op@example.com',
-    };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes('/trace/'))
-          return okJson({ trace_id: REPLAY_TID, complete: true, events: [], decision: iac });
-        if (url.includes('/decisions')) return okJson({ decisions: [iac] });
-        if (url.includes('/infra/graph'))
-          return okJson({
-            generated_at: null,
-            project: 'demo-proj',
-            caveat: '',
-            degraded: false,
-            degraded_reason: null,
-            totals: { resources: 1, managed: 0, drift: 1 },
-            groups: [],
-            edges: [],
-          });
-        return okJson({});
-      }),
-    );
-  }
-
-  it('a ?view=chat&reasoning= replay scrolls the THREAD to top (top:0, instant) and renders above the composer', async () => {
-    window.sessionStorage.setItem('driftscribe_token', 'tok');
-    stubFetchWithIacDecision();
-    const windowSpy = vi.fn();
-    window.scrollTo = windowSpy as unknown as typeof window.scrollTo;
-    const threadSpy = vi.spyOn(Element.prototype, 'scrollTo');
-
-    history.replaceState(null, '', `/?view=chat&reasoning=${REPLAY_TID}`);
-    const { getByTestId } = render(App);
-
-    // The banner enters the DOM (proves historicalActive flipped + tick flushed).
-    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
-
-    // The thread region scrolled to the top...
-    await waitFor(() =>
-      expect(threadSpy.mock.contexts).toContain(getByTestId('chat-thread')),
-    );
-    const onThread = threadSpy.mock.calls.filter(
-      (_c, i) => threadSpy.mock.contexts[i] === getByTestId('chat-thread'),
-    );
-    // Exactly one scroll per open-trace, and instant — an animated one would
-    // fire intermediate scroll events that stickToBottom reads as the operator
-    // having scrolled, and the two would fight over the viewport.
-    //
-    // "Exactly one" is also what pins the OTHER half of that: stickToBottom is
-    // handed `!historicalActive`, so a replay disables the follow entirely. A
-    // second call here would mean the follow is still live and racing this one
-    // — which is what it did, and it won (measured: the replay opened scrolled
-    // to its own bottom, banner at -11px, above the region's top edge).
-    expect(onThread).toHaveLength(1);
-    expect(onThread[0][0]).toEqual({ top: 0, behavior: 'auto' });
-    // ...and the WINDOW was left alone. It has nothing to scroll here, so a
-    // call on it would be the silent no-op this suite exists to rule out.
-    expect(windowSpy).not.toHaveBeenCalled();
-    // Focus follows the scroll so keyboard/SR users land in the replay region
-    // instead of being stranded on the rail button they just clicked.
-    const banner = document.getElementById('historical-badge');
-    expect(document.activeElement).toBe(banner);
-    // The replay region renders ABOVE the composer in document order — i.e. at
-    // the top of the chat column, not below it.
-    const composer = document.getElementById('chat-form');
-    expect(banner).toBeTruthy();
-    expect(composer).toBeTruthy();
-    expect(
-      banner!.compareDocumentPosition(composer!) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-});
-
 describe('App — open-trace surfaces the PR body ("what this change did")', () => {
   // For an iac_apply replay, openTrace fetches GET /trace/{id}/pr-body and shows
   // the agent-authored PR description in a disclosure below the decision card.
@@ -363,37 +265,6 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   }
-
-  it('shows the PR-body disclosure with the fetched body for an iac_apply trace', async () => {
-    window.sessionStorage.setItem('driftscribe_token', 'tok');
-    stubFetch({ body: '## Repoints payment-demo\n\nWhy: completes the C5f isolation.' });
-    const { findByTestId } = render(App);
-    await fireEvent.click(await findByTestId('open-trace-button'));
-    const panel = await findByTestId('pr-body-disclosure');
-    const md = panel.querySelector('[data-testid="pr-body-md"]');
-    // Rendered as Markdown now: the `##` heading marker is gone, text survives.
-    expect(md?.textContent).toContain('Repoints payment-demo');
-    expect(md?.textContent).not.toContain('##');
-  });
-
-  it('hides the disclosure when the PR has no body (fail-soft)', async () => {
-    window.sessionStorage.setItem('driftscribe_token', 'tok');
-    stubFetch({ body: null });
-    const { findByTestId, queryByTestId } = render(App);
-    await fireEvent.click(await findByTestId('open-trace-button'));
-    // The decision card settles, but no PR-body panel renders for a null body.
-    await findByTestId('decision-summary');
-    expect(queryByTestId('pr-body-disclosure')).toBeNull();
-  });
-
-  it('does not fetch the PR body for a non-iac trace', async () => {
-    window.sessionStorage.setItem('driftscribe_token', 'tok');
-    const fetchMock = stubFetch({ body: 'x', action: 'drift_issue' });
-    const { findByTestId } = render(App);
-    await fireEvent.click(await findByTestId('open-trace-button'));
-    await findByTestId('decision-summary'); // settle
-    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/pr-body'))).toBe(false);
-  });
 
   // The same guarantee, re-anchored to the surface that now serves it. It used
   // to rest on openTrace's runSeq guard dropping a stale /pr-body; the desk
@@ -636,7 +507,6 @@ describe('App — history-aware view navigation (ds-7ag.1)', () => {
 
     await waitFor(() => expect(document.getElementById('chat-form')).toBeTruthy());
     expect(queryByTestId('thread-typing')).toBeNull();
-    expect(queryByTestId('reply-pending')).toBeNull();
     expect(queryByTestId('conversation-thread')).toBeNull();
     // And the composer is usable again rather than stuck disabled behind `busy`.
     const back = document.querySelector('#prompt-input') as HTMLTextAreaElement;
@@ -831,19 +701,26 @@ describe('App — view routing (Task 2.2)', () => {
     expect(document.getElementById('chat-form')).toBeNull();
     // Not merely routed — the record is actually on screen.
     await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
-    expect(queryByTestId('historical-banner')).toBeNull();
   });
 
   // The one ?reasoning= shape that still means the chat replay: the links this
   // app wrote before the fork carry ?view=chat, and PR 3 removes the writer.
-  it('?view=chat&reasoning= still resolves to the chat replay', async () => {
+  it('?view=chat&reasoning= lands on the record, because chat has nowhere to put a bare trace', async () => {
+    // deeplink's hasChatIntent() still routes this URL to chat — that rule is
+    // about the SHAPE of the link and is unchanged. What changed is what chat
+    // does with a `?reasoning=` that names no message in any open thread: it
+    // used to open a page-level replay, and ds-jns Task 3.3 deleted that
+    // surface. So chat mounts, finds nothing to render the trace with, and
+    // hands it to the record on the desk rather than dropping it.
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     stubFetchWithTrace();
     history.replaceState(null, '', `/?view=chat&reasoning=${TID}`);
-    const { queryByTestId } = render(App);
-    expect(document.getElementById('chat-form')).toBeTruthy();
-    expect(queryByTestId('approval-desk')).toBeNull();
-    await waitFor(() => expect(queryByTestId('historical-banner')).toBeTruthy());
+    const { findByTestId, queryByTestId } = render(App);
+    await findByTestId('decision-record');
+    expect(document.getElementById('chat-form')).toBeNull();
+    expect(queryByTestId('approval-desk')).toBeTruthy();
+    // …and the link still describes what is on screen after the hand-off.
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBe(TID);
   });
 
   it('header nav switches views, marks the active one with aria-current, and back to chat restores the composer', async () => {
@@ -869,29 +746,38 @@ describe('App — view routing (Task 2.2)', () => {
     expect(new URL(window.location.href).searchParams.get('view')).toBe('chat');
   });
 
-  it('navigating away from chat with an open replay clears reasoning/conversation/ask_pr/preview_pr in the same write that sets view, and closes the replay', async () => {
+  it('leaving chat sweeps every chat-intent param in the same write that sets view', async () => {
+    // What is pinned is the BEHAVIOUR — a URL that stops advertising chat state
+    // the moment the operator leaves it — not whichever line currently delivers
+    // it. Two arms do, and neither alone reddens this: navigate()'s
+    // CHAT_INTENT_PARAMS sweep, and teardownChatSurface -> setConversationId,
+    // the single writer that keeps `?conversation=` in step with the state.
+    // Both were injected; both left this green, which is what defence in depth
+    // looks like from a test's side.
+    //
+    // Direction matters and cost an earlier draft its teeth: the sweep is gated
+    // on `v !== 'chat'`, so a desk -> chat version of this test asserts nothing
+    // about it at all.
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     stubFetchWithTrace();
-    // Arrive with an open replay AND a leftover ask_pr/preview_pr to prove all
-    // four params are swept, not just reasoning.
-    history.replaceState(null, '', `/?reasoning=${TID}&ask_pr=9&preview_pr=9`);
-    const { getByTestId, queryByTestId } = render(App);
-    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+    history.replaceState(null, '', '/?view=chat&conversation=c1');
+    const { getByTestId, findByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await waitFor(() =>
+      expect(new URLSearchParams(window.location.search).get('conversation')).toBe('c1'),
+    );
 
     await fireEvent.click(getByTestId('nav-desk'));
 
     const search = new URLSearchParams(window.location.search);
     // Desk is DEFAULT_VIEW post-flip, so navigate() drops the param entirely
-    // rather than writing view=desk — the assertion that matters here is that
-    // the chat-intent params were swept in that SAME write (below).
+    // rather than writing view=desk — the assertion that matters is that the
+    // chat-intent params went in that SAME write.
     expect(search.get('view')).toBeNull();
     // Iterate the shared list rather than restating it: a fifth chat-intent
     // param added to CHAT_INTENT_PARAMS is then covered here automatically.
     for (const p of CHAT_INTENT_PARAMS) expect(search.has(p)).toBe(false);
-    // The replay itself closed — returning to chat must not resurrect it.
     expect(getByTestId('approval-desk')).toBeTruthy();
-    await fireEvent.click(getByTestId('nav-chat'));
-    expect(queryByTestId('historical-banner')).toBeNull();
   });
 
   // Round-trip: whatever view you navigate to, the URL that navigate() leaves
@@ -922,13 +808,14 @@ describe('App — view routing (Task 2.2)', () => {
     }
   });
 
-  // Twice superseded, and worth reading as a pair. Task 3.5 took the rail off
-  // the desk, so "open a trace from the rail while on the desk" stopped being
-  // reachable. ds-jns then re-pointed what the rail's button DOES: it opens the
-  // decision's record on the desk instead of a replay in the chat column — so
-  // the round trip below (desk → chat for the rail → desk for the record) is
-  // the affordance's whole current shape.
-  it('the rail only exists on chat, and its view-reasoning brings the record back to the desk', async () => {
+  // Three times superseded, and worth reading as a sequence. Task 3.5 took the
+  // rails off the desk. ds-jns PR 2 re-pointed the decisions rail's button at a
+  // record on the desk rather than a replay in the chat column. Task 3.3 then
+  // deleted that rail outright — the desk's own ledger is the decision browser,
+  // and it is ON the desk, so the round trip collapsed to a single click.
+  // What survives all three is the claim that matters: the ledger row opens the
+  // record, and the URL says so afterwards.
+  it('a ledger row opens its decision record, and the URL names it', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     const iac = {
       decision_id: 'd1',
@@ -962,16 +849,15 @@ describe('App — view routing (Task 2.2)', () => {
     history.replaceState(null, '', '/?view=desk');
     const { findByTestId, getByTestId, queryByTestId } = render(App);
     expect(getByTestId('approval-desk')).toBeTruthy();
-    expect(queryByTestId('open-trace-button')).toBeNull(); // no rail on the desk
+    // Nothing left over from either retired rail on this page.
+    expect(queryByTestId('rails')).toBeNull();
+    expect(queryByTestId('decision-record')).toBeNull();
 
-    await fireEvent.click(getByTestId('nav-chat'));
-    const btn = await findByTestId('open-trace-button');
-    await fireEvent.click(btn);
+    await fireEvent.click(await findByTestId('ledger-strip-row'));
 
-    await waitFor(() => expect(getByTestId('approval-desk')).toBeTruthy());
-    expect(document.getElementById('chat-form')).toBeNull();
-    expect(queryByTestId('historical-banner')).toBeNull();
     await findByTestId('decision-record');
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
     expect(new URLSearchParams(window.location.search).get('reasoning')).toBe(TID);
   });
 });
@@ -994,11 +880,13 @@ describe('App — rails come off the desk (Task 3.5)', () => {
 
   // Codex finding baked into the plan: no query param may strand a visitor on a
   // page that cannot serve the link they followed. That guarantee outlived its
-  // original mechanism. It used to be "every intent param forces chat, where
-  // the rails are"; since ds-jns two of them resolve to the DESK on purpose,
-  // and what has to hold there is that the desk actually renders the thing the
-  // param names. The three tests below cover both halves of the new matrix.
-  it('a ?view=chat&reasoning= link resolves to chat, with the rails rendered (never a railless stranding)', async () => {
+  // original mechanism twice over. It used to be "every intent param forces
+  // chat, where the rails are"; since ds-jns two of them resolve to the DESK on
+  // purpose, and Task 3.3 deleted page-level replay, so a `?reasoning=` that
+  // names no open thread's message now ENDS on the desk however it started.
+  // What still has to hold is unchanged: whichever page it lands on, that page
+  // renders the thing the param names.
+  it('a ?view=chat&reasoning= link ends on the desk, showing the record it names', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     vi.stubGlobal(
       'fetch',
@@ -1022,19 +910,21 @@ describe('App — rails come off the desk (Task 3.5)', () => {
       }),
     );
     history.replaceState(null, '', `/?view=chat&reasoning=${TID}`);
-    const { getByTestId, queryByTestId } = render(App);
-    expect(document.getElementById('chat-form')).toBeTruthy();
-    expect(queryByTestId('approval-desk')).toBeNull();
-    expect(getByTestId('rails')).toBeTruthy();
-    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+    const { getByTestId, findByTestId } = render(App);
+    // hasChatIntent still puts this URL on chat first — that rule is about the
+    // link's shape and did not change. Chat then has nothing to render a bare
+    // trace with, so it hands it on rather than dropping it.
+    await findByTestId('decision-record');
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
   });
 
   // …and the intent that has NO independent redirect.
   //
-  // The test above passes even if hasChatIntent is removed from the view
-  // resolver entirely: `?view=chat&reasoning=` also triggers App's onMount
-  // openTrace(), and openTrace() itself calls navigate('chat').
-  // `?conversation=` is likewise double-protected by openConversation().
+  // The test above cannot pin hasChatIntent at all any more: its URL ends on the
+  // desk either way, since that is where a bare `?reasoning=` belongs now.
+  // `?conversation=` is separately protected by openConversation()'s own
+  // navigate('chat').
   // `?ask_pr=` is NOT — it has no self-redirect anywhere in App, so
   // hasChatIntent is the only thing standing between a visitor following an
   // Adopt-flow link and a railless desk with no composer to act on. It is

@@ -2,10 +2,6 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import {
   groupOf,
-  subKey,
-  groupEvents,
-  pairToolEvents,
-  toolCallCount,
   eventKey,
   reconcileBackfill,
   omittedThoughtTokens,
@@ -14,7 +10,6 @@ import {
   type GroupKey,
   type TraceEvent,
 } from '../../src/lib/timeline';
-import Timeline from '../../src/components/Timeline.svelte';
 
 // Re-homes the event-classification + sub-grouping + tool-pairing logic that
 // lived inline in agent/templates/transparency.html (~1282-1400 + the
@@ -22,7 +17,8 @@ import Timeline from '../../src/components/Timeline.svelte';
 //   llm_thought / llm_usage  -> coordinator
 //   tool_call  / tool_result -> tools   (sub-grouped by tool_name)
 //   mcp_call                 -> mcp     (sub-grouped by mcp_tool || mcp_server)
-//   final_response           -> null (skipped; rendered in #final-response-card)
+//   final_response           -> null (skipped; the reply renders as the turn's
+//                               own crew bubble, never as a timeline row)
 //   unknown                  -> null (dropped)
 // CRITICAL: MCP routing is by event === 'mcp_call', NOT by any tool-name prefix.
 
@@ -30,6 +26,12 @@ import Timeline from '../../src/components/Timeline.svelte';
 function ev(partial: Partial<TraceEvent> & { event: string }): TraceEvent {
   return { trace_id: 'a'.repeat(32), ...partial } as TraceEvent;
 }
+
+
+
+
+
+
 
 describe('groupOf — event kind -> group', () => {
   it('routes llm_thought to coordinator', () => {
@@ -70,183 +72,6 @@ describe('groupOf — event kind -> group', () => {
   it('drops unknown event kinds (returns null)', () => {
     expect(groupOf(ev({ event: 'some_future_kind' }))).toBeNull();
     expect(groupOf(ev({ event: '' }))).toBeNull();
-  });
-});
-
-describe('subKey — sub-group key per event', () => {
-  it('tools: uses tool_name', () => {
-    expect(subKey(ev({ event: 'tool_call', tool_name: 'read_live_env_tool' }))).toBe(
-      'read_live_env_tool',
-    );
-    expect(subKey(ev({ event: 'tool_result', tool_name: 'open_infra_pr_tool' }))).toBe(
-      'open_infra_pr_tool',
-    );
-  });
-
-  it("tools: falls back to '(unknown)' when tool_name is absent/empty", () => {
-    expect(subKey(ev({ event: 'tool_call' }))).toBe('(unknown)');
-    expect(subKey(ev({ event: 'tool_result', tool_name: '' }))).toBe('(unknown)');
-  });
-
-  it('mcp: uses mcp_tool when present', () => {
-    expect(subKey(ev({ event: 'mcp_call', mcp_tool: 'search_docs', mcp_server: 'dev-kb' }))).toBe(
-      'search_docs',
-    );
-  });
-
-  it('mcp: falls back to mcp_server when mcp_tool absent (older event shape)', () => {
-    expect(subKey(ev({ event: 'mcp_call', mcp_server: 'developer-knowledge' }))).toBe(
-      'developer-knowledge',
-    );
-  });
-
-  it("mcp: falls back to '(unknown)' when neither mcp_tool nor mcp_server present", () => {
-    expect(subKey(ev({ event: 'mcp_call' }))).toBe('(unknown)');
-  });
-});
-
-describe('groupEvents — bins a mixed list', () => {
-  it('partitions every event into its group and drops final_response/unknown', () => {
-    const events: TraceEvent[] = [
-      ev({ event: 'llm_thought', insert_id: '1' }),
-      ev({ event: 'tool_call', tool_name: 'read_live_env_tool', insert_id: '2' }),
-      ev({ event: 'mcp_call', mcp_tool: 'search', insert_id: '3' }),
-      ev({ event: 'llm_usage', insert_id: '4' }),
-      ev({ event: 'tool_result', tool_name: 'read_live_env_tool', insert_id: '5' }),
-      ev({ event: 'final_response', insert_id: '6' }),
-      ev({ event: 'mystery_kind', insert_id: '7' }),
-    ];
-    const g = groupEvents(events);
-
-    expect(g.coordinator.map((e) => e.insert_id)).toEqual(['1', '4']);
-    expect(g.tools.map((e) => e.insert_id)).toEqual(['2', '5']);
-    expect(g.mcp.map((e) => e.insert_id)).toEqual(['3']);
-  });
-
-  it('always returns all three keys, even for an empty input', () => {
-    const g = groupEvents([]);
-    const keys: GroupKey[] = ['coordinator', 'tools', 'mcp'];
-    for (const k of keys) {
-      expect(Array.isArray(g[k])).toBe(true);
-      expect(g[k]).toHaveLength(0);
-    }
-  });
-
-  it('preserves chronological (first-seen) order within each group', () => {
-    const events: TraceEvent[] = [
-      ev({ event: 'tool_call', tool_name: 'b', insert_id: 'b1' }),
-      ev({ event: 'tool_call', tool_name: 'a', insert_id: 'a1' }),
-      ev({ event: 'tool_call', tool_name: 'b', insert_id: 'b2' }),
-    ];
-    expect(groupEvents(events).tools.map((e) => e.insert_id)).toEqual(['b1', 'a1', 'b2']);
-  });
-});
-
-describe('pairToolEvents — pair call+result by order within a tool_name', () => {
-  it('pairs a call with the next result of the same tool_name', () => {
-    const call = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c1' });
-    const result = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r1' });
-    const pairs = pairToolEvents([call, result]);
-    expect(pairs).toHaveLength(1);
-    expect(pairs[0].call).toBe(call);
-    expect(pairs[0].result).toBe(result);
-  });
-
-  it('pairs FIFO within a tool_name across interleaved calls/results', () => {
-    const c1 = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c1' });
-    const c2 = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c2' });
-    const r1 = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r1' });
-    const r2 = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r2' });
-    const pairs = pairToolEvents([c1, c2, r1, r2]);
-    expect(pairs).toHaveLength(2);
-    // r1 closes the oldest open call (c1); r2 closes c2.
-    expect(pairs[0]).toEqual({ call: c1, result: r1 });
-    expect(pairs[1]).toEqual({ call: c2, result: r2 });
-  });
-
-  it('does NOT cross-pair across different tool_names', () => {
-    const ca = ev({ event: 'tool_call', tool_name: 'a', insert_id: 'ca' });
-    const rb = ev({ event: 'tool_result', tool_name: 'b', insert_id: 'rb' });
-    const ra = ev({ event: 'tool_result', tool_name: 'a', insert_id: 'ra' });
-    const pairs = pairToolEvents([ca, rb, ra]);
-    expect(pairs).toHaveLength(2);
-    // 'a' pairs ca+ra; 'b' has only an orphan result rb (call absent).
-    const aPair = pairs.find((p) => p.call === ca);
-    expect(aPair).toBeDefined();
-    expect(aPair?.result).toBe(ra);
-    const orphan = pairs.find((p) => p.result === rb);
-    expect(orphan).toBeDefined();
-    expect(orphan?.call == null).toBe(true);
-  });
-
-  it('emits an unmatched (in-flight) call as a singleton (result undefined/null)', () => {
-    const call = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c1' });
-    const pairs = pairToolEvents([call]);
-    expect(pairs).toHaveLength(1);
-    expect(pairs[0].call).toBe(call);
-    expect(pairs[0].result == null).toBe(true);
-  });
-
-  it('emits a lone result as a singleton (call null) — orphan, out-of-window', () => {
-    const result = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r1' });
-    const pairs = pairToolEvents([result]);
-    expect(pairs).toHaveLength(1);
-    expect(pairs[0].call == null).toBe(true); // absent (contract: optional)
-    expect(pairs[0].result).toBe(result);
-  });
-
-  it('returns [] for an empty event list', () => {
-    expect(pairToolEvents([])).toEqual([]);
-  });
-});
-
-describe('toolCallCount — logical tool invocations, not raw events', () => {
-  it('counts a call+result pair as ONE call (not two raw events)', () => {
-    const call = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c1' });
-    const result = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r1' });
-    // The bug: the tools header counted raw events (2) while the expanded
-    // sub-group counted pairs (1 call). The header must agree with the inside.
-    expect(toolCallCount([call, result])).toBe(1);
-  });
-
-  it('sums pairs across different tool_names (matches sum of sub-group pills)', () => {
-    const events = [
-      ev({ event: 'tool_call', tool_name: 'a', insert_id: 'ca' }),
-      ev({ event: 'tool_result', tool_name: 'a', insert_id: 'ra' }),
-      ev({ event: 'tool_call', tool_name: 'b', insert_id: 'cb' }),
-      ev({ event: 'tool_result', tool_name: 'b', insert_id: 'rb' }),
-    ];
-    expect(toolCallCount(events)).toBe(2);
-  });
-
-  it('counts an in-flight call (no result yet) as one call', () => {
-    const call = ev({ event: 'tool_call', tool_name: 't', insert_id: 'c1' });
-    expect(toolCallCount([call])).toBe(1);
-  });
-
-  it('counts an orphan result (call out of window) as one call', () => {
-    const result = ev({ event: 'tool_result', tool_name: 't', insert_id: 'r1' });
-    expect(toolCallCount([result])).toBe(1);
-  });
-
-  it('returns 0 for an empty list', () => {
-    expect(toolCallCount([])).toBe(0);
-  });
-});
-
-describe('Timeline — tools header pill counts calls, not raw events', () => {
-  afterEach(cleanup);
-
-  it('shows "1" on the tools group header for a single completed call (was "2")', () => {
-    const events = [
-      ev({ event: 'tool_call', tool_name: 'read_drift', insert_id: 'c1' }),
-      ev({ event: 'tool_result', tool_name: 'read_drift', insert_id: 'r1' }),
-    ];
-    const { container } = render(Timeline, {
-      props: { events, status: 'historical' },
-    });
-    const pill = container.querySelector('#group-tools .group__count');
-    expect(pill?.textContent?.trim()).toBe('1');
   });
 });
 
@@ -293,142 +118,6 @@ describe('eventKey — stable per-event DOM key', () => {
   });
 });
 
-describe('Timeline — historical-empty state', () => {
-  afterEach(cleanup);
-
-  it('historical + no events: shows only the empty note, suppresses the three group accordions', () => {
-    const { getByTestId, queryByText, container } = render(Timeline, {
-      props: { events: [], status: 'historical' },
-    });
-    // The one accurate explanatory note stays.
-    expect(getByTestId('timeline-empty')).toBeTruthy();
-    // The redundant empty group accordions are gone (no #group-* at all).
-    expect(container.querySelector('#group-coordinator')).toBeNull();
-    expect(container.querySelector('#group-tools')).toBeNull();
-    expect(container.querySelector('#group-mcp')).toBeNull();
-    // ...and so is the misleading "No coordinator reasoning yet." placeholder.
-    expect(queryByText('No coordinator reasoning yet.')).toBeNull();
-  });
-
-  it('historical + no events, NOT directly-recorded: says the trace could not be loaded, not that no reasoning ran', () => {
-    // The default (a chat turn / reasoning decision). Copy must NOT claim the
-    // turn was "recorded directly" — the reasoning happened, it just could not
-    // be fetched (e.g. beyond the log lookback window).
-    const { getByTestId } = render(Timeline, {
-      props: { events: [], status: 'historical' },
-    });
-    const note = getByTestId('timeline-empty');
-    expect(note.textContent).toContain("couldn't be loaded");
-    expect(note.textContent).not.toContain('recorded directly');
-  });
-
-  it('historical + no events, directlyRecorded: keeps the accurate "recorded directly" copy', () => {
-    // The iac_apply case: legitimately no coordinator reasoning run.
-    const { getByTestId } = render(Timeline, {
-      props: { events: [], status: 'historical', directlyRecorded: true },
-    });
-    expect(getByTestId('timeline-empty').textContent).toContain('recorded directly');
-  });
-
-  it('historical + only non-displayable (unknown-kind) events: gates on displayable count, not raw length', () => {
-    // A trace polluted with plumbing log lines that inherit the trace id but
-    // carry no recognized `event` kind (groupOf -> null). Raw events.length is
-    // 2, but zero of them are displayable, so the empty-state note must still
-    // render and the group accordions must still be suppressed.
-    const junk = [
-      ev({ event: undefined as unknown as string }),
-      ev({ event: 'some_unknown_kind' }),
-    ];
-    const { getByTestId, container } = render(Timeline, {
-      props: { events: junk, status: 'historical' },
-    });
-    expect(getByTestId('timeline-empty')).toBeTruthy();
-    expect(container.querySelector('#group-coordinator')).toBeNull();
-    expect(container.querySelector('#group-tools')).toBeNull();
-    expect(container.querySelector('#group-mcp')).toBeNull();
-  });
-
-  it('historical + only junk events, directlyRecorded: keeps the "recorded directly" copy', () => {
-    const junk = [ev({ event: 'some_unknown_kind' })];
-    const { getByTestId } = render(Timeline, {
-      props: { events: junk, status: 'historical', directlyRecorded: true },
-    });
-    expect(getByTestId('timeline-empty').textContent).toContain('recorded directly');
-  });
-
-  it('historical + only junk events, NOT directlyRecorded: keeps the "couldn\'t be loaded" copy', () => {
-    const junk = [ev({ event: 'some_unknown_kind' })];
-    const { getByTestId } = render(Timeline, {
-      props: { events: junk, status: 'historical' },
-    });
-    const note = getByTestId('timeline-empty');
-    expect(note.textContent).toContain("couldn't be loaded");
-    expect(note.textContent).not.toContain('recorded directly');
-  });
-
-  it('historical + at least one displayable event alongside junk: renders the groups', () => {
-    const mixed = [
-      ev({ event: 'some_unknown_kind' }),
-      ev({ event: 'llm_thought', thought_text: 'considering drift' }),
-    ];
-    const { queryByTestId, container } = render(Timeline, {
-      props: { events: mixed, status: 'historical' },
-    });
-    expect(container.querySelector('#group-coordinator')).not.toBeNull();
-    expect(queryByTestId('timeline-empty')).toBeNull();
-  });
-
-  it('historical WITH events: still renders the grouped timeline, no empty note', () => {
-    const { queryByTestId, container } = render(Timeline, {
-      props: {
-        events: [ev({ event: 'llm_thought', thought_text: 'considering drift' })],
-        status: 'historical',
-      },
-    });
-    expect(container.querySelector('#group-coordinator')).not.toBeNull();
-    expect(queryByTestId('timeline-empty')).toBeNull();
-  });
-
-  // The empty COPY changed at plan Task 11 (guidance, not absence — the
-  // reasoning group is the page's primary content, so its empty state says what
-  // produces one). What this guards is unchanged: the groups still render, and
-  // the historical "couldn't load" note must NOT appear on a live/pending turn.
-  it('live/pending + no events: keeps the groups + the reasoning guidance line (regression guard)', () => {
-    const { getByText, queryByTestId, container } = render(Timeline, {
-      props: { events: [], status: 'pending' },
-    });
-    expect(container.querySelector('#group-coordinator')).not.toBeNull();
-    expect(
-      getByText("Send a question and the coordinator's reasoning will stream here."),
-    ).toBeTruthy();
-    expect(queryByTestId('timeline-empty')).toBeNull();
-  });
-
-  // The demoted drawers keep the generic absence line: they are metadata, and
-  // guidance there would just be more text on a page being simplified.
-  it('tools/mcp keep the generic empty line, and render as quiet disclosures', () => {
-    const { getByText, container } = render(Timeline, {
-      props: { events: [], status: 'pending' },
-    });
-    expect(getByText('No tools & workers yet.')).toBeTruthy();
-    expect(container.querySelector('#group-tools')?.classList.contains('group--quiet')).toBe(true);
-    expect(container.querySelector('#group-mcp')?.classList.contains('group--quiet')).toBe(true);
-    // The reasoning group stays a card — it is the substance, not metadata.
-    expect(container.querySelector('#group-coordinator')?.classList.contains('group--quiet')).toBe(
-      false,
-    );
-  });
-
-  it('streaming + no events: keeps the groups (live-chat waiting path regression guard)', () => {
-    // Suppression must stay gated on 'historical' only — the live chat column
-    // streams into empty groups while events arrive.
-    const { queryByTestId, container } = render(Timeline, {
-      props: { events: [], status: 'streaming' },
-    });
-    expect(container.querySelector('#group-coordinator')).not.toBeNull();
-    expect(queryByTestId('timeline-empty')).toBeNull();
-  });
-});
 
 // --- reconcileBackfill — merge /trace into the live timeline, never overwrite //
 //
@@ -627,71 +316,6 @@ describe('omittedThoughtTokens — "reasoned but no summaries" detection', () =>
   });
 });
 
-describe('Timeline — omitted-summaries note in the coordinator group', () => {
-  afterEach(cleanup);
-
-  it('renders the note (with a formatted token count) when thinking happened but no summaries', () => {
-    const events = [
-      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 1234, total_token_count: 2000 }),
-    ];
-    const { getByTestId } = render(Timeline, { props: { events, status: 'complete' } });
-    const note = getByTestId('thought-omitted-note');
-    expect(note.textContent).toContain('1,234');
-    expect(note.textContent).toContain('omitted');
-    // Honesty guard: the note must say the reply/tools are NOT affected.
-    expect(note.textContent).toContain('unaffected');
-  });
-
-  it('renders NO note when a reasoning summary is present', () => {
-    const events = [
-      ev({ event: 'llm_thought', insert_id: 't1', thought_text: 'assessing drift' }),
-      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 714 }),
-    ];
-    const { queryByTestId } = render(Timeline, { props: { events, status: 'complete' } });
-    expect(queryByTestId('thought-omitted-note')).toBeNull();
-  });
-
-  it('renders NO note mid-stream before any usage event arrives', () => {
-    const events = [ev({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' })];
-    const { queryByTestId } = render(Timeline, { props: { events, status: 'streaming' } });
-    expect(queryByTestId('thought-omitted-note')).toBeNull();
-  });
-
-  it('renders NO note mid-stream even with usage>0 (per-step usage; later summaries may come)', () => {
-    // llm_usage is emitted per LLM STEP, not once per run: a multi-step run
-    // has usage from step 1 while step 2 (and its summaries) is still in
-    // flight. The note must not flash and then vanish.
-    const events = [
-      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 500 }),
-      ev({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' }),
-    ];
-    const { queryByTestId } = render(Timeline, { props: { events, status: 'streaming' } });
-    expect(queryByTestId('thought-omitted-note')).toBeNull();
-  });
-
-  it('renders NO note on an errored turn (cannot honestly claim the reply was unaffected)', () => {
-    const events = [ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 500 })];
-    const { queryByTestId } = render(Timeline, { props: { events, status: 'error' } });
-    expect(queryByTestId('thought-omitted-note')).toBeNull();
-  });
-
-  it('renders the note on a historical replay with thinking but no summaries', () => {
-    const events = [
-      ev({ event: 'llm_usage', insert_id: 'u1', thoughts_token_count: 714 }),
-      ev({ event: 'tool_call', insert_id: 'c1', tool_name: 'read_live_env' }),
-    ];
-    const { getByTestId } = render(Timeline, { props: { events, status: 'historical' } });
-    expect(getByTestId('thought-omitted-note').textContent).toContain('714');
-  });
-
-  it('leaves the historical-empty path untouched (no groups, no note)', () => {
-    const { queryByTestId, getByTestId } = render(Timeline, {
-      props: { events: [], status: 'historical' },
-    });
-    expect(getByTestId('timeline-empty')).toBeTruthy();
-    expect(queryByTestId('thought-omitted-note')).toBeNull();
-  });
-});
 
 // ---- deriveThoughtSubtitle (ds-jns Task 1.3) ----
 // The collapsed reasoning line's text. First-non-empty-line + clamp is the

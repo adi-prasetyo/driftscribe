@@ -21,6 +21,7 @@
   import type { Decision } from '../lib/types';
   import { crewName } from '../lib/workloads';
   import { decisionActionLabel, fmtWhen } from '../lib/format';
+  import { decisionGithubLink } from '../lib/approval';
   import { prefersReducedMotion } from '../lib/motion';
   import { t, locale } from '../lib/i18n';
   import CrewGlyph from './CrewGlyph.svelte';
@@ -138,6 +139,16 @@
    *  thing FinalResponse did with it). */
   const prose = $derived(str(doc?.rationale) || str(doc?.rendered_body) || null);
 
+  /** The GitHub artifact this decision produced, if any.
+   *
+   *  Also carried over rather than invented: the decisions rail rendered this
+   *  link, and deleting the rail (ds-jns Task 3.3) left it with no renderer at
+   *  all — an Anchor drift_issue would have named an issue nowhere reachable.
+   *  The record is where a decision's detail lives now, so it lands here. The
+   *  action allowlist + host allowlist that gate it moved into lib/approval.ts
+   *  intact; see decisionGithubLink for why both halves are load-bearing. */
+  const github = $derived(doc ? decisionGithubLink(doc) : null);
+
   // "The trace loaded and nothing is attached to it" — a different fact from
   // "it wouldn't load", which TraceDetail's own error line already states, and
   // from "still loading". Reachable without anything being wrong: a bare
@@ -196,6 +207,17 @@
       <p class="ds-label record__prose-label">{$t('desk.record.prose')}</p>
       <div class="record__prose-body">{prose}</div>
     </div>
+  {/if}
+
+  {#if github !== null}
+    <p class="record__github">
+      <a
+        class="record__github-link"
+        data-testid="decision-github-link"
+        href={github.href}
+        target="_blank"
+        rel="noopener noreferrer">{$t(github.labelKey)}</a>
+    </p>
   {/if}
 
   <!-- `decision={doc}`: the panel must reason about the SAME decision the header
@@ -262,6 +284,14 @@
     color: var(--ds-fg);
     font-size: var(--ds-fs-2);
     line-height: var(--ds-lh-body);
+  }
+
+  .record__github {
+    margin: 0;
+  }
+  .record__github-link {
+    font-size: var(--ds-fs-1);
+    color: var(--ds-navy);
   }
 
   /* Both trailing lines share TraceDetail's quiet register — they are

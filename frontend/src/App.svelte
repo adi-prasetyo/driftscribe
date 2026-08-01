@@ -9,10 +9,7 @@
   } from './lib/api';
   import { consumeSse } from './lib/sse';
   import {
-    groupOf,
-    reconcileBackfill,
     type TraceEvent,
-    type TimelineStatus,
   } from './lib/timeline';
   import type {
     Conversation,
@@ -30,15 +27,8 @@
   import TokenStatus from './components/TokenStatus.svelte';
   import AuthPanel from './components/AuthPanel.svelte';
   import ChatForm from './components/ChatForm.svelte';
-  import TraceBadge from './components/TraceBadge.svelte';
-  import FinalResponse from './components/FinalResponse.svelte';
-  import IacApprovalCta from './components/IacApprovalCta.svelte';
-  import ReplyPending from './components/ReplyPending.svelte';
-  import DecisionSummary from './components/DecisionSummary.svelte';
   import PrBodyDisclosure from './components/PrBodyDisclosure.svelte';
   import DriftDiffCard from './components/DriftDiffCard.svelte';
-  import HistoricalBanner from './components/HistoricalBanner.svelte';
-  import DecisionsRail from './components/DecisionsRail.svelte';
   import ConversationsRail from './components/ConversationsRail.svelte';
   import ConversationThread from './components/ConversationThread.svelte';
   import HandoffChip from './components/HandoffChip.svelte';
@@ -74,7 +64,6 @@
   import { turnOwnsReasoning } from './lib/conversations';
   import { prefersReducedMotion } from './lib/motion';
   import { stickToBottom } from './lib/stickToBottom';
-  import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
   import TourCard from './components/TourCard.svelte';
   import DemoNoticeBell from './components/DemoNoticeBell.svelte';
@@ -86,9 +75,7 @@
 
   // ---- state ----
   let tokenState = $state<TokenState>(getStoredToken() ? 'ok' : 'missing');
-  let events = $state<TraceEvent[]>([]);
   let traceId = $state<string | null>(null);
-  let status = $state<TimelineStatus>('pending');
   let finalReply = $state<string | null>(null);
   let finalIsError = $state(false);
   // Set from the `done` frame's `iac_pr` when a run just opened an infra PR —
@@ -321,20 +308,12 @@
     ++runSeq; // supersede every in-flight run — see the doc above
     busy = false;
     resumingConversation = false;
-    historicalActive = false;
-    historicalTraceId = null;
-    activeTraceId = null;
-    historicalDecision = null;
-    historicalPrBody = null;
-    historicalPrBodyTruncated = false;
     traceId = null;
-    events = [];
     finalReply = null;
     finalIsError = false;
     iacPr = null;
     liveExchange = null;
     ephemeralExchange = null;
-    status = 'pending';
   }
 
   // Drop the chat surface on a departure from the chat view, so in-memory state
@@ -429,15 +408,11 @@
     };
     const conv = u.searchParams.get('conversation');
     if (conv !== null && conv !== conversationId) drop('conversation');
-    // `?reasoning=` has three possible live counterparts since ds-jns, one per
-    // surface it can name: the desk's open record, the chat thread's
-    // auto-expanded message, and the legacy page-level replay. Comparing
-    // against `historicalTraceId` alone (the last of the three) would drop the
-    // param off a restored entry that describes either of the first two
-    // perfectly well.
+    // `?reasoning=` names one of two live things, depending on which surface is
+    // up: the desk's open record, or the chat thread's auto-expanded message.
+    // (There was a third until ds-jns retired page-level replay.)
     const reasoning = u.searchParams.get('reasoning');
-    const liveReasoning =
-      view === 'desk' ? deskRecordTraceId : (autoExpandTraceId ?? historicalTraceId);
+    const liveReasoning = view === 'desk' ? deskRecordTraceId : autoExpandTraceId;
     if (reasoning !== null && reasoning !== liveReasoning) drop('reasoning');
     // ask_pr is a one-shot composer prefill consumed at boot (onMount strips it);
     // a restored one has nothing left to hand over, so it is always stale.
@@ -449,18 +424,6 @@
     else u.searchParams.set('view', view);
     history.replaceState(null, '', u);
   }
-
-  let historicalActive = $state(false);
-  let historicalTraceId = $state<string | null>(null);
-  let activeTraceId = $state<string | null>(null);
-  // The decision doc of the trace being replayed — drives the DecisionSummary
-  // card when the replayed decision carries no prose (e.g. an iac_apply).
-  let historicalDecision = $state<Decision | null>(null);
-  // The agent-authored PR body for an iac_apply replay (fetched lazily from
-  // /trace/{id}/pr-body) — drives the "what this change did" disclosure. null
-  // hides the panel (no description / fail-soft miss).
-  let historicalPrBody = $state<string | null>(null);
-  let historicalPrBodyTruncated = $state(false);
 
   let authPanelOpen = $state(false);
   let authResolver: ((t: string | null) => void) | null = null;
@@ -489,12 +452,12 @@
   // newer run's flag.
   let resumingConversation = $state(false);
 
-  // The ONE chat-disabled condition (busy live stream OR historical replay OR a
+  // The ONE chat-disabled condition (busy live stream OR a
   // resume still rehydrating), shared by ChatForm.disabled AND
   // InfraDiagram.adoptDisabled so the two can never diverge — an Adopt click can
   // never mutate a disabled composer or strand a stale draft behind a historical
   // view (Codex review 019eb572 must-fix 3).
-  const chatDisabled = $derived(historicalActive || busy || resumingConversation);
+  const chatDisabled = $derived(busy || resumingConversation);
 
   // ---- chat-native live exchange ----
   // While a live /chat turn is in flight (or its reply just landed but hasn't
@@ -673,17 +636,11 @@
       },
     ];
   });
-  // Historical replay must always show the hero, never a live bubble; openTrace
-  // clears liveExchange, so both-true is impossible — this guard is belt.
-  const liveExchangeActive = $derived(!historicalActive && liveExchange != null);
-
   // Something a clean slate would clear is on this screen. displayTurns already
   // unifies "persisted thread + optimistic in-flight exchange" (reuse it — one
-  // source of thread visibility, no drift); finalReply/busy/events cover the
-  // timeline-only states (a paused / one-shot / error reply persists no thread
-  // but still occupies the screen), and conversationId is a belt for an
-  // open-but-empty thread edge. False in historical replay — a replay is a
-  // record, not a chat in progress, and the banner owns its own exit.
+  // source of thread visibility, no drift); finalReply and busy cover a reply
+  // that is still arriving, and conversationId is a belt for an open-but-empty
+  // thread edge.
   //
   // This used to gate the composer's New chat button, whose whole point was to
   // appear only when it had something to do; that button now lives in the
@@ -691,12 +648,7 @@
   // for why). Its one remaining reader is the emptiness rule below, which is
   // the same question asked from the other side.
   const chatOccupied = $derived(
-    !historicalActive &&
-      (conversationId !== null ||
-        displayTurns.length > 0 ||
-        finalReply !== null ||
-        busy ||
-        events.length > 0),
+    conversationId !== null || displayTurns.length > 0 || finalReply !== null || busy,
   );
 
   // A fresh chat with nothing on it yet: the greeting + suggestion chips show
@@ -720,7 +672,7 @@
   // away. That ordering is load-bearing for a different reason of its own (a
   // failed rehydrate must not leave a stale crew lock), which makes it exactly
   // the kind of thing a later change moves without thinking about this rule.
-  const chatEmpty = $derived(!historicalActive && !resumingConversation && !chatOccupied);
+  const chatEmpty = $derived(!resumingConversation && !chatOccupied);
 
   // Suggestion chips. Frozen order, one per crew's flavour, broadest first —
   // see locales/chat.ts for why none of them names its crew.
@@ -928,7 +880,7 @@
   // ---- landing-page overview store (Task 3.0a) — single owner of the
   // graph/pending-approvals/decisions refresh triple (lib/overviewStore.ts).
   // `decisions` here is a thin derived alias so the many existing readers
-  // below (DecisionsRail, noteApplied, open-trace lookups) don't all need
+  // below (noteApplied, the desk record lookups) don't all need
   // rewriting to `$overview.decisions`. Torn down on component destroy so its
   // focus/visibilitychange listeners and poll timer don't leak (matters for
   // test-suite isolation — a component mounted per-test that never destroys
@@ -958,12 +910,13 @@
     bootConversationId !== null ? bootReasoningTid : null,
   );
 
-  // The rail's "view reasoning" (ds-jns PR 2). It used to call openTrace, which
-  // swapped the chat column into replay mode; the decision now opens as a
-  // record on the desk that lists it. navigate() FIRST — it clears the record
-  // and drops `?reasoning=` as part of the view gesture, so setting the record
-  // afterwards is what survives.
-  function openDeskRecordFromRail(tid: string): void {
+  // Open a decision's record on the desk, from anywhere. It used to be
+  // openTrace, which swapped the chat column into replay mode; ds-jns retired
+  // that surface and the record on the desk that LISTS the decision is where
+  // every route ends up now. navigate() FIRST — it clears the record and drops
+  // `?reasoning=` as part of the view gesture, so setting the record afterwards
+  // is what survives.
+  function openDeskRecord(tid: string): void {
     navigate('desk');
     setDeskRecord(tid);
   }
@@ -1084,20 +1037,12 @@
     const myRun = ++runSeq;
     busy = false;
     resumingConversation = true;
-    historicalActive = false;
-    historicalTraceId = null;
-    activeTraceId = null;
-    historicalDecision = null;
-    historicalPrBody = null;
-    historicalPrBodyTruncated = false;
     traceId = null;
-    events = [];
     finalReply = null;
     finalIsError = false;
     iacPr = null;
     liveExchange = null; // cancel any in-flight optimistic exchange
     ephemeralExchange = null; // the failed/paused turn belonged to the old screen
-    status = 'pending';
     // Whatever chip was on screen belonged to the thread we're leaving. Drop
     // it from view WITHOUT forgetting its nonce (that proposal may still be
     // open); the incoming thread's chip is rebuilt from its own detail below.
@@ -1155,17 +1100,11 @@
         // lib/handoff.ts on why a proposal can be visibly open on the server
         // and still not actionable here.
         handoffOffer = recallOffer(id, detail.pending_handoff, new Date());
-        // Auto-load the latest turn's reasoning into the INLINE timeline so a
-        // resumed conversation shows its coordinator reasoning / tools / MCP
-        // without the extra per-turn "open trace" click. Prefer the last CREW turn
-        // that carries a trace (the "open trace" affordance lives on crew bubbles),
-        // then any turn, then the conversation's last_trace_id. Fire-and-forget:
-        // it fills the timeline in a beat later (like a lazy load) while the
-        // tick()+scroll below runs; runSeq-guarded so a superseding open drops it.
-        const crewTid = [...conversationTurns].reverse().find((t) => t.role === 'crew' && t.trace_id)?.trace_id;
-        const anyTid = crewTid ?? [...conversationTurns].reverse().find((t) => t.trace_id)?.trace_id;
-        const inlineTid = anyTid ?? detail.last_trace_id ?? null;
-        if (inlineTid) void loadConversationTrace(inlineTid, myRun);
+        // No trace prefetch here any more. A resumed thread used to pull its
+        // latest turn's trace into a page-level timeline; since PR 1 every crew
+        // bubble carries its OWN reasoning disclosure, fetched by traceCache the
+        // moment it is expanded. One fetch per thread open, for one turn's
+        // reasoning nobody asked for, bought nothing the disclosures don't.
       } catch {
         // A failed rehydrate abandons the thread rather than leaving it half-open.
         if (myRun === runSeq) setConversationId(null);
@@ -1176,7 +1115,7 @@
       // the rehydrated history flows directly below it. Then move focus into the
       // thread region (tabindex=-1) so keyboard / screen-reader users are told the
       // conversation loaded, instead of being stranded on the rail button — the
-      // same scroll-then-focus pattern openTrace uses for #historical-badge.
+      // same scroll-then-focus pattern the retired replay used for its banner.
       const reduced = prefersReducedMotion();
       document
         .getElementById('chat-form')
@@ -1186,33 +1125,6 @@
       // Only the run that's still current clears the flag — a superseded run's
       // finally must not stomp on a newer run's in-flight resume.
       if (myRun === runSeq) resumingConversation = false;
-    }
-  }
-
-  // Load a resumed conversation's latest-turn trace into the INLINE timeline
-  // (the thread stays visible — this is NOT the full-page historical replay that
-  // openTrace does). historicalActive stays false; the two are independent axes
-  // ("inline vs full replay" vs "live vs snapshot"), so status='historical' here
-  // only labels the snapshot (green pill) — it does not relocate the output or
-  // hide the thread. Fail-soft + runSeq-guarded like loadPrBody. Promote ONLY
-  // when the trace carries a DISPLAYABLE event (groupOf !== null): Timeline drops
-  // final_response / unknown kinds, so a reply-only trace has events.length > 0
-  // yet would render three empty group accordions — the exact confusion we fix.
-  async function loadConversationTrace(tid: string, myRun: number) {
-    try {
-      const resp = await call('/trace/' + encodeURIComponent(tid));
-      if (myRun !== runSeq || !resp.ok) return;
-      const t = (await resp.json()) as TraceResponse;
-      if (myRun !== runSeq) return;
-      const evts = Array.isArray(t.events) ? t.events : [];
-      if (!evts.some((e) => groupOf(e) !== null)) return; // no reasoning to show
-      // Set the three together after the final guard so a superseding run can
-      // never see a half-applied inline trace.
-      events = evts;
-      traceId = tid;
-      status = 'historical';
-    } catch {
-      /* fail-soft — leave the empty-timeline affordance (same as the homepage) */
     }
   }
 
@@ -1246,10 +1158,9 @@
     // true, so this should be unreachable via the UI — but a stray submit must
     // never ride a half-open thread's id past the crew-switch guard before its
     // crew has loaded (Codex review 019f46e8).
-    if (historicalActive || busy || resumingConversation) return;
+    if (busy || resumingConversation) return;
     const myRun = ++runSeq;
     busy = true;
-    events = [];
     traceId = null;
     ephemeralExchange = null; // a new send retires the previous unstored turn
     // THIS stream's trace id, captured locally. The global `traceId` is whatever
@@ -1260,10 +1171,6 @@
     finalReply = null;
     finalIsError = false;
     iacPr = null;
-    historicalDecision = null;
-    historicalPrBody = null;
-    historicalPrBodyTruncated = false;
-    status = 'pending';
 
     // Typing IS an answer to an outstanding suggestion: the operator was asked
     // whether to bring in another crew and chose to keep talking to this one.
@@ -1356,7 +1263,6 @@
         });
       } catch {
         if (myRun !== runSeq) return;
-        status = 'error';
         finalReply = $t('header.chatError.network');
         finalIsError = true;
         // Never reached the coordinator, so there is no trace and no reasoning
@@ -1367,7 +1273,6 @@
       if (myRun !== runSeq) return;
 
       if (!resp.ok) {
-        status = 'error';
         // 429 comes from the demo-window per-IP rate limiter (CF Worker);
         // judges should see "wait", not a bare status code.
         finalReply =
@@ -1405,7 +1310,6 @@
                   pr_url: typeof ip.pr_url === 'string' ? ip.pr_url : '',
                 }
               : null;
-          status = 'complete';
           // Mirror the SSE done frame: the JSON path echoes conversation_id
           // when the turn persisted. Decide persistability NOW (a paused refusal
           // echoes conversation_id but persists nothing; a one-shot has none) so
@@ -1435,7 +1339,6 @@
           return;
         } catch {
           if (myRun !== runSeq) return;
-          status = 'error';
           finalReply = $t('header.chatError.malformed');
           finalIsError = true;
           // liveTraceId is still null here: the header read happens AFTER
@@ -1463,16 +1366,18 @@
             traceCache.beginLive(m.trace_id);
             if (myRun !== runSeq) return;
             traceId = m.trace_id;
-            status = 'streaming';
           },
           onEvent: (e) => {
             const te = e as unknown as TraceEvent;
             // EVERY kind, llm_usage included — omittedThoughtTokens reads it,
             // and interleaveTimeline drops what it doesn't render. Filtering
             // here would throw the information away before either could look.
+            //
+            // The cache is the ONLY sink. A page-level `events` array used to
+            // shadow it for the retired timeline panel; nothing rendered it
+            // after ds-jns Task 3.3, and a write-only copy of the stream is a
+            // second source of truth waiting to disagree with the first.
             if (liveTraceId) traceCache.appendLive(liveTraceId, te);
-            if (myRun !== runSeq) return;
-            events = [...events, te];
           },
           onDone: (d) => {
             sawDone = true;
@@ -1502,14 +1407,12 @@
               });
             }
             doneHandoff = readHandoffOffer(d.handoff);
-            status = 'complete';
           },
           onError: (er) => {
             sawErrorFrame = true;
             if (myRun !== runSeq) return;
             finalReply = er.detail || $t('header.chatError.coordinatorError');
             finalIsError = true;
-            status = 'error';
             setEphemeral({
               prompt,
               workload,
@@ -1576,7 +1479,6 @@
       await backfillTrace(myRun, liveTraceId);
       if (myRun !== runSeq) return;
       if (finalReply == null) {
-        status = 'error';
         finalReply = streamErrored
           ? $t('header.chatError.streamInterrupted')
           : $t('header.chatError.streamEnded');
@@ -1722,7 +1624,7 @@
     const offer = handoffOffer;
     const cid = conversationId;
     if (offer == null || cid == null) return;
-    if (historicalActive || busy || resumingConversation || handoffBusy || handoffDead) return;
+    if (busy || resumingConversation || handoffBusy || handoffDead) return;
 
     const crews = { from: crewName(offer.from), to: crewName(offer.to) };
     handoffBusy = true;
@@ -1734,7 +1636,6 @@
     // back in one click, and the chip says plainly that nothing changed.
     const myRun = ++runSeq;
     busy = true;
-    events = [];
     traceId = null;
     ephemeralExchange = null;
     // See submitChat: the joining crew's stream owns its own trace id, and its
@@ -1743,10 +1644,6 @@
     finalReply = null;
     finalIsError = false;
     iacPr = null;
-    historicalDecision = null;
-    historicalPrBody = null;
-    historicalPrBodyTruncated = false;
-    status = 'pending';
     // Only an ACCEPT runs a crew, so only an accept gets a thinking bubble. A
     // decline is a bookkeeping POST with a one-line canned reply; showing it
     // "generating" would dramatize a write that involves no model at all.
@@ -1771,16 +1668,14 @@
       } catch {
         if (myRun !== runSeq) return;
         liveExchange = null;
-        status = 'pending';
-        handoffError = $t('conversations.handoff.error.failed', crews);
+            handoffError = $t('conversations.handoff.error.failed', crews);
         return;
       }
       if (myRun !== runSeq) return;
 
       if (!resp.ok) {
         liveExchange = null;
-        status = 'pending';
-        // A failure AFTER the redemption committed is a different animal from
+            // A failure AFTER the redemption committed is a different animal from
         // a refusal, and shares its status class — hence the explicit marker
         // (see `X-Handoff-Redeemed` in agent/main.py). The crew has already
         // moved and the nonce is spent, so treating it as retryable would keep
@@ -1798,7 +1693,6 @@
           adoptCrew(offer.to);
           finalReply = $t('conversations.handoff.error.joinFailed', crews);
           finalIsError = true;
-          status = 'error';
           setEphemeral({
             prompt: '',
             workload: offer.to as Workload,
@@ -1877,10 +1771,8 @@
           joinHandoff = readHandoffOffer(body?.handoff);
           refusedByPause = body?.paused === true;
           sawTerminal = true;
-          status = 'complete';
         } catch {
           if (myRun !== runSeq) return;
-          status = 'error';
           finalReply = $t('header.chatError.malformed');
           finalIsError = true;
           setEphemeral({
@@ -1904,13 +1796,11 @@
               traceCache.beginLive(m.trace_id);
               if (myRun !== runSeq) return;
               traceId = m.trace_id;
-              status = 'streaming';
             },
             onEvent: (e) => {
               const te = e as unknown as TraceEvent;
               if (liveTraceId) traceCache.appendLive(liveTraceId, te);
               if (myRun !== runSeq) return;
-              events = [...events, te];
             },
             onDone: (d) => {
               sawDone = true;
@@ -1921,14 +1811,12 @@
               joinHandoff = readHandoffOffer(d.handoff);
               refusedByPause = d.paused === true;
               sawTerminal = true;
-              status = 'complete';
             },
             onError: (er) => {
               sawErrorFrame = true;
               if (myRun !== runSeq) return;
               finalReply = er.detail || $t('header.chatError.coordinatorError');
               finalIsError = true;
-              status = 'error';
               setEphemeral({
                 prompt: '',
                 workload: offer.to as Workload,
@@ -1958,7 +1846,6 @@
         }
         if (myRun !== runSeq) return;
         if (finalReply == null) {
-          status = 'error';
           finalReply = streamErrored
             ? $t('header.chatError.streamInterrupted')
             : $t('header.chatError.streamEnded');
@@ -2078,129 +1965,6 @@
     // enrichment state alone, so a failed backfill can still be retried by a
     // later expand rather than being recorded as loaded-and-empty.
     traceCache.settleBackfill(tid, fetched);
-    if (myRun !== runSeq || fetched == null) return;
-    // MERGE the ingestion-lagged /trace snapshot into the live timeline,
-    // never overwrite it: the live stream already rendered every kind except
-    // the trace-only mcp_call side-channel, and a too-early /trace can be
-    // incomplete (or hold only log lines). reconcileBackfill pulls the
-    // mcp_call events and falls back to /trace only when the stream produced
-    // nothing displayable. See lib/timeline.ts.
-    events = reconcileBackfill(events, Array.isArray(fetched.events) ? fetched.events : []);
-  }
-
-  // ---- historical replay ----
-  async function openTrace(tid: string) {
-    navigate('chat'); // the rail is visible in every view — opening a trace reads chat
-    const myRun = ++runSeq; // cancels any in-flight live stream
-    busy = false;
-    // A replay supersedes any in-flight resume; openConversation's own finally
-    // won't clear this (its runSeq guard sees it's been superseded), so the
-    // superseding run must clear it itself or the composer stays disabled
-    // forever (Codex review 019f46e8).
-    resumingConversation = false;
-    historicalActive = true;
-    historicalTraceId = tid;
-    activeTraceId = tid;
-    traceId = tid;
-    events = [];
-    finalReply = null;
-    finalIsError = false;
-    iacPr = null;
-    liveExchange = null; // a replay always shows the hero, never a live bubble
-    // …and neither does it show the previous turn's failure. The hero is gated
-    // on this being null, so leaving it set blanks the replay's own rationale.
-    ephemeralExchange = null;
-    historicalDecision = null;
-    historicalPrBody = null;
-    historicalPrBodyTruncated = false;
-    status = 'pending';
-    // Reflect the open replay in the address bar so it can be copied / shared /
-    // bookmarked. Idempotent on the boot deep-link path (param already set).
-    syncReasoningParam(tid);
-    // When historicalActive flips true the replay renders at the TOP of the
-    // thread (see the {#if historicalActive}{@render traceOutput()} branch), so
-    // going to the top reveals it — no jarring jump down. await tick() first so
-    // the {#if active} block has flushed and #historical-badge exists for the
-    // focus() below. Scrolling here (pre-fetch) gives instant feedback; the
-    // trace body fills in above as it resolves.
-    //
-    // The THREAD region, not the window: since the chat shell was pinned
-    // (ds-jns PR 3) the window has nothing to scroll on this view, so
-    // window.scrollTo is a no-op here and the replay would be left wherever the
-    // transcript happened to be sitting. This path is still reachable — a
-    // ?reasoning= deep link at boot with view=chat — until Task 3.3 removes
-    // replay mode outright.
-    //
-    // Instant, and it must stay instant: this scroll fires a scroll event that
-    // stickToBottom reads to arm/disarm the follow. An animated one reports its
-    // own intermediate positions and the two fight (see stickToBottom's
-    // toBottom comment for what that measured).
-    await tick();
-    if (myRun !== runSeq) return; // a newer run superseded us during the tick
-    document.querySelector('[data-testid="chat-thread"]')?.scrollTo({ top: 0, behavior: 'auto' });
-    // Move focus into the replay region (banner is tabindex=-1) so keyboard/SR
-    // users land in the new content instead of being stranded on the rail button.
-    // preventScroll: the window.scrollTo above already positioned the viewport;
-    // don't let focus fight it with a second jump.
-    const banner = document.getElementById('historical-badge');
-    banner?.focus({ preventScroll: true });
-    try {
-      const resp = await call('/trace/' + encodeURIComponent(tid));
-      if (myRun !== runSeq) return;
-      if (resp.ok) {
-        const t = (await resp.json()) as TraceResponse;
-        if (myRun !== runSeq) return;
-        events = Array.isArray(t.events) ? t.events : [];
-        // Surface the decision's prose in the hero card (legacy parity).
-        const d = t.decision as Record<string, unknown> | null | undefined;
-        finalReply = d ? asString(d.rationale) ?? asString(d.rendered_body) : null;
-        finalIsError = false;
-        // The replayed decision drives the DecisionSummary card when it has no
-        // prose (e.g. an iac_apply — see the {#if} in the template).
-        historicalDecision = (t.decision as Decision) ?? null;
-        // A replay is a snapshot, NOT a live stream — always 'historical'.
-        // (Deriving from t.complete would mislabel as 'streaming': iac_apply
-        // traces never have a final_response, and a cold post-restart
-        // observation cache returns complete=false on a single fetch.)
-        status = 'historical';
-        // Open-trace PR-body disclosure (iac_apply only): fetch the agent-authored
-        // PR description for the "what this change did" panel. A separate,
-        // fail-soft call — a miss/error just leaves the panel hidden. Fire-and-
-        // forget (the panel fills in when it resolves), runSeq-guarded so a
-        // superseding open-trace/newChat drops a late response.
-        if (historicalDecision?.action === 'iac_apply') {
-          void loadPrBody(tid, myRun);
-        }
-      } else {
-        historicalDecision = null;
-        status = 'error';
-      }
-    } catch {
-      if (myRun === runSeq) {
-        historicalDecision = null;
-        status = 'error';
-      }
-    }
-  }
-
-  // Fetch the agent-authored PR body for an iac_apply replay. Fail-soft: any
-  // miss/non-ok/error/throw just leaves historicalPrBody null (panel hidden).
-  // runSeq-guarded at every await so a superseding open-trace/newChat wins.
-  async function loadPrBody(tid: string, myRun: number) {
-    try {
-      const resp = await call('/trace/' + encodeURIComponent(tid) + '/pr-body');
-      if (myRun !== runSeq || !resp.ok) return;
-      const b = (await resp.json()) as PrBody;
-      if (myRun !== runSeq) return;
-      // Trim ONLY for the empty-check (a whitespace-only body has no content to
-      // show); keep the original body so edge whitespace in a real description
-      // survives in the <pre>.
-      historicalPrBody =
-        typeof b.body === 'string' && b.body.trim() ? b.body : null;
-      historicalPrBodyTruncated = b.body_truncated === true;
-    } catch {
-      /* fail-soft — leave the disclosure hidden */
-    }
   }
 
   function newChat() {
@@ -2257,23 +2021,26 @@
         const bootRun = runSeq; // openConversation's ++runSeq will make this bootRun+1
         await openConversation(bootConversationId);
         // If the operator interacted during the awaited open (New chat, another
-        // thread), a newer run bumped runSeq past bootRun+1 — do NOT then force the
-        // replay on top of what they navigated to. Bail out of the boot continuation.
+        // thread), a newer run bumped runSeq past bootRun+1 — do NOT then drag
+        // them somewhere else. Bail out of the boot continuation.
         if (runSeq !== bootRun + 1) return;
         // The thread opened: its own disclosure carries the reasoning
         // (autoExpandTraceId, seeded at setup), so there is nothing to do here.
         // A thread that FAILED to open (404, unreadable) has no turn to expand,
         // and the link would otherwise land on an empty chat column with
-        // `?reasoning=` still in the address bar — so the page-level replay is
-        // the fallback. Deliberately not a bounce to the desk: this is chat-side
-        // error handling and the operator asked for a thread.
-        if (conversationId === null && bootReasoningTid) openTrace(bootReasoningTid);
+        // `?reasoning=` still in the address bar. The reasoning itself is still
+        // readable — as a record on the desk — so send them there rather than
+        // dropping the half of the link that CAN be honoured. This used to open
+        // a page-level replay in the chat column; ds-jns retired that surface,
+        // and the desk record is what replaced it everywhere else.
+        if (conversationId === null && bootReasoningTid) openDeskRecord(bootReasoningTid);
         return;
       }
-      // The legacy `?view=chat&reasoning=` with no thread around it: still the
-      // page-level replay. A BARE `?reasoning=` never reaches here — it resolves
-      // to the desk and was seeded into deskRecordTraceId at setup.
-      if (bootReasoningTid && bootView === 'chat') openTrace(bootReasoningTid);
+      // `?view=chat&reasoning=` with no thread around it. The chat column has
+      // nothing to render a bare trace with any more, and the desk does. (A BARE
+      // `?reasoning=` never reaches here — it resolves to the desk in
+      // lib/deeplink and was seeded into deskRecordTraceId at setup.)
+      if (bootReasoningTid && bootView === 'chat') openDeskRecord(bootReasoningTid);
     })();
     // Browser Back/Forward across the two views (ds-7ag.1). Registered here
     // rather than in the module body so it is torn down with the component.
@@ -2338,55 +2105,13 @@
   </div>
 </header>
 
-<!-- The trace/replay output cluster. Each child's own {#if} already gates on
-     historicalActive, so the same snippet renders correctly whether it sits at
-     the TOP (historical replay) or the BOTTOM (live chat) of the thread —
-     the only thing that changes is WHERE it mounts. Mutually-exclusive call
-     sites below ({#if historicalActive} vs {#if !historicalActive}) mean only
-     one instance is ever live, so there is no double-mount. Rendered inline, so
-     the components stay direct children of .chat-thread, which is what carries
-     the inter-component spacing rule. -->
-{#snippet traceOutput()}
-  <HistoricalBanner active={historicalActive} traceId={historicalTraceId} onNewChat={newChat} />
-  <TraceBadge {traceId} {status} />
-  <!-- During a live chat the reply lands in the thread's crew bubble (see
-       displayTurns), so the standalone hero + its loading shimmer yield. Since
-       ds-jns the non-persist fallbacks (paused / one-shot / error) render as
-       ephemeral thread turns too, so the only caller left is historical replay
-       — which is why PR 3 can delete this whole cluster. -->
-  {#if !liveExchangeActive && ephemeralExchange === null}
-    <FinalResponse reply={finalReply} isError={finalIsError} />
-  {/if}
-  {#if historicalActive && historicalDecision}
-    <DriftDiffCard decision={historicalDecision} />
-  {/if}
-  {#if iacPr && !historicalActive}
-    <IacApprovalCta prNumber={iacPr.pr_number} />
-  {/if}
-  {#if busy && finalReply == null && !liveExchangeActive}
-    <ReplyPending />
-  {/if}
-  {#if historicalActive && finalReply == null && historicalDecision}
-    <DecisionSummary decision={historicalDecision} />
-    <PrBodyDisclosure body={historicalPrBody} truncated={historicalPrBodyTruncated} />
-  {/if}
-  <!-- directlyRecorded gates the empty-timeline copy: only an iac_apply is
-       recorded directly (worker-written, no coordinator reasoning run), so an
-       empty trace there is expected. Chat turns / other decisions have no
-       decision doc or a real reasoning run, so their empty trace means
-       "couldn't load", not "never reasoned". -->
-  <Timeline {events} {status} directlyRecorded={historicalDecision?.action === 'iac_apply'} />
-{/snippet}
-
-<!-- Rails come off the desk (composite-redesign Task 3.5 decision):
-     the desk is a 780px centered column and LedgerStrip already IS its
-     decisions summary, so DecisionsRail beside it would show the same log
-     twice — the exact 見づらい/後付け texture the redesign answers. `.rails`
-     only renders (and only takes a grid column) on the chat view; `.layout`
-     collapses to a single full-width column otherwise. Nothing becomes
-     unreachable: deeplink.ts's hasChatIntent() already forces view==='chat'
-     for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, so no shared link
-     can strand a visitor on a railless desk (see App.test.ts's
+<!-- The rail comes off the desk (composite-redesign Task 3.5 decision): the
+     desk is a 780px centered column, and a rail beside it would repeat what the
+     page already shows. `.rails` only renders (and only takes a grid column) on
+     the chat view; `.layout` collapses to a single full-width column otherwise.
+     Nothing becomes unreachable: deeplink.ts's hasChatIntent() already forces
+     view==='chat' for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, so no
+     shared link can strand a visitor on a railless desk (see App.test.ts's
      "rails come off the desk" suite, which pins that guarantee). -->
 <!-- Renders on ANY view (Task 3.5 flipped the bare-URL default to desk, so a
      first-run visitor who never touches chat must still be offered the tour).
@@ -2412,7 +2137,6 @@
       onOpen={openConversation}
       onNewChat={newChat}
     />
-    <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openDeskRecordFromRail} />
   </div>
   {/if}
 
@@ -2438,12 +2162,7 @@
     <!-- The chat view's ONE scroll container — see .chat-thread. Everything
          that accumulates lives in here; the composer is a sibling pinned
          beneath it, so it never moves and never has to be scrolled back to. -->
-    <div class="chat-thread" data-testid="chat-thread" use:stickToBottom={!historicalActive}>
-      <!-- Historical replay renders FIRST so an opened trace lands at the top of
-           the thread (openTrace scrolls to reveal it). -->
-      {#if historicalActive}
-        {@render traceOutput()}
-      {/if}
+    <div class="chat-thread" data-testid="chat-thread" use:stickToBottom>
       <!-- The estate diagram and the capability card used to sit here, above
            every transcript. Neither belongs to a conversation: the estate is
            the desk's subject and has a section of its own there (the
@@ -2451,14 +2170,13 @@
            this thing allowed to do" is a question asked once on the way in,
            now a link under the empty state's chips. What is left in this
            container is the conversation and nothing else. -->
-      {#if !historicalActive && displayTurns.length > 0}
+      {#if displayTurns.length > 0}
         <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} {autoExpandTraceId} />
       {/if}
       <!-- The confirmation sits at the END of the transcript, directly under the
            crew reply that proposed it and directly above the composer — where
-           the operator's eye already is. Hidden in historical replay: a past
-           trace is a record, not a live decision. -->
-      {#if !historicalActive && handoffOffer !== null}
+           the operator's eye already is. -->
+      {#if handoffOffer !== null}
         <HandoffChip
           offer={handoffOffer}
           pending={handoffBusy}
@@ -2467,11 +2185,6 @@
           onConfirm={() => void redeemHandoff(true)}
           onDecline={() => void redeemHandoff(false)}
         />
-      {/if}
-      <!-- Live output is the tail of the transcript, so it renders last — which
-           now puts it immediately above the composer rather than below it. -->
-      {#if !historicalActive}
-        {@render traceOutput()}
       {/if}
     </div>
     <!-- The empty state's greeting. Outside .chat-composer so the tour's
@@ -2877,16 +2590,18 @@
       min-height: 0;
       overflow: hidden;
     }
-    /* The rails column is now height-constrained too, so it needs somewhere for
-       a long history to go. Each rail already caps its own list; this catches
-       the sum of them. */
+    /* The rail column is height-constrained too, so it needs somewhere for a
+       long history to go. The rail already caps its own list; this catches
+       anything that outgrows the viewport anyway. */
     .layout--chat .rails {
       overflow-y: auto;
     }
   }
-  /* Left column holds two stacked rails: conversation history above past
-     decisions. Each owns its own internal scroll; the column spaces + insets
-     them so neither hugs the very edge. */
+  /* Left column. It held two stacked rails until ds-jns retired the decisions
+     one — the desk's ledger is the decision browser now — so it wraps a single
+     rail today, and keeps its own box because the padding, the height
+     constraint and the mobile reordering below all belong to the COLUMN, not to
+     whatever is currently in it. */
   .rails {
     display: flex;
     flex-direction: column;
@@ -3089,8 +2804,8 @@
       grid-template-columns: 1fr;
     }
     /* Single column: put the chat + composer FIRST so the operator isn't forced
-       to scroll past the full conversations + decisions lists to reach it. The
-       rails (history / past decisions) drop below as secondary navigation. */
+       to scroll past the whole conversation list to reach it. The rail drops
+       below as secondary navigation. */
     .chat-area {
       order: 1;
     }

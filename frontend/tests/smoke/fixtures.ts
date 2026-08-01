@@ -30,12 +30,13 @@ export const test = base.extend({
 export const TESTIDS = {
   chatPrompt: 'chat-prompt',
   chatSubmit: 'chat-submit',
-  finalResponse: 'final-response',
-  replyPending: 'reply-pending',
-  pastDecisionsPane: 'past-decisions-pane',
-  pastDecisionItem: 'past-decision-item',
-  openTraceButton: 'open-trace-button',
-  historicalBanner: 'historical-banner',
+  // The chat column's replay cluster (hero, pending shimmer, decisions rail,
+  // its view-reasoning button, the "reading a past run" banner) was deleted in
+  // ds-jns Task 3.3. Every route to a past decision ends at the desk's ledger
+  // now, and a live reply lands in the thread's own crew bubble.
+  conversationsPane: 'conversations-pane',
+  ledgerRow: 'ledger-strip-row',
+  decisionRecord: 'decision-record',
   // The estate is a section of the DESK since ds-cmc, and since ds-jns Task 3.3
   // it is the only resource inventory an operator can reach: InfraDiagram's
   // panel had one mount left in the chat transcript, and that is gone. The
@@ -47,7 +48,6 @@ export const TESTIDS = {
   estateGroupUnmatched: 'estate-group-unmatched',
   estateUnmatchedRow: 'estate-unmatched-row',
   estateUnmatchedInvestigate: 'estate-unmatched-investigate',
-  conversationsPane: 'conversations-pane',
   conversationOpen: 'conversation-open',
   conversationThread: 'conversation-thread',
   threadTyping: 'thread-typing',

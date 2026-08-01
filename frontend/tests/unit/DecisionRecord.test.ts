@@ -307,6 +307,54 @@ describe('DecisionRecord — one card, one decision', () => {
   });
 });
 
+// The GitHub artifact link, carried over from the decisions rail ds-jns
+// deleted. Its gate is the security-relevant half and lives in lib/approval.ts
+// (decisionGithubLink) — pinned there against every url shape. What is pinned
+// HERE is that this card actually asks: dropping the call would silently strand
+// an Anchor issue with no route to it, which is exactly what deleting the rail
+// did before this.
+describe('DecisionRecord — the GitHub artifact it produced', () => {
+  const ISSUE_URL = 'https://github.com/acme/ops/issues/99';
+
+  it('links the issue a drift_issue decision filed', async () => {
+    const { findByTestId } = mount(() => res(traceResponse()), {
+      decision: {
+        decision_id: 'd-gh',
+        trace_id: TID,
+        action: 'drift_issue',
+        created_at: '2026-05-31T15:06:00Z',
+        github: { url: ISSUE_URL },
+      } as Decision,
+    });
+    const link = await findByTestId('decision-github-link');
+    expect(link.getAttribute('href')).toBe(ISSUE_URL);
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(link.getAttribute('target')).toBe('_blank');
+  });
+
+  it('renders no link for an off-allowlist host, and none for a decision with no artifact', async () => {
+    // Not a restatement of lib/approval's own coverage: this asserts the card
+    // renders NOTHING rather than an empty or href-less anchor, which is the
+    // failure a component can add on top of a correct gate.
+    const { findByTestId, queryByTestId } = mount(() => res(traceResponse()), {
+      decision: {
+        decision_id: 'd-evil',
+        trace_id: TID,
+        action: 'drift_issue',
+        created_at: '2026-05-31T15:06:00Z',
+        github: { url: 'https://evil.example/acme/ops/issues/99' },
+      } as Decision,
+    });
+    await findByTestId('decision-record');
+    expect(queryByTestId('decision-github-link')).toBeNull();
+    cleanup();
+
+    const plain = mount(() => res(traceResponse()), { decision: ROLLBACK });
+    await plain.findByTestId('decision-record');
+    expect(plain.queryByTestId('decision-github-link')).toBeNull();
+  });
+});
+
 describe('DecisionRecord — record incomplete', () => {
   it('says so when the trace loaded and no decision doc is attached', async () => {
     // Reachable: a bare ?reasoning= link can name a CHAT turn's trace, which has
