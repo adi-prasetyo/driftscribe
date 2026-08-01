@@ -46,11 +46,13 @@
   import type { HandoffOffer } from './lib/sse';
   import InfraDiagram from './components/InfraDiagram.svelte';
   import ApprovalDesk from './components/ApprovalDesk.svelte';
+  import DecisionRecord from './components/DecisionRecord.svelte';
   import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
   import { reconcileApprovals } from './lib/estate';
   import {
     reasoningTraceFromSearch,
+    isReplayableTraceId,
     conversationIdFromSearch,
     viewFromSearch,
     DEFAULT_VIEW,
@@ -67,6 +69,8 @@
   import { createAutonomyStore, autonomyNoteFor } from './lib/autonomyStore';
   import { createOverviewStore, NO_DECISIONS_YET } from './lib/overviewStore';
   import { createTraceCache } from './lib/traceCache';
+  import { hasDecisionForTrace } from './lib/ledger';
+  import { turnOwnsReasoning } from './lib/conversations';
   import { prefersReducedMotion } from './lib/motion';
   import Timeline from './components/Timeline.svelte';
   import TourBanner from './components/TourBanner.svelte';
@@ -203,7 +207,12 @@
   // — same pure-function-over-location.search pattern as the deep-link helpers
   // above, this time picking a view instead of a resource id. See lib/deeplink
   // for viewFromSearch/AppView/DEFAULT_VIEW (Task 2.1).
-  let view = $state<AppView>(viewFromSearch(window.location.search));
+  // Captured separately from the `view` state below because the boot
+  // deep-link work in onMount runs AFTER navigation may already have moved
+  // `view` (openConversation navigates to chat). Boot decisions must read the
+  // view the URL asked for, not wherever the app has since arrived.
+  const bootView: AppView = viewFromSearch(window.location.search);
+  let view = $state<AppView>(bootView);
 
   // Navigate to view `v`. AWAY from chat, this writes `view` + clears every
   // chat-intent param (reasoning/conversation/ask_pr/preview_pr) in ONE
@@ -244,6 +253,23 @@
     const fromView = view; // capture BEFORE the assignment — the push test needs it
     view = v;
     const u = new URL(window.location.href);
+    // A view gesture is not a record or preview gesture — neither piece of desk
+    // state travels, and neither may survive as invisible state. Done here
+    // rather than in teardownChatSurface() because that runs only for non-chat
+    // targets, while this must also cover the two gestures it would miss:
+    // clicking Chat (which preserves every param below, both of these included)
+    // and clicking Desk while already on it (a no-op re-entry that still strips
+    // them). Either would leave the state and the URL contradicting — and since
+    // ds-jns both params RESOLVE to the desk, a survivor would bounce a reload
+    // of the chat URL straight back here.
+    if (deskRecordTraceId !== null) {
+      deskRecordTraceId = null;
+      u.searchParams.delete('reasoning');
+    }
+    if (previewPr !== null) {
+      previewPr = null;
+      u.searchParams.delete('preview_pr');
+    }
     if (v === DEFAULT_VIEW) u.searchParams.delete('view');
     else u.searchParams.set('view', v);
     // CHAT_INTENT_PARAMS is the shared list — see its comment in lib/deeplink.
@@ -330,7 +356,20 @@
     // View only: custody survives, so reopening the thread from the rail finds
     // its chip intact (same reasoning as newChat).
     clearHandoff();
+    // The deep link's landing belongs to the thread just dropped. Leaving it
+    // set would re-expand a message in whatever thread opens next that happens
+    // to carry the same trace — and, more simply, would keep `?reasoning=`
+    // looking live to canonicalizeRestoredEntry below.
+    autoExpandTraceId = null;
     if (previewPr !== null) previewPr = null; // preview_pr already dropped above
+  }
+
+  // The desk counterpart of teardownChatSurface: the two pieces of desk state
+  // that a URL can name. Not called from navigate() — that clears them inline
+  // because it must also delete their params from the SAME URL write.
+  function teardownDeskSurface(): void {
+    deskRecordTraceId = null;
+    previewPr = null;
   }
 
   // Browser Back/Forward. The restore is VIEW-ONLY by design: reopening deep
@@ -354,6 +393,13 @@
     // url. Exactly the state/url disagreement this handler exists to prevent.
     // On a target that never had chat state the call is a cheap no-op.
     if (target !== 'chat') teardownChatSurface();
+    // The desk's own deep state gets the same view-only treatment as chat's:
+    // a popped entry can name a record or a preview this session never opened
+    // (or has since closed), and re-resolving it here would fire fetches the
+    // operator did not ask for — boot is the only deep-resolver. Collapse
+    // FIRST so canonicalizeRestoredEntry below sees the truth and drops the
+    // params rather than measuring them against state we are about to clear.
+    teardownDeskSurface();
     // Entering chat re-reads the rail. Cancelling a run (above, or via newChat)
     // skips the post-turn loadConversations() at :976, so a conversation the
     // server created for that cancelled turn would be missing from the
@@ -381,8 +427,16 @@
     };
     const conv = u.searchParams.get('conversation');
     if (conv !== null && conv !== conversationId) drop('conversation');
+    // `?reasoning=` has three possible live counterparts since ds-jns, one per
+    // surface it can name: the desk's open record, the chat thread's
+    // auto-expanded message, and the legacy page-level replay. Comparing
+    // against `historicalTraceId` alone (the last of the three) would drop the
+    // param off a restored entry that describes either of the first two
+    // perfectly well.
     const reasoning = u.searchParams.get('reasoning');
-    if (reasoning !== null && reasoning !== historicalTraceId) drop('reasoning');
+    const liveReasoning =
+      view === 'desk' ? deskRecordTraceId : (autoExpandTraceId ?? historicalTraceId);
+    if (reasoning !== null && reasoning !== liveReasoning) drop('reasoning');
     // ask_pr is a one-shot composer prefill consumed at boot (onMount strips it);
     // a restored one has nothing left to hand over, so it is always stale.
     if (u.searchParams.get('ask_pr')) drop('ask_pr');
@@ -814,6 +868,70 @@
   const decisions = $derived($overview.decisions);
   onDestroy(() => overview.destroy());
 
+  // ---- desk decision record (ds-jns, design §3) ----
+  // THE single source of truth for "which decision is open on the desk". The
+  // ledger row and the pending hero both only ASK (onRecordChange); neither
+  // holds a copy, so at most one record can be open by construction rather
+  // than by two components agreeing to stay in step.
+  // Seeded from the URL: a `?reasoning=` that resolved to the DESK (i.e. one
+  // with no `?conversation=` framing it — lib/deeplink's hasChatIntent) is a
+  // request to open that decision's record here. Gated on `bootView` rather
+  // than on "no conversation" so the one URL shape that still means chat
+  // replay, `?view=chat&reasoning=`, is not quietly claimed by the desk.
+  let deskRecordTraceId = $state<string | null>(bootView === 'desk' ? bootReasoningTid : null);
+
+  // The chat-side half of the same fork. A `?reasoning=` FRAMED by a
+  // `?conversation=` names a MESSAGE in that thread, so the thread opens that
+  // turn's disclosure in place instead of stacking a page-level replay over
+  // the thread the message belongs to. Cleared on any departure from the chat
+  // surface (teardownChatSurface) so a later thread cannot inherit it.
+  let autoExpandTraceId = $state<string | null>(
+    bootConversationId !== null ? bootReasoningTid : null,
+  );
+
+  // The rail's "view reasoning" (ds-jns PR 2). It used to call openTrace, which
+  // swapped the chat column into replay mode; the decision now opens as a
+  // record on the desk that lists it. navigate() FIRST — it clears the record
+  // and drops `?reasoning=` as part of the view gesture, so setting the record
+  // afterwards is what survives.
+  function openDeskRecordFromRail(tid: string): void {
+    navigate('desk');
+    setDeskRecord(tid);
+  }
+
+  // The only writer, so the `?reasoning=` param and the state can never drift —
+  // same discipline as setConversationId. A shared/reloaded desk URL therefore
+  // always reopens exactly the record that was on screen.
+  function setDeskRecord(tid: string | null): void {
+    // A trace id the `?reasoning=` parser would reject can still reach here
+    // from a caller reading a raw `Decision.trace_id` (an open shape). Writing
+    // it would open a record whose URL evaporates on reload — the exact
+    // non-round-trip `isReplayableTraceId` exists to prevent — so it is
+    // refused at the one writer rather than guarded at each caller.
+    const next = tid !== null && isReplayableTraceId(tid) ? tid : null;
+    deskRecordTraceId = next;
+    syncReasoningParam(next);
+  }
+
+  // Is the open record among the decisions we actually hold? `ledgerRows`'
+  // keepTraceId guarantees a held decision always gets a row (cap or no cap),
+  // so "not here" is exactly "no ledger row will render it" — which is what
+  // makes the pinned card below safe from rendering a second copy of a row
+  // that "show more" would reveal.
+  // ...and will the strip actually RENDER it? Two conditions, because they are
+  // two questions. `keepTraceId` makes "in the snapshot" survive the row cap,
+  // but LedgerStrip also refuses an affordance to a row whose trace_id is not a
+  // well-formed one — so a decision with a malformed id is in the list and has
+  // no row to open. Asking only the first question left such a record rendering
+  // NOWHERE: not pinned (the list has it) and not inline (no row will open it).
+  // The same "unknown is not empty" trap as ds-mml, one surface over.
+  const deskRecordHasRow = $derived(
+    isReplayableTraceId(deskRecordTraceId) && hasDecisionForTrace(decisions, deskRecordTraceId),
+  );
+  const deskPinnedRecord = $derived(
+    deskRecordTraceId !== null && !deskRecordHasRow ? deskRecordTraceId : null,
+  );
+
   // The band's managed/drift numerals point at the estate, which since the
   // 2026-07-31 merge is a section of THIS page. Scroll to it rather than
   // navigating: no history entry, no URL change, nothing for Back to undo.
@@ -915,8 +1033,13 @@
     // it from view WITHOUT forgetting its nonce (that proposal may still be
     // open); the incoming thread's chip is rebuilt from its own detail below.
     clearHandoff();
-    // Leaving the replay for a live thread — clear the shareable param.
-    syncReasoningParam(null);
+    // `?reasoning=` on the chat surface describes whatever is still named here:
+    // since ds-jns that is the message a boot deep link asked the thread to
+    // auto-expand, and otherwise nothing (leaving a replay for a live thread).
+    // Clearing it unconditionally, as this did when a replay was the only
+    // meaning, deleted the param out of the very link that opened this thread.
+    if (id !== bootConversationId) autoExpandTraceId = null;
+    syncReasoningParam(autoExpandTraceId);
     setConversationId(id);
     // Clear the prior thread's crew NOW so a failed rehydrate can't leave a
     // stale lock paired with the new id (which would slip the crew-change guard
@@ -935,6 +1058,21 @@
         const detail = (await resp.json()) as ConversationDetail;
         if (myRun !== runSeq) return;
         conversationTurns = Array.isArray(detail.turns) ? detail.turns : [];
+        // A `?conversation=&reasoning=` pair can name a trace this thread does
+        // not contain — a hand-edited URL, or a link outliving the turn it
+        // pointed at. The thread then expands nothing while the address bar
+        // goes on claiming that message, so the param stops claiming it. Only
+        // reachable on a SUCCESSFUL open; a failed one keeps its existing
+        // replay fallback.
+        if (
+          autoExpandTraceId !== null &&
+          !conversationTurns.some(
+            (t) => t.trace_id === autoExpandTraceId && turnOwnsReasoning(t),
+          )
+        ) {
+          autoExpandTraceId = null;
+          syncReasoningParam(null);
+        }
         const wl = detail.workload as Workload | undefined;
         if (wl) {
           // `workload` is who holds the thread NOW, which a confirmed handoff
@@ -1992,7 +2130,9 @@
     conversationTurns = [];
     // Back to the crew that fields an unrouted question.
     composerWorkload = 'explore';
-    // No replay on screen anymore — clear the shareable param.
+    // No replay and no auto-expanded message on screen anymore — clear both the
+    // state and the shareable param that describes them.
+    autoExpandTraceId = null;
     syncReasoningParam(null);
   }
 
@@ -2011,11 +2151,16 @@
       history.replaceState(null, '', u);
       document.getElementById('chat-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    // Boot deep-links. A shared ?conversation=<id> resumes that thread; a shared
-    // ?reasoning=<id> replays that timeline; both together restore the thread first,
-    // then the replay on top (mirrors the on-screen state that produced the URL:
-    // openTrace leaves conversationId intact). AWAIT the conversation open before
-    // openTrace bumps runSeq, or its in-flight fetch would be cancelled by the guard.
+    // Boot deep-links. A shared ?conversation=<id> resumes that thread; a
+    // ?reasoning=<id> alongside it replays that timeline on top (mirroring the
+    // on-screen state that produced the URL: openTrace leaves conversationId
+    // intact). AWAIT the conversation open before openTrace bumps runSeq, or its
+    // in-flight fetch would be cancelled by the guard.
+    //
+    // A BARE ?reasoning= never reaches this branch: it resolves to the desk
+    // (lib/deeplink) and was already seeded into deskRecordTraceId at setup, so
+    // the record is on screen before this callback runs. `bootView` is what
+    // separates the two — the URL's own answer, taken before anything navigated.
     void (async () => {
       if (bootConversationId) {
         const bootRun = runSeq; // openConversation's ++runSeq will make this bootRun+1
@@ -2024,8 +2169,20 @@
         // thread), a newer run bumped runSeq past bootRun+1 — do NOT then force the
         // replay on top of what they navigated to. Bail out of the boot continuation.
         if (runSeq !== bootRun + 1) return;
+        // The thread opened: its own disclosure carries the reasoning
+        // (autoExpandTraceId, seeded at setup), so there is nothing to do here.
+        // A thread that FAILED to open (404, unreadable) has no turn to expand,
+        // and the link would otherwise land on an empty chat column with
+        // `?reasoning=` still in the address bar — so the page-level replay is
+        // the fallback. Deliberately not a bounce to the desk: this is chat-side
+        // error handling and the operator asked for a thread.
+        if (conversationId === null && bootReasoningTid) openTrace(bootReasoningTid);
+        return;
       }
-      if (bootReasoningTid) openTrace(bootReasoningTid);
+      // The legacy `?view=chat&reasoning=` with no thread around it: still the
+      // page-level replay. A BARE `?reasoning=` never reaches here — it resolves
+      // to the desk and was seeded into deskRecordTraceId at setup.
+      if (bootReasoningTid && bootView === 'chat') openTrace(bootReasoningTid);
     })();
     // Browser Back/Forward across the two views (ds-7ag.1). Registered here
     // rather than in the module body so it is torn down with the component.
@@ -2154,7 +2311,7 @@
       activeConversationId={conversationId}
       onOpen={openConversation}
     />
-    <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openTrace} />
+    <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openDeskRecordFromRail} />
   </div>
   {/if}
 
@@ -2169,10 +2326,12 @@
          marker moved with it. PauseBanner stays here (only shown when paused). -->
     <PauseBanner {pause} />
     <div class="tour-target">
+      <!-- No `previewPr` here: the estate preview belongs to the desk now
+           (ds-jns Task 2.4), and `?preview_pr=` routes there. Passing it would
+           put the same ghost overlay on two pages. -->
       <InfraDiagram
         {call}
         {appliedEpoch}
-        {previewPr}
         onExitPreview={exitPreview}
         onAdopt={handleAdopt}
         onInvestigate={handleAdopt}
@@ -2191,7 +2350,7 @@
       />
     </div>
     {#if !historicalActive && displayTurns.length > 0}
-      <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} />
+      <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} {autoExpandTraceId} />
     {/if}
     <!-- The confirmation sits at the END of the transcript, directly under the
          crew reply that proposed it — the thread runs oldest-first below the
@@ -2219,6 +2378,22 @@
        of its own. `refresh={overview.refresh}` lets the desk arm its own
        short, bounded re-check burst after sending the operator to an
        approval page (see ApprovalDesk's "fast convergence" comment). -->
+  <!-- A record whose decision is NOT in the snapshot we hold — a `?reasoning=`
+       link older than the listed rows, or one naming a chat turn's trace. It
+       is pinned above the desk because there is no row for it to open under.
+       The out-of-window NOTE waits for `settled`: while the first cycle is
+       outstanding the list is empty for a reason that has nothing to do with
+       this record's age, and "older than the records listed below" would be a
+       guess about a list we have not read yet (ds-eh6's rule). -->
+  {#if deskPinnedRecord !== null}
+    <div class="desk-pinned-record">
+      <DecisionRecord
+        traceId={deskPinnedRecord}
+        cache={traceCache}
+        note={$overview.settled ? 'outOfWindow' : null}
+      />
+    </div>
+  {/if}
   <ApprovalDesk
     graph={$overview.graph}
     decisions={$overview.decisions}
@@ -2228,7 +2403,9 @@
     lastError={$overview.lastError}
     refresh={overview.refresh}
     onShowEstate={scrollToEstate}
-    onOpenTrace={openTrace}
+    recordTraceId={deskRecordTraceId}
+    cache={traceCache}
+    onRecordChange={setDeskRecord}
   />
   <!-- The estate, directly beneath the decision area (2026-07-31 merge — one
        landing page: band → hero → ledger → estate). Data comes exclusively
@@ -2239,6 +2416,25 @@
        Its loading/degraded state is deliberately INDEPENDENT of the hero's:
        a pending approval can coexist with a failed graph fetch, and each area
        reports its own truth (ds-eh6). -->
+  <!-- `?preview_pr=N` — the ghost overlay the IaC approval page links to
+       (agent/templates/iac_approval.html). It renders on the DESK now, above
+       the estate it is a preview OF, instead of in the chat view where the
+       operator had to scroll past a composer to reach it. Mounted only when
+       there is a preview: the desk's own estate section below is the resting
+       state, and a second full diagram would just repeat it. -->
+  {#if previewPr !== null}
+    <div class="desk-preview">
+      <InfraDiagram
+        {call}
+        {appliedEpoch}
+        {previewPr}
+        onExitPreview={exitPreview}
+        onAdopt={handleAdopt}
+        onInvestigate={handleAdopt}
+        adoptDisabled={chatDisabled}
+      />
+    </div>
+  {/if}
   <EstateView
     graph={$overview.graph}
     decisions={$overview.decisions}
@@ -2505,6 +2701,26 @@
   .chat-area {
     padding: var(--ds-sp-5) var(--ds-sp-6) var(--ds-sp-8);
     max-width: var(--ds-page-max);
+  }
+  /* The out-of-window record, pinned above the desk. Width + centring copied
+     from ApprovalDesk/EstateView rather than left to shrink-to-fit: those two
+     share one column and pin it explicitly for exactly the reason ds-cmc
+     found — a card that happens to land on 780px by accident stops doing so
+     the moment its contents change. */
+  /* Same column as ApprovalDesk/EstateView — the preview sits between them. */
+  .desk-preview {
+    width: 100%;
+    max-width: 780px;
+    margin: var(--ds-sp-5) auto 0;
+  }
+  .desk-pinned-record {
+    width: 100%;
+    max-width: 780px;
+    margin: 0 auto var(--ds-sp-5);
+    padding: var(--ds-sp-5) var(--ds-sp-6);
+    background: var(--ds-bg);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius);
   }
   .chat-area > :global(*) {
     margin-bottom: var(--ds-sp-4);

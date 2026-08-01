@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ledgerRows } from '../../src/lib/ledger';
+import { ledgerRows, ledgerTotal, hasDecisionForTrace } from '../../src/lib/ledger';
 import type { Decision } from '../../src/lib/types';
 
 // ledgerRows() reduces the decisions list to the desk's "Recent record" strip
@@ -600,5 +600,207 @@ describe('ledgerRows', () => {
       expect(ledgerRows(decisions, NaN, { now: NOW, origin: ORIGIN })).toHaveLength(4);
       expect(ledgerRows(decisions, Infinity, { now: NOW, origin: ORIGIN })).toHaveLength(4);
     });
+  });
+});
+
+// ds-jns — the strip became an accordion, so two facts about the cap changed:
+// a row whose record is open must survive it, and the caller needs to know
+// whether a given trace HAS a row at all (App pins the ones that do not).
+describe('ledgerRows — keepTraceId', () => {
+  const older = (i: number) =>
+    decision({
+      decision_id: `k${i}`,
+      trace_id: `${i}`.repeat(32),
+      // Descending — k0 newest, k5 oldest.
+      created_at: new Date(Date.parse('2026-07-28T09:00:00Z') - i * 60_000).toISOString(),
+    });
+  const six = Array.from({ length: 6 }, (_, i) => older(i));
+
+  it('appends the open record’s row when the cap would have dropped it', () => {
+    const rows = ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: '5'.repeat(32) });
+    expect(rows.map((r) => r.decision.decision_id)).toEqual(['k0', 'k1', 'k2', 'k3', 'k5']);
+  });
+
+  it('does not duplicate a row the cap already included', () => {
+    const rows = ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: '1'.repeat(32) });
+    expect(rows).toHaveLength(4);
+    expect(rows.filter((r) => r.decision.decision_id === 'k1')).toHaveLength(1);
+  });
+
+  it('is a no-op for a trace no decision carries', () => {
+    const rows = ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: 'f'.repeat(32) });
+    expect(rows).toHaveLength(4);
+  });
+
+  it('ignores null/empty, so "nothing open" is not a lookup', () => {
+    expect(ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: null })).toHaveLength(4);
+    expect(ledgerRows(six, 4, { now: NOW, origin: ORIGIN, keepTraceId: '' })).toHaveLength(4);
+  });
+
+  it('still respects max <= 0 — a kept row does not resurrect an emptied strip', () => {
+    // The cap is the caller saying "render nothing"; keepTraceId is "do not let
+    // the cap hide THIS one". The first is not a rounding error for the second.
+    expect(
+      ledgerRows(six, 0, { now: NOW, origin: ORIGIN, keepTraceId: '5'.repeat(32) }),
+    ).toEqual([]);
+  });
+
+  it('never resurrects a row the FOLD removed — only one the CAP hid', () => {
+    // ds-jns × ds-b0k. The rescue searches the POST-fold rows. Searching
+    // pre-fold would undo the fold on demand: a `?reasoning=` link naming the
+    // dropped doc would re-append it, and the strip would draw one apply twice.
+    //
+    // Built on fold rule 2 (apply_attempt_id) deliberately, because that is the
+    // shape where the dropped doc owns a trace nothing else carries: the
+    // merge-only reconcile writes its `applied`+`merged` doc from a LATER
+    // request than the original `applied`+`failed`, so the two docs are one
+    // apply seen from two different traces. Rule 1's create-class pair is
+    // written by a single request and shares its trace, which would let
+    // `capped.some(...)` short-circuit before the rescue ran at all — a fixture
+    // that cannot reach the branch under test.
+    const ON_FOLDED_ONLY = 'e'.repeat(32);
+    const pair = [
+      decision({
+        decision_id: 'reconciled',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        apply_attempt_id: 'att-1',
+        trace_id: 'f'.repeat(32),
+        created_at: '2026-07-28T09:05:00Z',
+      }),
+      decision({
+        decision_id: 'original',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'failed',
+        apply_attempt_id: 'att-1',
+        trace_id: ON_FOLDED_ONLY,
+        created_at: '2026-07-28T09:00:00Z',
+      }),
+    ];
+    // Premise: the fold drops `original`, and its trace is on NO surviving row —
+    // so the rescue branch is genuinely entered rather than skipped.
+    const plain = ledgerRows(pair, 4, { now: NOW, origin: ORIGIN });
+    expect(plain.map((r) => r.decision.decision_id)).toEqual(['reconciled']);
+    expect(plain.some((r) => r.decision.trace_id === ON_FOLDED_ONLY)).toBe(false);
+
+    const rows = ledgerRows(pair, 4, { now: NOW, origin: ORIGIN, keepTraceId: ON_FOLDED_ONLY });
+    expect(rows.map((r) => r.decision.decision_id)).toEqual(['reconciled']);
+  });
+});
+
+describe('hasDecisionForTrace', () => {
+  const d = decision({ decision_id: 'h1', trace_id: 'a'.repeat(32) });
+
+  it('is true when a decision carries that trace', () => {
+    expect(hasDecisionForTrace([d], 'a'.repeat(32))).toBe(true);
+  });
+
+  it('is false for a trace nothing carries', () => {
+    expect(hasDecisionForTrace([d], 'b'.repeat(32))).toBe(false);
+  });
+
+  it('is false for a null/empty trace, and never throws on a ragged list', () => {
+    expect(hasDecisionForTrace([d], null)).toBe(false);
+    expect(hasDecisionForTrace([d], '')).toBe(false);
+    expect(hasDecisionForTrace([null, undefined, d], 'a'.repeat(32))).toBe(true);
+    expect(hasDecisionForTrace(null, 'a'.repeat(32))).toBe(false);
+  });
+
+  it('does NOT apply the deep-link shape gate — "is it here" is not "can it open"', () => {
+    // A doc holding a malformed trace_id is still a doc that is here. Conflating
+    // the two questions would pin a record above the desk for a row that is
+    // sitting right there in the list, inert.
+    const junk = decision({ decision_id: 'h2', trace_id: 'NOT-A-TRACE' });
+    expect(hasDecisionForTrace([junk], 'NOT-A-TRACE')).toBe(true);
+  });
+
+  it('answers about RENDERED rows, so a folded-away doc does not count as present', () => {
+    // ds-jns × ds-b0k. App asks this to decide whether a `?reasoning=` record
+    // needs pinning above the desk or already has a row to open under. Since
+    // the fold, "the snapshot holds it" and "the strip draws it" are different
+    // questions: answering the first would make App decline to pin a record
+    // whose only row was folded away, and the record would render NOWHERE.
+    //
+    // The trace here exists ONLY on the folded doc — the surviving sibling
+    // carries a different one — which is what makes the two answers differ.
+    const ONLY_ON_FOLDED = 'c'.repeat(32);
+    const pair = [
+      decision({
+        decision_id: 'newer',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'merged',
+        event_key: 'iac-apply-500-shared',
+        trace_id: 'd'.repeat(32),
+        created_at: '2026-07-28T09:00:07Z',
+      }),
+      decision({
+        decision_id: 'older',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'pending',
+        event_key: 'iac-apply-500-shared',
+        trace_id: ONLY_ON_FOLDED,
+        created_at: '2026-07-28T09:00:00Z',
+      }),
+    ];
+    // Premise: the fold really does drop the older doc. Without this the
+    // assertion below would pass for the wrong reason.
+    expect(ledgerRows(pair, 10, { now: NOW, origin: ORIGIN })).toHaveLength(1);
+    expect(hasDecisionForTrace(pair, ONLY_ON_FOLDED)).toBe(false);
+    expect(hasDecisionForTrace(pair, 'd'.repeat(32))).toBe(true);
+  });
+});
+
+describe('ledgerTotal', () => {
+  it('counts every non-null decision, uncapped', () => {
+    const many = Array.from({ length: 9 }, (_, i) => decision({ decision_id: `t${i}` }));
+    expect(ledgerTotal(many)).toBe(9);
+  });
+
+  it('counts what "show all" DRAWS, not what the snapshot holds', () => {
+    // ds-jns × ds-b0k. The strip labels its control "Show all {n}" and shows it
+    // while `total > rendered`. Counting raw docs after the fold landed would
+    // put a number on that button the expanded strip never reaches — and,
+    // because the comparison would stay true once expanded, leave the control
+    // on screen forever doing nothing when pressed.
+    const folding = [
+      decision({
+        decision_id: 'newer',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'merged',
+        event_key: 'iac-apply-600-shared',
+        created_at: '2026-07-28T09:00:07Z',
+      }),
+      decision({
+        decision_id: 'older',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'pending',
+        event_key: 'iac-apply-600-shared',
+        created_at: '2026-07-28T09:00:00Z',
+      }),
+      decision({ decision_id: 'unrelated', created_at: '2026-07-28T08:00:00Z' }),
+    ];
+    // Three docs in, two rows out — so the count must be 2, and must equal the
+    // uncapped row count exactly rather than merely being "smaller than 3".
+    expect(ledgerTotal(folding)).toBe(2);
+    expect(ledgerTotal(folding)).toBe(
+      ledgerRows(folding, Number.MAX_SAFE_INTEGER, { now: NOW, origin: ORIGIN }).length,
+    );
+  });
+
+  it('skips null elements exactly as ledgerRows does', () => {
+    const d = decision({ decision_id: 't1' });
+    expect(ledgerTotal([null, d, undefined])).toBe(1);
+  });
+
+  it('is 0 for a null/undefined/empty list', () => {
+    expect(ledgerTotal(null)).toBe(0);
+    expect(ledgerTotal(undefined)).toBe(0);
+    expect(ledgerTotal([])).toBe(0);
   });
 });

@@ -4,6 +4,12 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../src/App.svelte';
 import { VIEWS, CHAT_INTENT_PARAMS, viewFromSearch } from '../../src/lib/deeplink';
 
+// A REAL trace id (32 lowercase hex). `?reasoning=` is validated on the way
+// in, and since ds-jns the rail's open-trace writes it — so a readable token
+// like 'tid-iac-1' is a fixture the affordance under test would refuse.
+const TID_IAC = 'd'.repeat(32);
+
+
 function okJson(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -215,14 +221,20 @@ describe('App — tour wiring (smoke)', () => {
 });
 
 describe('App — open-trace puts the replay at the top and scrolls the window up', () => {
-  // The historical replay now renders at the TOP of the chat column, and
-  // openTrace scrolls the WINDOW to top (top:0) to reveal it — no jump down to
-  // the bottom. The button is in the left rail; the replay region is
-  // #historical-badge.
+  // The historical replay renders at the TOP of the chat column, and openTrace
+  // scrolls the WINDOW to top (top:0) to reveal it — no jump down to the
+  // bottom. The replay region is #historical-badge.
+  //
+  // ds-jns took away the button that used to open this: the rail now opens a
+  // desk record. The replay itself is still reachable, by the one URL shape
+  // that still means it (`?view=chat&reasoning=`), and PR 3 deletes both the
+  // mode and this suite. Driving it from that URL keeps the guarantee pinned
+  // for as long as the code it describes is still shipping.
+  const REPLAY_TID = 'e'.repeat(32);
   function stubFetchWithIacDecision(): void {
     const iac = {
       decision_id: 'd1',
-      trace_id: 'tid-iac-1',
+      trace_id: REPLAY_TID,
       action: 'iac_apply',
       pr_number: 47,
       apply_status: 'applied',
@@ -233,7 +245,7 @@ describe('App — open-trace puts the replay at the top and scrolls the window u
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.includes('/trace/'))
-          return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+          return okJson({ trace_id: REPLAY_TID, complete: true, events: [], decision: iac });
         if (url.includes('/decisions')) return okJson({ decisions: [iac] });
         if (url.includes('/infra/graph'))
           return okJson({
@@ -251,17 +263,14 @@ describe('App — open-trace puts the replay at the top and scrolls the window u
     );
   }
 
-  it('clicking open-trace scrolls the window to top (top:0, reduced-motion → auto) and renders the replay above the composer', async () => {
+  it('a ?view=chat&reasoning= replay scrolls the window to top (top:0, reduced-motion → auto) and renders above the composer', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     stubFetchWithIacDecision();
     const scrollSpy = vi.fn();
     window.scrollTo = scrollSpy as unknown as typeof window.scrollTo;
 
-    const { findByTestId, getByTestId } = render(App);
-
-    // Wait for the rail to load the decision, then open its trace.
-    const btn = await findByTestId('open-trace-button');
-    await fireEvent.click(btn);
+    history.replaceState(null, '', `/?view=chat&reasoning=${REPLAY_TID}`);
+    const { getByTestId } = render(App);
 
     // The banner enters the DOM (proves historicalActive flipped + tick flushed).
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
@@ -294,7 +303,7 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     const action = opts.action ?? 'iac_apply';
     const iac = {
       decision_id: 'd1',
-      trace_id: 'tid-iac-1',
+      trace_id: TID_IAC,
       action,
       pr_number: 47,
       head_sha: 'a'.repeat(40),
@@ -314,7 +323,7 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
           cached: false,
         });
       if (url.includes('/trace/'))
-        return okJson({ trace_id: 'tid-iac-1', complete: true, events: [], decision: iac });
+        return okJson({ trace_id: TID_IAC, complete: true, events: [], decision: iac });
       if (url.includes('/decisions')) return okJson({ decisions: [iac] });
       if (url.includes('/infra/graph'))
         return okJson({
@@ -364,17 +373,22 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/pr-body'))).toBe(false);
   });
 
-  it('drops a stale PR-body response when a newer open-trace supersedes it', async () => {
-    // loadPrBody is runSeq-guarded: a slow /pr-body from an earlier open-trace
-    // must NOT overwrite a newer trace's body. Open A (its /pr-body blocked),
-    // open B (resolves), then release A — the guard must drop A's late response.
+  // The same guarantee, re-anchored to the surface that now serves it. It used
+  // to rest on openTrace's runSeq guard dropping a stale /pr-body; the desk
+  // record rests on something stronger — the per-trace cache writes every
+  // pr-body under the trace id it was fetched for, so a slow response cannot
+  // reach a different record at all. Opening A then B is what proves it: A's
+  // body arrives after B is on screen and has nowhere to land but A's entry.
+  it('a slow PR body from an earlier record never lands on the one now open', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
+    const TID_A = 'a'.repeat(32);
+    const TID_B = 'c'.repeat(32);
     const decA = {
-      decision_id: 'dA', trace_id: 'tid-a', action: 'iac_apply',
+      decision_id: 'dA', trace_id: TID_A, action: 'iac_apply', created_at: '2026-07-28T10:00:00Z',
       pr_number: 1, head_sha: 'a'.repeat(40), apply_status: 'applied', approver: 'op',
     };
     const decB = {
-      decision_id: 'dB', trace_id: 'tid-b', action: 'iac_apply',
+      decision_id: 'dB', trace_id: TID_B, action: 'iac_apply', created_at: '2026-07-28T09:00:00Z',
       pr_number: 2, head_sha: 'b'.repeat(40), apply_status: 'applied', approver: 'op',
     };
     let releaseA: () => void = () => {};
@@ -384,14 +398,14 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.includes('/pr-body')) {
-          if (url.includes('tid-a')) {
+          if (url.includes(TID_A)) {
             await aGate; // A's body is held until we release it
             return okJson({ pr_number: 1, head_sha: 'a'.repeat(40), body: 'A-BODY', body_truncated: false, cached: false });
           }
           return okJson({ pr_number: 2, head_sha: 'b'.repeat(40), body: 'B-BODY', body_truncated: false, cached: false });
         }
-        if (url.includes('/trace/tid-a')) return okJson({ trace_id: 'tid-a', complete: true, events: [], decision: decA });
-        if (url.includes('/trace/tid-b')) return okJson({ trace_id: 'tid-b', complete: true, events: [], decision: decB });
+        if (url.includes(`/trace/${TID_A}`)) return okJson({ trace_id: TID_A, complete: true, events: [], decision: decA });
+        if (url.includes(`/trace/${TID_B}`)) return okJson({ trace_id: TID_B, complete: true, events: [], decision: decB });
         if (url.includes('/decisions')) return okJson({ decisions: [decA, decB] });
         if (url.includes('/infra/graph'))
           return okJson({ generated_at: null, project: 'demo-proj', caveat: '', degraded: false, degraded_reason: null, totals: { resources: 1, managed: 0, drift: 1 }, groups: [], edges: [] });
@@ -399,19 +413,22 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
       }),
     );
 
+    history.replaceState(null, '', '/?view=desk');
     const { findAllByTestId, findByTestId } = render(App);
-    const buttons = await findAllByTestId('open-trace-button');
-    await fireEvent.click(buttons[0]); // open A (newest first) — loadPrBody A blocks on aGate
-    await fireEvent.click(buttons[1]); // open B — supersedes; loadPrBody B resolves
+    const rows = await findAllByTestId('ledger-strip-row');
+    await fireEvent.click(rows[0]); // A (newest first) — its /pr-body blocks on aGate
+    await fireEvent.click((await findAllByTestId('ledger-strip-row'))[1]); // B — resolves
 
     const panel = await findByTestId('pr-body-disclosure');
-    expect(panel.querySelector('[data-testid="pr-body-md"]')?.textContent).toContain('B-BODY');
+    await waitFor(() =>
+      expect(panel.querySelector('[data-testid="pr-body-md"]')?.textContent).toContain('B-BODY'),
+    );
 
     releaseA(); // A's stale response resolves now
     await Promise.resolve();
     await Promise.resolve();
-    // The runSeq guard dropped A — B's body must remain, A's must never appear.
-    const md = panel.querySelector('[data-testid="pr-body-md"]');
+    // Keyed by trace id — B's body remains, A's never appears on B's record.
+    const md = (await findByTestId('pr-body-disclosure')).querySelector('[data-testid="pr-body-md"]');
     expect(md?.textContent).toContain('B-BODY');
     expect(md?.textContent).not.toContain('A-BODY');
   });
@@ -780,14 +797,30 @@ describe('App — view routing (Task 2.2)', () => {
     expect(getByTestId('nav-chat')).toBeTruthy();
   });
 
-  it('a chat intent (?reasoning=) wins over an explicit ?view=desk — chat renders, not the desk placeholder', async () => {
+  // ds-jns reversed this one. A BARE ?reasoning= used to force chat and replay
+  // the trace there; it now names a decision RECORD, which the desk renders.
+  // The explicit ?view=desk it used to lose to is now agreeing with it.
+  it('a bare ?reasoning= resolves to the desk and opens the record there', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     stubFetchWithTrace();
-    history.replaceState(null, '', `/?view=desk&reasoning=${TID}`);
+    history.replaceState(null, '', `/?reasoning=${TID}`);
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+    // Not merely routed — the record is actually on screen.
+    await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
+    expect(queryByTestId('historical-banner')).toBeNull();
+  });
+
+  // The one ?reasoning= shape that still means the chat replay: the links this
+  // app wrote before the fork carry ?view=chat, and PR 3 removes the writer.
+  it('?view=chat&reasoning= still resolves to the chat replay', async () => {
+    window.sessionStorage.setItem('driftscribe_token', 'tok');
+    stubFetchWithTrace();
+    history.replaceState(null, '', `/?view=chat&reasoning=${TID}`);
     const { queryByTestId } = render(App);
     expect(document.getElementById('chat-form')).toBeTruthy();
     expect(queryByTestId('approval-desk')).toBeNull();
-    // The boot deep-link replay actually opened, proving the chat view is truly live.
     await waitFor(() => expect(queryByTestId('historical-banner')).toBeTruthy());
   });
 
@@ -867,14 +900,13 @@ describe('App — view routing (Task 2.2)', () => {
     }
   });
 
-  // Superseded by the Task 3.5 "rails come off the desk" decision: the
-  // decisions rail (and its open-trace-button) is no longer rendered on the
-  // desk view at all (see the "App — rails come off the desk" suite below),
-  // so "open a trace from the rail while on the desk" is no longer a
-  // reachable interaction. This keeps the still-valid part of the old test —
-  // switching to chat surfaces the rail and opening a trace from it works —
-  // with the desk→chat navigation step made explicit first.
-  it('the rail (and its open-trace affordance) only exists on chat; navigating there and opening a trace works', async () => {
+  // Twice superseded, and worth reading as a pair. Task 3.5 took the rail off
+  // the desk, so "open a trace from the rail while on the desk" stopped being
+  // reachable. ds-jns then re-pointed what the rail's button DOES: it opens the
+  // decision's record on the desk instead of a replay in the chat column — so
+  // the round trip below (desk → chat for the rail → desk for the record) is
+  // the affordance's whole current shape.
+  it('the rail only exists on chat, and its view-reasoning brings the record back to the desk', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     const iac = {
       decision_id: 'd1',
@@ -914,9 +946,11 @@ describe('App — view routing (Task 2.2)', () => {
     const btn = await findByTestId('open-trace-button');
     await fireEvent.click(btn);
 
-    expect(queryByTestId('approval-desk')).toBeNull();
-    expect(document.getElementById('chat-form')).toBeTruthy();
-    await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
+    await waitFor(() => expect(getByTestId('approval-desk')).toBeTruthy());
+    expect(document.getElementById('chat-form')).toBeNull();
+    expect(queryByTestId('historical-banner')).toBeNull();
+    await findByTestId('decision-record');
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBe(TID);
   });
 });
 
@@ -936,14 +970,13 @@ describe('App — rails come off the desk (Task 3.5)', () => {
     expect(desk.getByTestId('estate-view')).toBeTruthy();
   });
 
-  // Codex finding baked into the plan: the guarantee the railless desk rests
-  // on is that NO chat-intent query param can ever strand a visitor on a
-  // railless desk — deeplink.ts's hasChatIntent() already forces view==='chat'
-  // for ?reasoning=/?conversation=/?ask_pr=/?preview_pr=, overriding even an
-  // explicit ?view=desk. This test pins that a shared ?reasoning= link both
-  // resolves to chat AND renders the rails — so a future refactor of either
-  // the view resolver or the rails' own {#if} can't quietly break it apart.
-  it('a shared ?reasoning=<hex32> link resolves to chat, with the rails rendered (never a railless stranding)', async () => {
+  // Codex finding baked into the plan: no query param may strand a visitor on a
+  // page that cannot serve the link they followed. That guarantee outlived its
+  // original mechanism. It used to be "every intent param forces chat, where
+  // the rails are"; since ds-jns two of them resolve to the DESK on purpose,
+  // and what has to hold there is that the desk actually renders the thing the
+  // param names. The three tests below cover both halves of the new matrix.
+  it('a ?view=chat&reasoning= link resolves to chat, with the rails rendered (never a railless stranding)', async () => {
     window.sessionStorage.setItem('driftscribe_token', 'tok');
     vi.stubGlobal(
       'fetch',
@@ -966,8 +999,7 @@ describe('App — rails come off the desk (Task 3.5)', () => {
         return okJson({});
       }),
     );
-    // Even an explicit ?view=desk must lose to the reasoning intent.
-    history.replaceState(null, '', `/?view=desk&reasoning=${TID}`);
+    history.replaceState(null, '', `/?view=chat&reasoning=${TID}`);
     const { getByTestId, queryByTestId } = render(App);
     expect(document.getElementById('chat-form')).toBeTruthy();
     expect(queryByTestId('approval-desk')).toBeNull();
@@ -975,27 +1007,45 @@ describe('App — rails come off the desk (Task 3.5)', () => {
     await waitFor(() => expect(getByTestId('historical-banner')).toBeTruthy());
   });
 
-  // …and the two intents that have NO independent redirect.
+  // …and the intent that has NO independent redirect.
   //
   // The test above passes even if hasChatIntent is removed from the view
-  // resolver entirely: `?reasoning=` also triggers App's onMount openTrace(),
-  // and openTrace() itself calls navigate('chat'). `?conversation=` is
-  // likewise double-protected by openConversation(). `?ask_pr=` and
-  // `?preview_pr=` are NOT — they have no self-redirect anywhere in App, so
+  // resolver entirely: `?view=chat&reasoning=` also triggers App's onMount
+  // openTrace(), and openTrace() itself calls navigate('chat').
+  // `?conversation=` is likewise double-protected by openConversation().
+  // `?ask_pr=` is NOT — it has no self-redirect anywhere in App, so
   // hasChatIntent is the only thing standing between a visitor following an
-  // Adopt-flow or approval-page link and a railless desk with no composer to
-  // act on. These two params are exactly where the railless-desk guarantee is
-  // load-bearing, so they get their own App-level pin rather than resting on
-  // deeplink.ts's unit tests alone.
-  for (const param of ['ask_pr', 'preview_pr'] as const) {
-    it(`a ?${param}= link resolves to chat with the rails rendered, even against an explicit ?view=desk`, () => {
-      history.replaceState(null, '', `/?view=desk&${param}=168`);
-      const { getByTestId, queryByTestId } = render(App);
-      expect(queryByTestId('approval-desk')).toBeNull();
-      expect(document.getElementById('chat-form')).toBeTruthy();
-      expect(getByTestId('rails')).toBeTruthy();
-    });
-  }
+  // Adopt-flow link and a railless desk with no composer to act on. It is
+  // exactly where the railless-desk guarantee is load-bearing, so it gets its
+  // own App-level pin rather than resting on deeplink.ts's unit tests alone.
+  it('a ?ask_pr= link resolves to chat with the rails rendered, even against an explicit ?view=desk', () => {
+    history.replaceState(null, '', '/?view=desk&ask_pr=168');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(queryByTestId('approval-desk')).toBeNull();
+    expect(document.getElementById('chat-form')).toBeTruthy();
+    expect(getByTestId('rails')).toBeTruthy();
+  });
+
+  // preview_pr left that set: the estate it previews lives on the desk, so the
+  // desk is where it belongs (ds-jns Task 2.4). The railless landing is fine
+  // BECAUSE the preview renders there — which is what this asserts, rather
+  // than the destination alone.
+  it('a ?preview_pr= link resolves to the desk and renders the preview there', async () => {
+    history.replaceState(null, '', '/?preview_pr=168');
+    const { getByTestId, queryByTestId } = render(App);
+    expect(getByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+    await waitFor(() => expect(getByTestId('preview-banner')).toBeTruthy());
+    // The estate section it previews is still below it.
+    expect(queryByTestId('estate-view')).toBeTruthy();
+  });
+
+  it('renders no preview panel on a desk with no ?preview_pr=', () => {
+    history.replaceState(null, '', '/?view=desk');
+    const { queryByTestId } = render(App);
+    expect(queryByTestId('preview-banner')).toBeNull();
+    expect(queryByTestId('infra-panel')).toBeNull();
+  });
 });
 
 describe('App — estate section (Task 4.1)', () => {
@@ -1210,5 +1260,250 @@ describe('App — estate section (Task 4.1)', () => {
     await fireEvent.click(getByTestId('tour-next')); // controls → adopt (navigates to 'desk')
     const row = await findByTestId('estate-row');
     await waitFor(() => expect(row.classList.contains('tour-spotlight')).toBe(true));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-jns — decisions open as RECORDS on the desk that lists them, instead of
+// bouncing the operator into the chat view's replay mode.
+//
+// App owns the one open record (`deskRecordTraceId`); the ledger row and the
+// pending hero only ask. These tests pin the two things that ownership buys:
+// the `?reasoning=` param never disagrees with what is on screen, and a record
+// whose decision is not in the snapshot is pinned above the desk instead of
+// silently vanishing.
+// ---------------------------------------------------------------------------
+describe('App — desk decision records (ds-jns)', () => {
+  const TID = 'c'.repeat(32);
+
+  const GRAPH = {
+    generated_at: null,
+    project: 'demo-proj',
+    caveat: '',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 1, managed: 0, drift: 1 },
+    groups: [],
+    edges: [],
+  };
+
+  function stubDesk(decisions: unknown[], opts: { hangDecisions?: boolean } = {}) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: TID, complete: true, events: [], decision: null });
+        if (url.includes('/decisions')) {
+          // A cycle that never completes leaves `settled` false — the state in
+          // which the desk must not yet call anything out of window.
+          if (opts.hangDecisions) return new Promise<Response>(() => {});
+          return okJson({ decisions });
+        }
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+  }
+
+  const rowDecision = (trace_id: string) => ({
+    decision_id: 'dr-1',
+    trace_id,
+    action: 'rollback',
+    created_at: '2026-07-28T09:00:00Z',
+  });
+
+  it('pins the record above the desk when no decision in the snapshot carries it', async () => {
+    stubDesk([]);
+    history.replaceState(null, '', `/?reasoning=${TID}`);
+    const { getByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
+    await waitFor(() =>
+      expect(getByTestId('decision-record-outofwindow').textContent).toContain(
+        'not in the recent decisions',
+      ),
+    );
+    // Pinned ABOVE the desk, not inside the ledger it is not part of.
+    const record = getByTestId('decision-record');
+    const desk = getByTestId('approval-desk');
+    expect(desk.contains(record)).toBe(false);
+    expect(record.compareDocumentPosition(desk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('withholds the out-of-window verdict while the list is still loading', async () => {
+    // "Older than the records listed below" is a claim about a list. Until the
+    // first cycle settles there is no list — only an empty placeholder — and
+    // the claim would be a guess (the ds-eh6 rule, one surface over).
+    stubDesk([], { hangDecisions: true });
+    history.replaceState(null, '', `/?reasoning=${TID}`);
+    const { getByTestId, queryByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
+    expect(queryByTestId('decision-record-outofwindow')).toBeNull();
+  });
+
+  it('expands the ledger row instead of pinning, when the snapshot does carry it', async () => {
+    stubDesk([rowDecision(TID)]);
+    history.replaceState(null, '', `/?reasoning=${TID}`);
+    const { getByTestId, getAllByTestId } = render(App);
+    // The record shows immediately, pinned, because the list has not arrived
+    // yet — a deep link should not wait on a fetch to show what it names. Wait
+    // for the LIST, then assert where the record ended up; asserting on the
+    // record alone would pass against that first pinned frame.
+    await waitFor(() => expect(getAllByTestId('ledger-strip-row')).toHaveLength(1));
+    await waitFor(() => expect(getAllByTestId('decision-record')).toHaveLength(1));
+    const record = getAllByTestId('decision-record')[0];
+    expect(getByTestId('ledger-strip').contains(record)).toBe(true);
+    expect(getAllByTestId('ledger-strip-row')[0].getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('keeps ?reasoning= in step with the row the operator opens and closes', async () => {
+    stubDesk([rowDecision(TID)]);
+    history.replaceState(null, '', '/?view=desk');
+    const { getAllByTestId, queryByTestId } = render(App);
+    await waitFor(() => expect(getAllByTestId('ledger-strip-row')).toHaveLength(1));
+    const row = getAllByTestId('ledger-strip-row')[0];
+
+    await fireEvent.click(row);
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBe(TID);
+    await waitFor(() => expect(queryByTestId('decision-record')).toBeTruthy());
+
+    await fireEvent.click(getAllByTestId('ledger-strip-row')[0]);
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
+    await waitFor(() => expect(queryByTestId('decision-record')).toBeNull());
+  });
+
+  it('the pending hero opens the record here, without leaving the desk', async () => {
+    stubDesk([
+      {
+        decision_id: 'dr-2',
+        trace_id: TID,
+        action: 'rollback',
+        created_at: '2026-07-28T09:00:00Z',
+        approval: { approval_url: '/approvals/dr-2', status: 'pending' },
+      },
+    ]);
+    history.replaceState(null, '', '/?view=desk');
+    const { getByTestId, queryByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('approval-desk-why')).toBeTruthy());
+    await fireEvent.click(getByTestId('approval-desk-why'));
+    await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
+    expect(queryByTestId('approval-desk')).toBeTruthy();
+    expect(document.getElementById('chat-form')).toBeNull();
+  });
+
+  it('a view gesture drops the open record AND its param', async () => {
+    stubDesk([rowDecision(TID)]);
+    history.replaceState(null, '', '/?view=desk');
+    const { getAllByTestId, getByTestId, queryByTestId } = render(App);
+    await waitFor(() => expect(getAllByTestId('ledger-strip-row')).toHaveLength(1));
+    await fireEvent.click(getAllByTestId('ledger-strip-row')[0]);
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBe(TID);
+
+    await fireEvent.click(getByTestId('nav-chat'));
+    // Both, or the state and the URL disagree — and since a bare ?reasoning=
+    // resolves to the desk, a survivor would bounce a reload back off chat.
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
+    await fireEvent.click(getByTestId('nav-desk'));
+    expect(queryByTestId('decision-record')).toBeNull();
+  });
+
+  it('a view gesture drops the estate preview AND its param', async () => {
+    stubDesk([]);
+    history.replaceState(null, '', '/?preview_pr=168');
+    const { getByTestId, queryByTestId } = render(App);
+    await waitFor(() => expect(getByTestId('preview-banner')).toBeTruthy());
+    await fireEvent.click(getByTestId('nav-chat'));
+    expect(new URLSearchParams(window.location.search).get('preview_pr')).toBeNull();
+    expect(queryByTestId('preview-banner')).toBeNull();
+    await fireEvent.click(getByTestId('nav-desk'));
+    expect(queryByTestId('preview-banner')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-jns — the popstate transition table for the desk's own deep state.
+//
+// The policy is unchanged and deliberate: a restore is VIEW-ONLY. Back never
+// re-resolves a deep resource — that would fire fetches the operator did not
+// ask for and race whatever they do next — so the entry is canonicalized
+// instead, until the URL stops claiming content that is not on screen. What
+// ds-jns adds is that the desk now HAS deep state to tear down.
+// ---------------------------------------------------------------------------
+describe('App — popstate and the desk record (ds-jns)', () => {
+  const TID = 'c'.repeat(32);
+  const GRAPH_BODY = {
+    generated_at: null,
+    project: 'demo-proj',
+    caveat: '',
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 1, managed: 0, drift: 1 },
+    groups: [],
+    edges: [],
+  };
+
+  function popTo(search: string): void {
+    history.replaceState(null, '', search);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
+
+  function stub(decisions: unknown[] = []) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/trace/'))
+          return okJson({ trace_id: TID, complete: true, events: [], decision: null });
+        if (url.includes('/decisions')) return okJson({ decisions });
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH_BODY);
+        return okJson({});
+      }),
+    );
+  }
+
+  const row = {
+    decision_id: 'dr-1',
+    trace_id: TID,
+    action: 'rollback',
+    created_at: '2026-07-28T09:00:00Z',
+  };
+
+  it('collapses an open record on a pop and stops the url claiming it', async () => {
+    stub([row]);
+    history.replaceState(null, '', '/?view=desk');
+    const { findAllByTestId, queryByTestId } = render(App);
+    await fireEvent.click((await findAllByTestId('ledger-strip-row'))[0]);
+    await waitFor(() => expect(queryByTestId('decision-record')).toBeTruthy());
+
+    // Back to an entry that still names the record: view-only restore, so the
+    // record closes and the param goes with it.
+    popTo(`/?view=desk&reasoning=${TID}`);
+    await waitFor(() => expect(queryByTestId('decision-record')).toBeNull());
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
+  });
+
+  it('clears an open preview on a pop and stops the url claiming it', async () => {
+    stub();
+    history.replaceState(null, '', '/?preview_pr=168');
+    const { findByTestId, queryByTestId } = render(App);
+    await findByTestId('preview-banner');
+
+    popTo('/?preview_pr=168');
+    await waitFor(() => expect(queryByTestId('preview-banner')).toBeNull());
+    expect(new URLSearchParams(window.location.search).get('preview_pr')).toBeNull();
+  });
+
+  it('does not re-open a record named only by the popped entry', async () => {
+    // The other direction of the same rule: arriving at an entry that names a
+    // record this session never opened must not resolve it.
+    stub([row]);
+    history.replaceState(null, '', '/?view=chat');
+    const { queryByTestId } = render(App);
+
+    popTo(`/?reasoning=${TID}`);
+    await waitFor(() => expect(queryByTestId('approval-desk')).toBeTruthy());
+    expect(queryByTestId('decision-record')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
   });
 });

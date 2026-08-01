@@ -277,6 +277,13 @@ const DECISION_ACTION_KEYS: Record<string, MessageKey> = {
   no_op: 'shared.decision.noOp',
   rollback: 'shared.decision.rollback',
   iac_apply: 'shared.decision.iacApply',
+  // Absorbed from lib/decision.ts's own copy of this table (ds-jns). That
+  // second table gave `iac_apply` a DIFFERENT operator-facing name — "Infra
+  // apply" against this one's "Infrastructure change" — which was survivable
+  // while the two rendered on different surfaces and stopped being so the
+  // moment the desk record put both on one card, forty pixels apart. One enum,
+  // one name; `recheck` is the entry this table was missing.
+  recheck: 'shared.decision.recheck',
 };
 export function decisionActionLabel(action: string | null | undefined, t: TranslateFn): string {
   if (typeof action !== 'string' || action === '') return '';

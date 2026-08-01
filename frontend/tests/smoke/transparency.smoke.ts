@@ -426,7 +426,12 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
   });
 
-  test('historical iac_apply: "historical" pill (not streaming) + decision summary + empty-timeline note', async ({ page }) => {
+  // ds-jns re-pointed the rail's view-reasoning: an iac_apply opens as a RECORD
+  // on the desk that lists it, not as a replay in the chat column. Everything
+  // this test was about survives the move — the curated decision fields, and
+  // the note explaining that an empty timeline here is expected rather than a
+  // failure to load — so the assertions follow the content to its new home.
+  test('historical iac_apply: desk record with the decision summary + "recorded directly" note', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
     await page.goto(CHAT_URL);
@@ -438,33 +443,27 @@ test.describe('transparency UI (mock smoke)', () => {
       .locator(`[data-testid="${TESTIDS.openTraceButton}"]`)
       .click();
 
-    await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeVisible();
-
-    // (openTrace renders the replay at the top of the chat column and scrolls the
-    // window to top — a layout/viewport effect this short mock fixture can't
-    // meaningfully assert. The scroll call + above-the-composer DOM order are
-    // locked in App.test.ts and the real-viewport behavior is confirmed by a
-    // live Playwright check.)
-
-    // The status pill reads "historical" — NOT the regressed "streaming".
-    const pill = page.locator('#status-pill');
-    await expect(pill).toHaveText(/historical/);
-    await expect(pill).not.toHaveText(/streaming/);
+    // The desk, with the record open on it. No replay, no status pill: a record
+    // is not a run, so there is no lifecycle to label.
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
+    const record = page.getByTestId('decision-record');
+    await expect(record).toBeVisible();
+    await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toHaveCount(0);
 
     // The DecisionSummary card renders the curated, safe fields.
-    const summary = page.locator('[data-testid="decision-summary"]');
+    const summary = record.locator('[data-testid="decision-summary"]');
     await expect(summary).toBeVisible();
-    await expect(summary).toContainText('Infra apply');
+    // One name for the action, shared with the record header above it (ds-jns).
+    await expect(summary).toContainText('Infrastructure change');
     await expect(summary).toContainText('#47');
     await expect(summary).toContainText('op@example.com');
 
-    // The empty-timeline note explains why there's no reasoning stream — and the
-    // three redundant empty group accordions are suppressed in this state.
-    await expect(page.locator('[data-testid="timeline-empty"]')).toBeVisible();
-    await expect(page.locator('#group-coordinator')).toHaveCount(0);
+    // The empty-trace note still explains WHY there is no reasoning: an
+    // iac_apply is recorded directly by the approval handler.
+    await expect(record.getByTestId('trace-detail-empty')).toContainText('recorded directly');
 
-    // The hero stays hidden — this decision carries no prose.
-    await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();
+    // No prose section — this decision carries no rationale or rendered body.
+    await expect(record.getByTestId('decision-record-prose')).toHaveCount(0);
   });
 
   test('infrastructure panel: glanceable drift badge, then expand renders the resource cards', async ({ page }) => {
@@ -583,19 +582,74 @@ test.describe('transparency UI (mock smoke)', () => {
     expect(JSON.parse((await chatReq).postData() ?? '{}').workload).toBe('provision');
   });
 
-  test('open-trace enters historical mode; new chat exits', async ({ page }) => {
+  // The old shape of this test — open-trace dims the composer, new chat exits —
+  // described a MODE the chat column entered. ds-jns replaced the mode with a
+  // destination: the record opens on the desk, and the way back is the nav. No
+  // disabled composer, because the composer is not on that page at all.
+  test('the rail’s view-reasoning opens the record on the desk; the nav comes back', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
     await page.goto(CHAT_URL);
 
     await page.locator(`[data-testid="${TESTIDS.openTraceButton}"]`).first().click();
-    await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeVisible();
-    // chat form is dimmed/disabled in historical mode
-    await expect(page.locator('#chat-form')).toHaveClass(/historical/);
-    await expect(page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`)).toBeDisabled();
+    await expect(page.getByTestId('decision-record')).toBeVisible();
+    await expect(page.locator('#chat-form')).toHaveCount(0);
+    await expect(page).toHaveURL(/reasoning=/);
 
-    await page.locator('#new-chat-btn').click();
-    await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toBeHidden();
+    await page.getByTestId('nav-chat').click();
+    await expect(page.locator('#chat-form')).toBeVisible();
+    await expect(page.getByTestId('decision-record')).toHaveCount(0);
+    await expect(page).not.toHaveURL(/reasoning=/);
+  });
+
+  // ds-akf: jsdom cannot see the cascade, so "the row is a BUTTON now" is the
+  // only thing the unit test can prove — not that it still LOOKS like a row.
+  // Turning a grid <div> into a <button> puts UA button styles in play, and a
+  // ledger row that lost its four-column grid would be a real regression that
+  // every green unit test would miss. Pinned on computed style, in a browser.
+  test('an openable ledger row is a button that still lays out as a row', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/?view=desk');
+
+    const row = page.getByTestId('ledger-strip-row').first();
+    await expect(row).toBeVisible();
+    await expect(row).toHaveJSProperty('tagName', 'BUTTON');
+
+    const box = await row.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        display: cs.display,
+        tracks: cs.gridTemplateColumns.split(' ').filter(Boolean).length,
+        align: cs.alignItems,
+        textAlign: cs.textAlign,
+        width: el.getBoundingClientRect().width,
+        // The parent's CONTENT width, not its border box: `.ledger-strip__rows`
+        // carries 40px of horizontal padding, so a border-box comparison would
+        // fail against a row that is filling its container correctly.
+        parentWidth: (() => {
+          const parent = el.parentElement as HTMLElement;
+          const pcs = getComputedStyle(parent);
+          return (
+            parent.clientWidth - parseFloat(pcs.paddingLeft) - parseFloat(pcs.paddingRight)
+          );
+        })(),
+      };
+    });
+    expect(box.display).toBe('grid');
+    expect(box.tracks).toBe(4); // time · glyph · title · stamp
+    expect(box.align).toBe('baseline');
+    expect(box.textAlign).toBe('left'); // UA buttons center their text
+    expect(box.width).toBeCloseTo(box.parentWidth, 0);
+
+    // And opening it puts the record inside the strip, under that row.
+    await row.click();
+    const record = page.getByTestId('decision-record');
+    await expect(record).toBeVisible();
+    const inStrip = await record.evaluate(
+      (el) => el.closest('[data-testid="ledger-strip"]') !== null,
+    );
+    expect(inStrip).toBe(true);
   });
 
   test('drift decision: env-diff card shows non-secret values, redacts secret-named + credentialed-URL values, leaks no raw secret', async ({ page }) => {

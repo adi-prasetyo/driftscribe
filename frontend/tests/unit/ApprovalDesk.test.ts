@@ -1501,6 +1501,12 @@ describe('ApprovalDesk — unknown state (ds-eh6)', () => {
 
 // ---------------------------------------------------------------------------
 // ds-wd2.15 — the pending card's "view the reasoning" link.
+//
+// ds-jns re-pointed it: it used to call onOpenTrace, which switched to the chat
+// view and replayed the trace there. It now calls onRecordChange, and the
+// record opens on this same page in the ledger row the hero's decision already
+// has. The gating rules below are unchanged — the handler being optional, the
+// link never rendering inert — only the destination moved.
 // ---------------------------------------------------------------------------
 describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
   const TRACE = 'b'.repeat(32);
@@ -1523,7 +1529,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         decisions: [rollbackDecision({ trace_id: TRACE })],
         pendingApprovals: [],
         onShowEstate: vi.fn(),
-        onOpenTrace: vi.fn(),
+        onRecordChange: vi.fn(),
       },
     });
     expect(getByTestId('approval-desk-why').textContent).toContain('view the reasoning');
@@ -1539,25 +1545,25 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         decisions: [iacDecision({ pr_number: 7, trace_id: TRACE })],
         pendingApprovals: [pendingIac({ pr_number: 7 })],
         onShowEstate: vi.fn(),
-        onOpenTrace: vi.fn(),
+        onRecordChange: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-why')).toBeNull();
   });
 
-  it('clicking it opens that trace', () => {
-    const onOpenTrace = vi.fn();
+  it('clicking it asks App to open that record — it does not leave the desk', () => {
+    const onRecordChange = vi.fn();
     const { getByTestId } = render(ApprovalDesk, {
       props: {
         graph: GRAPH,
         decisions: [rollbackDecision({ trace_id: TRACE })],
         pendingApprovals: [],
         onShowEstate: vi.fn(),
-        onOpenTrace,
+        onRecordChange,
       },
     });
     fireEvent.click(getByTestId('approval-desk-why'));
-    expect(onOpenTrace).toHaveBeenCalledWith(TRACE);
+    expect(onRecordChange).toHaveBeenCalledWith(TRACE);
   });
 
   it('is absent when the proposal carries no usable trace — never inert', () => {
@@ -1567,7 +1573,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         decisions: [],
         pendingApprovals: [pendingIac()],
         onShowEstate: vi.fn(),
-        onOpenTrace: vi.fn(),
+        onRecordChange: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-why')).toBeNull();
@@ -1592,7 +1598,7 @@ describe('ApprovalDesk — view the reasoning (ds-wd2.15)', () => {
         decisions: [],
         pendingApprovals: [],
         onShowEstate: vi.fn(),
-        onOpenTrace: vi.fn(),
+        onRecordChange: vi.fn(),
       },
     });
     expect(queryByTestId('approval-desk-why')).toBeNull();

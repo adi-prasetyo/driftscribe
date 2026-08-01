@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { decisionFields, nextAppliedWatermark } from '../../src/lib/decision';
 import type { Decision } from '../../src/lib/types';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
+import { decisionActionLabel } from '../../src/lib/format';
 
 // The whole suite asserts English (the decisions.en catalog is byte-for-byte
 // the original inline text decisionFields used to return), so it's called
@@ -35,8 +36,22 @@ describe('decisionFields — iac_apply (curated)', () => {
     expect(labels).toEqual(['Action', 'Pull request', 'Apply', 'Merge', 'Head SHA', 'Approver', 'When']);
   });
 
-  it('maps the action to a friendly label', () => {
-    expect(byLabel(IAC_APPLY, 'Action')?.value).toBe('Infra apply');
+  it('maps the action through the app-wide label table, not a local copy', () => {
+    // ds-jns: this module used to keep its own action table, which called
+    // `iac_apply` "Infra apply" while format.ts's called it "Infrastructure
+    // change" — two names for one enum, and since the desk decision record they
+    // render on ONE card. The de-jargoned wording is the survivor.
+    expect(byLabel(IAC_APPLY, 'Action')?.value).toBe('Infrastructure change');
+    expect(byLabel(IAC_APPLY, 'Action')?.value).toBe(decisionActionLabel('iac_apply', t));
+  });
+
+  it('still names `recheck`, the one action only the retired table covered', () => {
+    // The migration's actual risk: the shared table had no `recheck` entry, so
+    // delegating without adding one would have regressed this row to the raw
+    // enum. Added to the shared table, not left behind in a local one.
+    expect(byLabel({ decision_id: 'r', action: 'recheck' } as Decision, 'Action')?.value).toBe(
+      'Re-check',
+    );
   });
 
   it('formats the PR number with a leading #', () => {

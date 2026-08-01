@@ -86,12 +86,16 @@ export type AppView = (typeof VIEWS)[number];
 // and App.test.ts).
 export const DEFAULT_VIEW: AppView = 'desk';
 
-// The chat-intent params, named once. Two consumers must agree on this list:
-// hasChatIntent below (which of them mean "go to chat") and App.svelte's
-// navigate() (which of them to clear when leaving chat). Getting only one side
-// right when a fifth is added is a silent bug — either a param stops forcing
-// chat, or a stale one survives into a copied desk URL and drags a later
-// visitor back into chat on reload. Same drift risk VIEWS/AppView closes above.
+// Every param that describes an errand somewhere OTHER than the desk's front
+// door, named once. App.svelte's navigate() clears all of them when leaving
+// chat, so a copied desk URL never carries a stale errand that would drag a
+// later visitor back into chat on reload.
+//
+// Until ds-jns this list was ALSO the definition of "go to chat" — the two
+// were the same set. They no longer are: `reasoning` and `preview_pr` now
+// resolve to the DESK (see hasChatIntent below), so this list is the wider
+// one, and the name is kept only because chat is still where every param on it
+// was last handled. Do not re-derive one from the other.
 export const CHAT_INTENT_PARAMS = [
   'reasoning',
   'conversation',
@@ -101,25 +105,30 @@ export const CHAT_INTENT_PARAMS = [
 
 /**
  * Whether this URL's purpose lives in the chat view, regardless of any
- * explicit `?view=` param. Four params carry that signal:
- *  - `?reasoning=<hex32>` / `?conversation=<id>` — a shared replay or thread,
- *    validated by the existing helpers above (reuse, don't re-validate).
- *  - `?ask_pr=<n>` / `?preview_pr=<n>` — composer-prefill and InfraDiagram
- *    ghost-overlay seeds (see lib/workloads.ts and lib/infra_graph.ts).
- * ask_pr/preview_pr are read as raw truthiness rather than through their own
- * parsers: even a malformed value (e.g. "?ask_pr=abc") means the visitor
- * arrived from the approval page on an errand, and landing them on the desk
- * would silently swallow that intent. An empty value ("?ask_pr=") is treated
- * as absent, matching "the param is absent" rather than "the param names something".
+ * explicit `?view=` param.
+ *
+ * Two params carry that signal, and it is fewer than it used to be (ds-jns):
+ *  - `?conversation=<id>` — a shared thread, validated by the helper above.
+ *    A `?reasoning=` alongside it is part of that thread's errand (the message
+ *    whose reasoning to expand) and rides along; it is not asked about here.
+ *  - `?ask_pr=<n>` — the composer prefill (lib/workloads.ts).
+ *
+ * A BARE `?reasoning=<hex32>` and a `?preview_pr=<n>` deliberately do NOT.
+ * Both now name something the desk renders — a decision record and an estate
+ * preview — so sending them to chat would land the visitor on a page that has
+ * nothing to do with the link they followed. This is the whole point of the
+ * design's URL-context rule: the same param means "expand this message" inside
+ * a conversation and "open this record" without one.
+ *
+ * ask_pr is read as raw truthiness rather than through a parser: even a
+ * malformed value ("?ask_pr=abc") means the visitor arrived from the approval
+ * page on an errand, and swallowing it would be worse than honoring it. An
+ * empty value ("?ask_pr=") is treated as absent — "the param is absent" rather
+ * than "the param names something".
  */
 function hasChatIntent(search: string): boolean {
   const params = new URLSearchParams(search);
-  return Boolean(
-    reasoningTraceFromSearch(search) ||
-      conversationIdFromSearch(search) ||
-      params.get('ask_pr') ||
-      params.get('preview_pr'),
-  );
+  return Boolean(conversationIdFromSearch(search) || params.get('ask_pr'));
 }
 
 /**
@@ -132,7 +141,28 @@ export function viewFromSearch(search: string): AppView {
   if (hasChatIntent(search)) return 'chat';
   // URLSearchParams tolerates a leading "?" itself, so — like the two helpers
   // above — the raw search string goes straight in.
-  const raw = new URLSearchParams(search).get('view');
+  const params = new URLSearchParams(search);
+  // `?preview_pr=` outranks an explicit `?view=chat`, which is the one place
+  // this function lets a param beat a stated view.
+  //
+  // Chat has no rendering for it AT ALL since the estate preview moved to the
+  // desk (Task 2.4), so honoring `view=chat` here shows a page with no trace of
+  // why the visitor followed the link, and the param then rides along inertly
+  // until the next navigate() drops it. Landing on the desk is the only reading
+  // under which the link means anything.
+  //
+  // Deliberately NOT extended to `?view=chat&reasoning=`, which looks like the
+  // symmetric case and is not: chat still renders that one as the page-level
+  // replay (App.svelte's boot continuation), so the stated view and the param
+  // agree there and the legacy link keeps working until PR 3 removes replay.
+  // The rule is "a param with no rendering on the stated view wins", not
+  // "desk params always win".
+  //
+  // Bare `?preview_pr=` never needed this — DEFAULT_VIEW is already 'desk' —
+  // and bare is the shape the IaC approval page actually emits, so this covers
+  // a hand-written or hand-edited URL rather than a link the app produces.
+  if (params.get('preview_pr')) return 'desk';
+  const raw = params.get('view');
   // Legacy alias: the estate merged into the desk (2026-07-31 design doc). Old
   // ?view=estate links land on the merged page rather than 404-ing into a blank
   // main. Matched on the RAW string, deliberately not via VIEWS — the id is

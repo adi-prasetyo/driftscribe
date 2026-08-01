@@ -136,19 +136,31 @@ test.describe('view history traversal (mock smoke)', () => {
   // A shared link's restoration must not COST a history entry, or the visitor's
   // first Back press looks dead — it pops to the same view they are already on.
   // Proven by landing on a sentinel page first: one Back must leave the app.
-  for (const [param, value] of [
-    ['conversation', CONVERSATION_ID],
-    ['reasoning', TRACE_ID],
-    ['ask_pr', '168'],
-    ['preview_pr', '168'],
+  //
+  // The landing column is not decoration: since ds-jns a bare ?reasoning= names
+  // a decision RECORD and ?preview_pr= an estate preview, and both of those
+  // live on the desk. Asserting the destination as well as the Back behaviour
+  // is what keeps this a deep-link test rather than a history-length one.
+  for (const [param, value, landing] of [
+    ['conversation', CONVERSATION_ID, 'chat'],
+    ['ask_pr', '168', 'chat'],
+    ['reasoning', TRACE_ID, 'desk'],
+    ['preview_pr', '168', 'desk'],
   ] as const) {
-    test(`a ?${param}= deep link leaves the app in ONE Back press`, async ({ page }) => {
+    test(`a ?${param}= deep link lands on the ${landing} and leaves the app in ONE Back press`, async ({
+      page,
+    }) => {
       await seedToken(page);
       await mockData(page);
       await page.goto('about:blank');
 
       await page.goto(`/?${param}=${value}`);
-      await expect(page.locator('#chat-form')).toBeVisible();
+      if (landing === 'chat') {
+        await expect(page.locator('#chat-form')).toBeVisible();
+      } else {
+        await expect(page.getByTestId('approval-desk')).toBeVisible();
+        await expect(page.locator('#chat-form')).toHaveCount(0);
+      }
 
       await page.goBack();
       expect(page.url()).toBe('about:blank');

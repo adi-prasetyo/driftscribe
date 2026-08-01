@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import ReasoningDisclosure from '../../src/components/ReasoningDisclosure.svelte';
 import { createTraceCache } from '../../src/lib/traceCache';
@@ -188,5 +188,42 @@ describe('ReasoningDisclosure — expanding', () => {
     await fireEvent.click(getByTestId('reasoning-disclosure'));
     await waitFor(() => expect(getByTestId('trace-detail-prbody-missing')).toBeTruthy());
     expect(queryByTestId('trace-detail-error')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ds-jns PR 2 — `autoExpand`: how a `?conversation=&reasoning=` deep link lands
+// on the MESSAGE it names, instead of opening a page-level replay over the
+// thread that message belongs to.
+// ---------------------------------------------------------------------------
+describe('ReasoningDisclosure — autoExpand', () => {
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  it('opens on mount, loads the trace, and brings itself into view', async () => {
+    const { getByTestId, paths } = mount(undefined, { autoExpand: true });
+    expect(getByTestId('reasoning-disclosure').getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(paths).toContain(`/trace/${TID}`));
+    await waitFor(() => expect(getByTestId('trace-detail')).toBeTruthy());
+    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('stays collapsed and fetches nothing when it is not the named message', () => {
+    const { getByTestId, queryByTestId, paths } = mount(undefined, { autoExpand: false });
+    expect(getByTestId('reasoning-disclosure').getAttribute('aria-expanded')).toBe('false');
+    expect(queryByTestId('trace-detail')).toBeNull();
+    expect(paths).toEqual([]);
+  });
+
+  it('does not spring back open when the operator collapses it', async () => {
+    // The effect writes `open` but never READS it, so nothing re-arms when the
+    // operator closes an auto-expanded disclosure. A deep link is an opening
+    // gesture, not a lock.
+    const { getByTestId, queryByTestId } = mount(undefined, { autoExpand: true });
+    await waitFor(() => expect(getByTestId('trace-detail')).toBeTruthy());
+    await fireEvent.click(getByTestId('reasoning-disclosure'));
+    await waitFor(() => expect(queryByTestId('trace-detail')).toBeNull());
+    expect(getByTestId('reasoning-disclosure').getAttribute('aria-expanded')).toBe('false');
   });
 });

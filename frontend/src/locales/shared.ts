@@ -78,6 +78,7 @@ export const shared = {
     'shared.decision.noOp': 'No action needed',
     'shared.decision.rollback': 'Rollback',
     'shared.decision.iacApply': 'Infrastructure change',
+    'shared.decision.recheck': 'Re-check',
     // Per-variable contract verdicts (agent/models.py:ContractStatus), shown in
     // the diff card's STATUS column. Phrased from the OPERATOR's view — what the
     // ops-contract permits for this variable — rather than transliterating the
@@ -192,6 +193,7 @@ export const shared = {
     'shared.decision.noOp': '対応不要',
     'shared.decision.rollback': 'ロールバック',
     'shared.decision.iacApply': 'インフラ変更',
+    'shared.decision.recheck': '再チェック',
     'shared.contract.match': '契約どおり',
     'shared.contract.presentAllowManual': '手動変更は許可',
     'shared.contract.presentDisallowManual': '手動変更は不可',

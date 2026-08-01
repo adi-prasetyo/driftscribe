@@ -9,6 +9,7 @@
   import CrewGlyph from './CrewGlyph.svelte';
   import ReasoningDisclosure from './ReasoningDisclosure.svelte';
   import { crewName } from '../lib/workloads';
+  import { turnOwnsReasoning } from '../lib/conversations';
   import { iacApprovalHref } from '../lib/approval';
   import { t, locale } from '../lib/i18n';
   import type { TraceCache } from '../lib/traceCache';
@@ -18,6 +19,7 @@
     turns,
     cache,
     conversationId = null,
+    autoExpandTraceId = null,
   }: {
     turns: ConversationTurn[];
     /** Per-trace state for the inline disclosures. Required rather than
@@ -27,6 +29,10 @@
     /** The open thread's id, so a copied disclosure link can carry thread
      *  context (design §4). Null on a not-yet-persisted conversation. */
     conversationId?: string | null;
+    /** The turn a `?conversation=&reasoning=` deep link named: its disclosure
+     *  opens on mount and scrolls into view (ds-jns PR 2). At most one turn
+     *  matches — a trace id belongs to one turn. */
+    autoExpandTraceId?: string | null;
   } = $props();
 
   // Same-origin /iac-approvals/<n> link for a turn that opened an infra PR.
@@ -43,6 +49,10 @@
   function isTransition(turn: ConversationTurn): boolean {
     return TRANSITION_ROLES.includes(turn.role);
   }
+  // `turnOwnsReasoning` (lib/conversations) is the SAME predicate App uses to
+  // decide whether a `?conversation=&reasoning=` deep link names a message this
+  // thread shows. Shared rather than restated: the two drifted once already,
+  // leaving the URL claiming a message that renders no disclosure to open.
   // Both crews, resolved to display names. Falls back to the row's own
   // workload so a pre-`handoff` row (or a truncated one) still reads sensibly
   // instead of rendering an empty proper noun.
@@ -134,8 +144,13 @@
                  do so: expanding only reads the per-trace cache (a no-op while
                  the stream runs), where the old open-trace button bumped runSeq
                  and dropped the in-flight settle. -->
-            {#if turn.trace_id}
-              <ReasoningDisclosure traceId={turn.trace_id} {cache} {conversationId} />
+            {#if turnOwnsReasoning(turn)}
+              <ReasoningDisclosure
+                traceId={turn.trace_id}
+                {cache}
+                {conversationId}
+                autoExpand={autoExpandTraceId !== null && turn.trace_id === autoExpandTraceId}
+              />
             {/if}
             {#if pending}
               <div class="turn__typing" data-testid="thread-typing" aria-hidden="true">

@@ -58,6 +58,14 @@ export interface LedgerRow {
 
 const DEFAULT_MAX = 4;
 
+export interface LedgerOpts {
+  now?: number;
+  origin?: string;
+  /** Keep the row carrying this trace even if the cap would drop it, so a
+   *  deep-linked record always has a row to open under. */
+  keepTraceId?: string | null;
+}
+
 /** The ONE apply_status that may be collapsed into a newer doc for the same
  *  event_key (ds-b0k). `waiting_for_rebake` is the pre-merge crash-recovery
  *  pointer — a phase, not an outcome — which is exactly why it is excluded
@@ -155,11 +163,20 @@ function classify(
  * changes whether the returned href carries a `?lang=ja` suffix, never
  * null-vs-non-null, and this module discards the href anyway (it only needs
  * the actionability verdict), so there is nothing here for `locale` to affect.
+ *
+ * `opts.keepTraceId` (ds-jns) never hides the row whose decision record the
+ * operator currently has OPEN: if it falls outside the cap it is appended.
+ * Same rule and the same reason as rail.ts's `capRailItems`, and the desk
+ * depends on it for more than tidiness — App pins an out-of-window record
+ * ABOVE the desk whenever no ledger row carries its trace, so a record that
+ * the cap alone could hide would render twice the moment "show more" revealed
+ * its row. With this, "in the decisions snapshot" and "has a ledger row" are
+ * the same question, and `hasDecisionForTrace` below is what App asks it with.
  */
 export function ledgerRows(
   decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
   max: number = DEFAULT_MAX,
-  opts?: { now?: number; origin?: string },
+  opts?: LedgerOpts,
 ): LedgerRow[] {
   const now = opts?.now ?? Date.now();
   const origin = opts?.origin;
@@ -192,6 +209,7 @@ export function ledgerRows(
     if (b.ts === null) return -1;
     return b.ts - a.ts;
   });
+
 
   // One LIFECYCLE, one row (ds-b0k). A single `event_key` accumulates a SEQUENCE
   // of phase docs by design: PR #168 wrote waiting_for_rebake+pending and then
@@ -286,5 +304,78 @@ export function ledgerRows(
     deduped.push(row);
   }
 
-  return deduped.slice(0, cap);
+  const capped = deduped.slice(0, cap);
+  const keep = opts?.keepTraceId;
+  if (typeof keep === 'string' && keep !== '' && !capped.some((r) => r.decision.trace_id === keep)) {
+    // Searches `deduped`, NOT `rows` (ds-jns × ds-b0k). Rescuing from the
+    // pre-fold list would resurrect a phase pointer the fold above deliberately
+    // removed — and for the create-class pair it would rescue the very row
+    // whose surviving sibling already carries this same trace_id, drawing the
+    // lifecycle twice on the one surface built to stop that.
+    //
+    // Appended, not spliced into date order: it is out of the window the cap
+    // describes, and pretending otherwise would put an older row above a newer
+    // one with nothing on screen explaining why.
+    const kept = deduped.find((r) => r.decision.trace_id === keep);
+    if (kept) capped.push(kept);
+  }
+  return capped;
+}
+
+/**
+ * The rows `ledgerRows` yields with no cap — what "show all" actually renders.
+ *
+ * Both helpers below are defined in terms of this rather than by walking
+ * `decisions` directly, because since ds-b0k the row set is no longer the
+ * decision set: the fold in `ledgerRows` drops redundant phase pointers and
+ * restated applies. A helper that counted raw docs would promise rows that
+ * "show all" then does not draw, and one that looked up a trace among raw docs
+ * would report a row the strip never renders. Deriving both from the same
+ * function makes those answers right by construction instead of by a rule
+ * somebody has to remember to update here too.
+ */
+function uncappedRows(
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
+  opts?: LedgerOpts,
+): LedgerRow[] {
+  return ledgerRows(decisions, Number.MAX_SAFE_INTEGER, opts);
+}
+
+/**
+ * Does the strip RENDER a row carrying `traceId`? The question `ledgerRows`'
+ * `keepTraceId` makes answerable on the caller's side: because a kept row
+ * survives the cap, "the uncapped row set has it" and "the strip renders it"
+ * are equivalent, so App can decide whether to pin an out-of-window record
+ * without knowing anything about the strip's cap or its "show more" state.
+ *
+ * Answering "is it here" over the RAW decisions would be the wrong question
+ * since the fold landed: a doc that exists but folds away is present in the
+ * snapshot and absent from the strip, and App reading the first as the second
+ * would decline to pin a record that then has no row to open under — the
+ * record rendering NOWHERE.
+ *
+ * Deliberately NOT gated on `isReplayableTraceId`: this answers "is it here",
+ * and a decision doc holding a malformed trace_id would still be here. The
+ * affordance gate is a separate question, asked separately (LedgerStrip).
+ */
+export function hasDecisionForTrace(
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
+  traceId: string | null | undefined,
+): boolean {
+  if (!traceId) return false;
+  return uncappedRows(decisions).some((r) => r.decision.trace_id === traceId);
+}
+
+/**
+ * How many rows `ledgerRows` would yield with no cap. The strip's "show more"
+ * control gates on `total > rendered` and labels itself "Show all {n}", so this
+ * has to count what "show all" DRAWS, not what the snapshot holds: counting raw
+ * docs would label the button with a number the expanded strip never reaches
+ * and, because `total > rendered` would stay true after expanding, leave it on
+ * screen forever doing nothing.
+ */
+export function ledgerTotal(
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
+): number {
+  return uncappedRows(decisions).length;
 }

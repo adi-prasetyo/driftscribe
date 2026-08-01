@@ -10,8 +10,8 @@
 // happens to carry (typically just Action + When) — never anything dynamic.
 
 import type { Decision } from './types';
-import { fmtWhen } from './format';
-import type { TranslateFn, Locale, MessageKey } from './i18n';
+import { fmtWhen, decisionActionLabel } from './format';
+import type { TranslateFn, Locale } from './i18n';
 
 export type FieldBadge = 'ok' | 'danger' | 'warn' | 'muted';
 
@@ -49,12 +49,6 @@ const MERGE_STATE_BADGE: Record<string, FieldBadge> = {
   pending: 'warn',
 };
 
-const ACTION_LABEL: Record<string, MessageKey> = {
-  iac_apply: 'decisions.action.iacApply',
-  rollback: 'decisions.action.rollback',
-  recheck: 'decisions.action.recheck',
-};
-
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 
 /**
@@ -71,9 +65,15 @@ export function decisionFields(
   if (!d) return [];
   const rows: DecisionField[] = [];
 
+  // ONE action-label table for the whole app (format.ts's decisionActionLabel).
+  // This module used to keep a rival one, and the two disagreed on `iac_apply`
+  // in both locales — harmless while they rendered on different surfaces,
+  // wrong the moment a desk decision record showed the header and this field
+  // grid together on one card (ds-jns). It truncates at 40 rather than this
+  // module's 256; an action enum is a short identifier, and the shorter bound
+  // is the one an operator-facing label wants.
   const action = isStr(d.action) ? d.action : 'decision';
-  const actionKey = ACTION_LABEL[action];
-  rows.push({ label: t('decisions.field.action'), value: actionKey ? t(actionKey) : clamp(action) });
+  rows.push({ label: t('decisions.field.action'), value: decisionActionLabel(action, t) });
 
   if (typeof d.pr_number === 'number') {
     rows.push({ label: t('decisions.field.pullRequest'), value: `#${d.pr_number}` });

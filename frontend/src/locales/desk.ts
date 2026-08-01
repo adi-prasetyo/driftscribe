@@ -97,6 +97,32 @@ export const desk = {
     // have succeeded with the response lost. Saying "failed" here would be a
     // second false claim in the opposite direction (ds-2mc).
     'desk.ledger.unconfirmedTitle': 'Approved · outcome unconfirmed',
+    // One-way: the strip opens to the whole snapshot and does not re-collapse.
+    // `n` is every decision the snapshot holds, not the number still hidden —
+    // "Show all 12" says what you will get; "Show 8 more" makes you do the sum.
+    'desk.ledger.showMore': 'Show all {n}',
+    // DecisionRecord (ds-jns PR 2) — one decision opened on the desk: the
+    // ledger row's accordion body, and the pinned card a bare `?reasoning=`
+    // link lands on. Both lines are quiet statements of fact, not errors —
+    // the reasoning above them may have loaded perfectly.
+    //
+    // The decision's own prose (rationale, else rendered_body) — the one piece
+    // of the retired page-level replay that was a sentence. Deliberately not
+    // "Why": a rendered_body is a PR description, not a reason, and one label
+    // has to fit both without misdescribing either.
+    'desk.record.prose': 'What was decided',
+    // `incomplete` is reachable without anything having gone wrong: a
+    // `?reasoning=` link can legitimately name a CHAT turn's trace, which is
+    // reasoning with no decision doc behind it.
+    'desk.record.incomplete': 'No decision record is attached to this trace.',
+    // Only ever shown once the overview has SETTLED — a claim about a list
+    // cannot be made before the list has loaded. And it says ABSENCE, not age:
+    // settlement proves the record is not among the listed decisions, which is
+    // not the same as its being older than them. The earlier wording said
+    // "older", and could sit directly above "no decision record is attached to
+    // this trace" — two sentences calling one thing a decision and not a
+    // decision, one of them also guessing at its age.
+    'desk.record.outOfWindow': 'This record is not in the recent decisions listed below.',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
     'desk.unresolved.who': 'Approved',
     'desk.unresolved.failed.detail': 'Did not apply',
@@ -275,6 +301,7 @@ export const desk = {
     // 読み手への呼びかけなので「あなたの」を残す。EN 側の註記も参照。
     'desk.ledger.appliedTitle': '承認済み → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
+
     // 「承認待ち」ではない。waiting_for_rebake はマージ時点で記録されるため、
     // 承認は済んでいる（ds-db0）。再ビルドの完了はコーディネーターからは
     // 観測できないため「再ビルド待ち」とは書かず、実際に未完了である「適用」を
@@ -283,6 +310,10 @@ export const desk = {
     'desk.ledger.mergingTitle': '承認済み → 未適用',
     'desk.ledger.failedTitle': '承認済み → 適用されず',
     'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',
+    'desk.ledger.showMore': '{n}件すべて表示',
+    'desk.record.prose': '判断の内容',
+    'desk.record.incomplete': 'このトレースには判断の記録が紐づいていません。',
+    'desk.record.outOfWindow': 'この記録は、下の最近の判断一覧には含まれていません。',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
     'desk.unresolved.who': '承認済み',
     'desk.unresolved.failed.detail': '適用されず',
