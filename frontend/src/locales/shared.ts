@@ -11,9 +11,21 @@
 export const shared = {
   en: {
     'shared.iac.applied': 'applied',
-    // Operator-facing label is plain "rebuild" (the internal enum stays
-    // `waiting_for_rebake`); the cryptic insider term "re-bake" is gone.
-    'shared.iac.awaitingRebuild': 'awaiting rebuild',
+    // Names the APPLY, not the rebuild (the internal enum stays
+    // `waiting_for_rebake`; the cryptic insider term "re-bake" is gone).
+    //
+    // "awaiting rebuild" asserted something no client can see: the coordinator
+    // never observes the external build, it writes this status at merge and
+    // leaves it until the operator's second submit resumes the apply
+    // (agent/main.py:7187), so the label went stale the moment the build
+    // finished. It was also wrong the other way round while merge_state is
+    // "pending", where the immediate wait is the MERGE. "awaiting apply" is the
+    // one claim true across the whole window and BOTH merge_state variants,
+    // which is what this label has to be (see the help text's note below).
+    // Same fix as the ledger's `awaiting_apply` — this surface was missed on
+    // that pass (Codex review r4). The help text below still explains the
+    // rebuild step, where saying so is accurate and useful.
+    'shared.iac.awaitingApply': 'awaiting apply',
     'shared.iac.failed': 'failed',
     'shared.iac.failedStateSuspect': 'failed (state suspect)',
     'shared.iac.ambiguous': 'ambiguous',
@@ -22,7 +34,7 @@ export const shared = {
     // merge_state="pending" (before the irreversible merge / kept on merge
     // failure) AND merge_state="merged" (after) — so it must NOT assert the merge
     // already happened (agent/main.py records the pending pointer pre-merge).
-    'shared.iac.help.awaitingRebuild':
+    'shared.iac.help.awaitingApply':
       'Create/adopt changes apply in two steps: the PR is merged, then the ' +
       "agent's apply worker is rebuilt from the merged code and re-checks the " +
       "plan before applying. A later 'applied' step confirms completion.",
@@ -83,7 +95,15 @@ export const shared = {
     'shared.tokens': '{n} tok',
 
     'shared.approve.supersededBy': 'superseded by #{pr} →',
-    'shared.approve.reviewApprove': 'Review & approve →',
+    // ds-22k. These are reached ONLY for a non-superseded
+    // `waiting_for_rebake` row, which the backend records at MERGE — so the
+    // operator has already approved this once. Before merge confirmation the
+    // POST retries that merge; afterwards it resumes the apply. Distinct from
+    // `approval.iacCta.reviewApprove`, which fires on a FRESHLY authored PR with
+    // no decision row at all — that one really is a first approval and keeps its
+    // wording.
+    'shared.approve.continueChange': 'Continue this change →',
+    'shared.approve.applyChange': 'Apply this change →',
     'shared.approve.viewHistory': 'View approval history →',
     'shared.approve.viewFailure': 'View failure details →',
     'shared.approve.goToPage': 'Go to approval page →',
@@ -133,12 +153,12 @@ export const shared = {
   },
   ja: {
     'shared.iac.applied': '適用済み',
-    'shared.iac.awaitingRebuild': '再構築待ち',
+    'shared.iac.awaitingApply': '適用待ち',
     'shared.iac.failed': '失敗',
     'shared.iac.failedStateSuspect': '失敗（状態要確認）',
     'shared.iac.ambiguous': '結果不明',
 
-    'shared.iac.help.awaitingRebuild':
+    'shared.iac.help.awaitingApply':
       '新規作成または IaC 管理への取り込みに伴う変更は、2段階で適用されます。まず PR がマージされ、その後エージェントの' +
       '適用ワーカーがマージ済みのコードから再構築され、適用前に IaC プランを再確認します。' +
       '後続の「適用済み」のステップが完了を示します。',
@@ -187,7 +207,8 @@ export const shared = {
     'shared.tokens': '{n} トークン',
 
     'shared.approve.supersededBy': '#{pr} に置き換え済み →',
-    'shared.approve.reviewApprove': '確認して承認 →',
+    'shared.approve.continueChange': 'この変更を続行する →',
+    'shared.approve.applyChange': 'この変更を適用する →',
     'shared.approve.viewHistory': '承認履歴を見る →',
     'shared.approve.viewFailure': '失敗の詳細を見る →',
     'shared.approve.goToPage': '承認ページへ →',

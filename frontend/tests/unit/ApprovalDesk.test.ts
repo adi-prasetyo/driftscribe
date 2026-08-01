@@ -56,12 +56,20 @@ function rollbackDecision(overrides: Partial<Decision> = {}): Decision {
 }
 
 function iacDecision(overrides: Partial<Decision> = {}): Decision {
+  const pr = overrides.pr_number ?? 42;
   return {
     decision_id: 'iac-1',
     action: 'iac_apply',
     created_at: '2026-07-28T11:00:00Z',
-    pr_number: 42,
+    pr_number: pr,
     apply_status: 'waiting_for_rebake',
+    // Every iac_apply doc the backend writes carries one — agent/main.py:7280,
+    // :7331, :7461, :7503 all pass it — and it hashes `head_sha` (:6406), so it
+    // names the GENERATION, not the PR. A fixture without one exercises a
+    // document shape that does not occur, and used to let a PR-wide join look
+    // safe. Default it per PR so same-PR rows are one generation, and set it
+    // explicitly wherever a test needs two generations of the same PR.
+    event_key: `iac-apply-${pr}-gen1`,
     ...overrides,
   };
 }
@@ -443,16 +451,142 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(getByText('PR #7')).toBeTruthy();
   });
 
-  it('decision arm (no PR title carried): falls back to the honest generic headline naming the PR number', () => {
+  // The ds-db0 split must not over-reach. A LISTING-provenance PR is one the
+  // open-PR listing can still see, i.e. genuinely unmerged and genuinely
+  // unapproved — "waiting for your approval" is TRUE there and must survive.
+  it('listing arm (no title): keeps the approval-request copy, which is true for an unmerged PR', () => {
+    const approval = pendingIac({ title: undefined });
+    const { getByTestId, getByText } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [approval], onShowEstate: vi.fn() },
+    });
+    expect(getByTestId('approval-desk-pending').getAttribute('data-source')).toBe('iac');
+    expect(getByText('Infrastructure change PR #7 is waiting for your approval.')).toBeTruthy();
+    expect(getByTestId('approval-desk-pending').textContent).not.toContain('waiting to be applied');
+  });
+
+  // Codex review of ds-db0: the provenance split alone does NOT close the hole.
+  // selectPendingIac (listing) is tried first and returns immediately
+  // (desk.ts:627), the open-PR listing is cached up to 60s, and it is filtered
+  // only for applied+merged (approval.ts:337) — so for a minute after the
+  // approve click a stale listing row beats the decision row and used to
+  // re-ask for the approval just given. That minute is exactly the frame the
+  // approve→stamp beat is recorded on. Passing BOTH sources is the point of
+  // this test; the earlier decision-arm test used `decisions: []` and could
+  // never have caught it.
+  it('stale cached listing + a decision proving approval: never re-asks for that approval', () => {
+    const approval = pendingIac({ title: undefined }); // PR #7, still "open" per cache
+    const approved = iacDecision({
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [approved],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    const pending = getByTestId('approval-desk-pending').textContent ?? '';
+    expect(pending).not.toContain('waiting for your approval');
+    expect(pending).not.toContain('waiting for your review');
+    expect(pending).toContain('approved');
+  });
+
+  // The negative twin (Codex). The proof-of-approval join is PR-WIDE and the
+  // listing DTO carries no generation identity, so it must accept ONLY
+  // evidence that cannot be misattributed across generations. After
+  // `generation A applied → merge FAILED → head advances → generation B
+  // unapproved`, the listing legitimately points at B while A's terminal
+  // decision still names the same PR. Vouching for B there would tell the
+  // operator they had approved something they had not — the dangerous
+  // direction, and the ds-0rm mistake (desk.ts:620) repeated one layer up.
+  it('a terminal decision whose merge FAILED never vouches for a newer generation', () => {
+    const approval = pendingIac({ title: undefined }); // PR #7, genuinely open generation B
+    const failedMerge = iacDecision({
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'applied',
+      merge_state: 'pending', // merge never landed → cannot prove B was approved
+    });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [failedMerge],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    const pending = getByTestId('approval-desk-pending').textContent ?? '';
+    expect(pending).toContain('waiting for your approval');
+    expect(pending).not.toContain('approved and waiting to be applied');
+  });
+
+  // The OTHER way the witness can lie (Codex r3). Decision docs accumulate —
+  // the waiting_for_rebake+merged row is never rewritten, so it is still there
+  // after the resume-apply appends a terminal failure (agent/main.py:7452). A
+  // stale listing still naming the PR (the pending fetch can fail while the
+  // decisions refresh, overviewStore.ts:237) then produced "approved and
+  // waiting to be applied" over an apply that had terminally FROZEN — a runbook
+  // condition dressed up as ordinary pending work. The witness must be
+  // uncontradicted, not merely present. Both docs are supplied here precisely
+  // because the earlier tests supply only one.
+  it.each(['failed', 'failed_state_suspect', 'ambiguous'])(
+    'a later %s decision withdraws the "waiting to be applied" claim',
+    (terminalStatus) => {
+      const approval = pendingIac({ title: undefined }); // PR #7, stale listing row
+      const approved = iacDecision({
+        decision_id: 'iac-witness',
+        pr_number: 7,
+        pr_title: undefined,
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'merged', // the witness — still on file, never rewritten
+        created_at: '2026-07-28T11:00:00Z',
+      });
+      const frozen = iacDecision({
+        decision_id: 'iac-frozen',
+        pr_number: 7,
+        pr_title: undefined,
+        apply_status: terminalStatus,
+        merge_state: 'merged',
+        created_at: '2026-07-28T11:06:00Z',
+      });
+      const { getByTestId } = render(ApprovalDesk, {
+        props: {
+          graph: GRAPH,
+          decisions: [frozen, approved],
+          pendingApprovals: [approval],
+          onShowEstate: vi.fn(),
+        },
+      });
+      const pending = getByTestId('approval-desk-pending').textContent ?? '';
+      expect(pending).not.toContain('approved and waiting to be applied');
+    },
+  );
+
+  // ds-db0: the decision arm exists only for a PR the open-PR listing can no
+  // longer see BECAUSE IT ALREADY MERGED (desk.ts:78-84), so its copy must say
+  // "waiting to be applied". Claiming it awaits approval contradicts the
+  // operator's own click on the very frame the approve→stamp beat lands.
+  it('decision arm (no PR title carried): says the merged change awaits APPLYING, never approval', () => {
     const d = iacDecision({ pr_number: 99, pr_title: undefined });
     const { getByTestId, getByText, queryByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     expect(getByTestId('approval-desk-pending').getAttribute('data-source')).toBe('iac');
-    expect(getByText('Infrastructure change PR #99 is waiting for your approval.')).toBeTruthy();
+    expect(
+      getByText('Infrastructure change PR #99 is approved and waiting to be applied.'),
+    ).toBeTruthy();
+    // Pins the claim, not just the string: nothing in this arm may ask the
+    // operator for an approval they have already given.
+    const pending = queryByTestId('approval-desk-pending')?.textContent ?? '';
+    expect(pending).not.toContain('waiting for your approval');
+    expect(pending).not.toContain('waiting for your review');
     // No fabricated "proposed at" time for a decision whose real created_at
     // we DO have is fine, but there must be no invented PR title:
-    expect(queryByTestId('approval-desk-pending')?.textContent).not.toContain('undefined');
+    expect(pending).not.toContain('undefined');
   });
 
   it('decision arm WITH a carried pr_title renders it honestly instead of the fallback', () => {
@@ -467,6 +601,361 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     const pending = within(getByTestId('approval-desk-pending'));
     expect(pending.getByText('Adopt lodash upgrade')).toBeTruthy();
     expect(pending.queryByText(/is waiting for your approval\.$/)).toBeNull();
+  });
+
+  // ds-22k. The byline fix left a card that said "approved" directly above a
+  // button saying "Approve this proposal" and a Reject that could not un-merge
+  // a merged PR — a control whose label is a promise it cannot keep, on the
+  // human-in-the-loop surface of all places.
+  it('an already-approved change offers the APPLY, and no Reject at all', () => {
+    const d = iacDecision({ pr_number: 99, pr_title: undefined, merge_state: 'merged' });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
+    });
+    const apply = getByTestId('approval-desk-apply') as HTMLAnchorElement;
+    expect(apply.textContent?.trim()).toBe('Apply this change');
+    // The action is REAL — the approval page keeps a live form for
+    // waiting_for_rebake (agent/main.py:6127) and the POST resumes the apply
+    // (:7187). Only the name was wrong, so the destination must be untouched.
+    expect(apply.getAttribute('href')).toContain('/iac-approvals/99');
+    expect(apply.getAttribute('target')).toBe('_blank');
+    expect(apply.getAttribute('rel')).toBe('noopener');
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    const pending = queryByTestId('approval-desk-pending')?.textContent ?? '';
+    expect(pending).not.toContain('Approve this proposal');
+    expect(pending).not.toContain('Reject');
+  });
+
+  it('an approved pre-merge change offers CONTINUE, never Apply or a second approval', () => {
+    const d = iacDecision({
+      pr_number: 98,
+      pr_title: undefined,
+      merge_state: 'pending',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
+    });
+
+    expect(getByTestId('approval-desk-continue').textContent?.trim()).toBe(
+      'Continue this change',
+    );
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+  });
+
+  // The CTA must key off the SAME discriminator as the byline. This is the
+  // stale-cache frame again (the listing arm wins for up to 60s after the
+  // approve click): a card whose byline reads "approved" over a button reading
+  // "Approve this proposal" is the two-surfaces-disagree bug ds-db0 was.
+  it('stale cached listing + proof of approval: the CTA follows the byline', () => {
+    const approval = pendingIac({ title: undefined }); // PR #7, still "open" per cache
+    const approved = iacDecision({
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [approved],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-apply')).toBeTruthy();
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+  });
+
+  // The other direction, and the one that would matter most if it broke: a
+  // genuinely unapproved change must keep its full Approve/Reject path. Losing
+  // the gate is far worse than labelling it awkwardly.
+  it('a genuinely unapproved listing row keeps Approve AND Reject', () => {
+    const approval = pendingIac({ title: 'Adopt orders-sub into IaC' });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [], pendingApprovals: [approval], onShowEstate: vi.fn() },
+    });
+    expect(getByTestId('approval-desk-approve').textContent?.trim()).toBe('Approve this proposal');
+    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+  });
+
+  // ds-22k's acceptance criterion, and the reason it was filed as one bead
+  // rather than three: the byline fix alone left a card saying "approved" over a
+  // button saying "Approve this proposal", under a band counting it as
+  // "Awaiting your approval". Asserting each surface separately is what let them
+  // drift apart in the first place, so this pins the whole rendered desk at
+  // once — any NEW surface that starts soliciting the approval fails here
+  // without anyone remembering to add it to a list.
+  it('no surface of an already-approved desk solicits the approval already given', () => {
+    const d = iacDecision({ pr_number: 99, pr_title: undefined });
+    const { container } = render(ApprovalDesk, {
+      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
+    });
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/awaiting your approval/i);
+    expect(text).not.toMatch(/waiting for your (approval|review)/i);
+    expect(text).not.toMatch(/approve this proposal/i);
+    // The aria layer too — a screen reader must not hear the solicitation the
+    // visible layer stopped making.
+    for (const el of Array.from(container.querySelectorAll('[aria-label]'))) {
+      expect(el.getAttribute('aria-label')).not.toMatch(/awaiting your approval/i);
+    }
+    // NOT asserted absent: "Needs your decision" (the band) and "Approved ·
+    // awaiting apply" (the ledger). Both are true — the apply is a real
+    // outstanding operator step — and demanding the desk fall silent about it
+    // would trade an over-claim for an under-claim.
+    expect(text).toContain('Needs your decision');
+  });
+
+  // A terminal failure means the approval page suppresses its form. A stale
+  // listing must therefore become view-only, not re-offer Approve/Reject for a
+  // credential whose run has already ended.
+  it('a contradicted witness offers only View failure details', () => {
+    const approval = pendingIac({ title: undefined });
+    const approved = iacDecision({
+      decision_id: 'iac-witness',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const frozen = iacDecision({
+      decision_id: 'iac-frozen',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'failed_state_suspect',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:06:00Z',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [frozen, approved],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-view-failure').textContent?.trim()).toBe(
+      'View failure details',
+    );
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+    expect(queryByTestId('approval-desk-continue')).toBeNull();
+  });
+
+  // The witness proves the PR MERGED; it does not prove the other rows under
+  // that pr_number are the same generation. An apply that fails never merges, so
+  // the PR stays open, the operator pushes a fix, and generation B merges beside
+  // generation A's terminal failure. Joining PR-wide let A outrank B: the card
+  // said "View failure details" while the approval page resolved B, kept its
+  // form, and the rail said "Apply this change" — a missed live control AND the
+  // card/rail drift the shared discriminator exists to prevent.
+  it('a failure from an OLDER generation cannot speak for the merged one', () => {
+    const approval = pendingIac({ title: undefined });
+    const failedGenerationA = iacDecision({
+      decision_id: 'iac-gen-a',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-gen0', // different head_sha => different generation
+      apply_status: 'failed_state_suspect',
+      merge_state: 'n/a', // it failed BEFORE the merge, which is why B exists
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const mergedGenerationB = iacDecision({
+      decision_id: 'iac-gen-b',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-gen1',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:20:00Z',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [mergedGenerationB, failedGenerationA],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-apply')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view-failure')).toBeNull();
+  });
+
+  // Two merged witnesses = two generations merged this PR, which a same-head C2
+  // rerun makes reachable (distinct event_key, independent approval claims, and
+  // merge_pr_at_sha calls "already merged at the expected head" a success —
+  // driftscribe_lib/github.py:1052 — so the later POST records a witness too).
+  // The payload cannot say which generation the page will resolve, so picking
+  // one would let a frozen apply read as live. Fall back to the gate.
+  it('two merged witnesses license nothing — the card cannot pick a generation', () => {
+    const approval = pendingIac({ title: undefined });
+    const witnessA = iacDecision({
+      decision_id: 'iac-a-merged',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-genA',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const witnessB = iacDecision({
+      decision_id: 'iac-b-merged',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-genB',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:02:00Z',
+    });
+    // B is the generation the approval page resolves, and it is FROZEN. Scoping
+    // to A (the first match) would have offered "Apply this change" for it.
+    const frozenB = iacDecision({
+      decision_id: 'iac-b-frozen',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-genB',
+      apply_status: 'failed_state_suspect',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:09:00Z',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [frozenB, witnessB, witnessA],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+  });
+
+  // The witness is the only thing that licenses reading sibling rows, so a
+  // witness with no generation identity licenses nothing. Fail toward the gate,
+  // exactly as the no-witness branch does — the page keeps a live form for
+  // waiting_for_rebake (agent/main.py:6127), so the control still works.
+  it('a witness with no event_key cannot license a PR-wide join', () => {
+    const approval = pendingIac({ title: undefined });
+    const frozen = iacDecision({
+      decision_id: 'iac-frozen',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-gen0',
+      apply_status: 'failed_state_suspect',
+      merge_state: 'merged',
+    });
+    const keylessWitness = iacDecision({
+      decision_id: 'iac-witness',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [keylessWitness, frozen],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view-failure')).toBeNull();
+  });
+
+  // The gate-safety twin of the two view-only tests above. Both of those supply
+  // a `waiting_for_rebake`+`merged` witness, which PROVES the PR merged and the
+  // listing is stale. Without that proof the same PR-wide join reaches across
+  // generations: an apply that fails never merges, so the PR STAYS OPEN, the
+  // operator pushes a fix, and the listing now points at a genuinely unapproved
+  // generation B — whose card would offer nothing but "View failure details"
+  // because generation A failed. A missed gate is the worst outcome this
+  // component has; a redundant Approve on a formless page is merely annoying,
+  // and the page itself tells the truth when they get there.
+  it.each(['failed', 'failed_state_suspect', 'ambiguous'])(
+    'a %s generation never removes the approval gate from a still-open PR',
+    (terminalStatus) => {
+      const approval = pendingIac({ title: undefined }); // PR #7, genuinely open (gen B)
+      const failedGenerationA = iacDecision({
+        decision_id: 'iac-gen-a',
+        pr_number: 7,
+        pr_title: undefined,
+        apply_status: terminalStatus,
+        merge_state: 'n/a', // never merged — which is WHY the PR is still open
+      });
+      const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+        props: {
+          graph: GRAPH,
+          decisions: [failedGenerationA],
+          pendingApprovals: [approval],
+          onShowEstate: vi.fn(),
+        },
+      });
+      expect(getByTestId('approval-desk-approve')).toBeTruthy();
+      expect(getByTestId('approval-desk-reject')).toBeTruthy();
+      expect(queryByTestId('approval-desk-view-failure')).toBeNull();
+    },
+  );
+
+  // Same shape for supersession: `superseded_by_pr` is written on a
+  // waiting_for_rebake row, which can be PRE-merge, so it is not proof the PR
+  // itself is settled either.
+  it('an unmerged superseded generation never removes the gate either', () => {
+    const approval = pendingIac({ title: undefined });
+    const superseded = iacDecision({
+      decision_id: 'iac-sup-unmerged',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'pending',
+      superseded_by_pr: 101,
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [superseded],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view')).toBeNull();
+  });
+
+  it('a stale listing for an explicitly superseded approval is view-only', () => {
+    const approval = pendingIac({ title: undefined });
+    const superseded = iacDecision({
+      decision_id: 'iac-superseded',
+      pr_number: 7,
+      pr_title: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      superseded_by_pr: 101,
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [superseded],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('approval-desk-view').textContent?.trim()).toBe(
+      'View approval details',
+    );
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+    expect(queryByTestId('approval-desk-continue')).toBeNull();
   });
 });
 

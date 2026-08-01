@@ -177,7 +177,7 @@ describe('InstrumentBand — accessible names name their destination', () => {
     // Plain wording, no destination clause: an aria-label that named one would
     // promise a screen-reader user a jump that no longer exists (ds-s61).
     expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
-      '1 awaiting your approval',
+      '1 needing your decision',
     );
   });
 
@@ -197,7 +197,7 @@ describe('InstrumentBand — accessible names name their destination', () => {
   it('an inert awaiting stat keeps the plain label (it promises no destination)', () => {
     const { getByTestId } = render(InstrumentBand, { props: props({ awaiting: 0 }) });
     expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
-      '0 awaiting your approval',
+      '0 needing your decision',
     );
   });
 });
@@ -245,7 +245,7 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
     );
     // awaiting is inert whenever it is unknown, so it promises nothing.
     expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
-      'Awaiting your approval: not yet known',
+      'Needs your decision: not yet known',
     );
   });
 

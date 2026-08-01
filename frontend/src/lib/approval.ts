@@ -266,7 +266,7 @@ export function iacPrHref(decision: {
  * banner and SUPPRESSES the Approve form, so a surface that still offers to
  * approve one is describing a page that has no button (see `iacApproveLabel`).
  */
-const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
+export const TERMINAL_FAILED_APPLY_STATUSES: ReadonlySet<string> = new Set([
   'failed',
   'failed_state_suspect',
   'ambiguous',
@@ -457,8 +457,8 @@ export function supersededWaitingIds(
  * that fallback exists) and ledger.ts's `classify` (the ledger's `open`
  * state, iac lane).
  *
- * MUST stay in lockstep with `iacApproveLabel` below's "Review & approve →"
- * branch (the ONLY actionable iac label) — that function is the rail's
+ * MUST stay in lockstep with `iacApprovalCtaState` below's `continue` / `apply`
+ * branches (the ONLY actionable iac states) — that function is the rail's
  * ground truth for what counts as actionable, and this predicate exists so
  * every OTHER surface (desk, ledger) agrees with it instead of re-deriving
  * its own answer. A future edit to one branch that misses the other
@@ -513,14 +513,8 @@ export function isIacAwaitingOperator(
 ): boolean {
   if (decision == null) return false;
   if (decision.action !== 'iac_apply') return false;
-  if (decision.apply_status !== 'waiting_for_rebake') return false;
-  const supersededByPr = decision.superseded_by_pr;
-  const explicitlySuperseded =
-    typeof supersededByPr === 'number' && Number.isInteger(supersededByPr) && supersededByPr > 0;
-  if (explicitlySuperseded) return false;
-  if (typeof decision.decision_id === 'string' && supersededIds.has(decision.decision_id))
-    return false;
-  return true;
+  const state = iacApprovalCtaState(decision, supersededIds);
+  return state.kind === 'continue' || state.kind === 'apply';
 }
 
 /**
@@ -528,18 +522,19 @@ export function isIacAwaitingOperator(
  * — is unchanged for every state; only the wording reflects how the row reads to
  * an operator.
  *
- * Five wordings:
+ * Six wordings:
  * - "superseded by #N →" — a `waiting_for_rebake` row explicitly annotated
  *   `superseded_by_pr` (recovery-runbook marker: its plan was re-expressed in a
  *   NEW PR that already carries the real `applied` row — see
  *   docs/runbooks/iac-apply-failure-recovery.md §7e). Checked FIRST, but gated to
  *   the `waiting_for_rebake` shape so a mis-annotated `failed` row still reads
  *   "View failure details →" instead of being masked.
- * - "Review & approve →" — the ONLY actionable label: a `waiting_for_rebake` row
- *   that is NOT superseded (no strictly-newer terminal row for its own
- *   GENERATION, success OR failure — see `supersededWaitingIds`) still needs the
- *   operator's second, post-rebake Apply. MUST stay in lockstep with
- *   `isIacAwaitingOperator` above — see its comment.
+ * - "Continue this change →" — a non-superseded `waiting_for_rebake` row whose
+ *   merge has not landed. The operator already approved it once, but the next
+ *   POST retries the merge before it can apply, so calling this step "Apply"
+ *   promises the wrong immediate operation.
+ * - "Apply this change →" — a non-superseded `waiting_for_rebake` row whose
+ *   merge is confirmed. The remaining POST resumes the apply.
  * - "View approval history →" — a DONE row (`applied` + `merge_state==='merged'`):
  *   the gate is closed, so the link is a record to look back at, not an action.
  * - "View failure details →" — a TERMINAL-FAILED row (`failed`,
@@ -554,8 +549,53 @@ export function isIacAwaitingOperator(
  *   applied-but-merge-pending
  *   (still actionable via the merge-only reconcile), or an unmatchable
  *   `pr_number`. Neutral wording so a parked row doesn't imply pending approval
- *   work (Codex review, PR #71: no stale "Review & approve" affordance).
+ *   work (Codex review, PR #71: no stale actionable affordance).
  */
+export type IacApprovalCtaState =
+  | { kind: 'superseded'; supersededByPr: number | null }
+  | { kind: 'continue' }
+  | { kind: 'apply' }
+  | { kind: 'history' }
+  | { kind: 'failure' }
+  | { kind: 'page' };
+
+/**
+ * The single semantic discriminator behind every iac approval-page link.
+ * Callers choose surface-appropriate copy and controls from this result; they
+ * must not re-derive `apply_status` / `merge_state` combinations themselves.
+ */
+export function iacApprovalCtaState(
+  d: {
+    apply_status?: string;
+    merge_state?: string;
+    pr_number?: number;
+    superseded_by_pr?: number;
+    decision_id?: string;
+  },
+  supersededIds: ReadonlySet<string>,
+): IacApprovalCtaState {
+  if (
+    d.apply_status === 'waiting_for_rebake' &&
+    typeof d.superseded_by_pr === 'number' &&
+    Number.isInteger(d.superseded_by_pr) &&
+    d.superseded_by_pr > 0
+  )
+    return { kind: 'superseded', supersededByPr: d.superseded_by_pr };
+  // Superseded per GENERATION: a strictly newer terminal row for this row's own
+  // event_key overtook it (ds-dzd). NOT PR-wide — see isIacAwaitingOperator for
+  // why an `applied` row on a different generation must not silence this one.
+  const superseded = typeof d.decision_id === 'string' && supersededIds.has(d.decision_id);
+  if (d.apply_status === 'waiting_for_rebake' && superseded)
+    return { kind: 'superseded', supersededByPr: null };
+  if (d.apply_status === 'waiting_for_rebake')
+    return d.merge_state === 'merged' ? { kind: 'apply' } : { kind: 'continue' };
+  if (d.apply_status === 'applied' && d.merge_state === 'merged')
+    return { kind: 'history' };
+  if (d.apply_status !== undefined && TERMINAL_FAILED_APPLY_STATUSES.has(d.apply_status))
+    return { kind: 'failure' };
+  return { kind: 'page' };
+}
+
 export function iacApproveLabel(
   d: {
     apply_status?: string;
@@ -567,21 +607,21 @@ export function iacApproveLabel(
   supersededIds: ReadonlySet<string>,
   t: TranslateFn,
 ): string {
-  if (
-    d.apply_status === 'waiting_for_rebake' &&
-    typeof d.superseded_by_pr === 'number' &&
-    Number.isInteger(d.superseded_by_pr) &&
-    d.superseded_by_pr > 0
-  )
-    return t('shared.approve.supersededBy', { pr: d.superseded_by_pr });
-  // Superseded per GENERATION: a strictly newer terminal row for this row's own
-  // event_key overtook it (ds-dzd). NOT PR-wide — see isIacAwaitingOperator for
-  // why an `applied` row on a different generation must not silence this one.
-  const superseded = typeof d.decision_id === 'string' && supersededIds.has(d.decision_id);
-  if (d.apply_status === 'waiting_for_rebake' && !superseded) return t('shared.approve.reviewApprove');
-  if (d.apply_status === 'applied' && d.merge_state === 'merged')
-    return t('shared.approve.viewHistory');
-  if (d.apply_status !== undefined && TERMINAL_FAILED_APPLY_STATUSES.has(d.apply_status))
-    return t('shared.approve.viewFailure');
-  return t('shared.approve.goToPage');
+  const state = iacApprovalCtaState(d, supersededIds);
+  switch (state.kind) {
+    case 'superseded':
+      return state.supersededByPr === null
+        ? t('shared.approve.goToPage')
+        : t('shared.approve.supersededBy', { pr: state.supersededByPr });
+    case 'continue':
+      return t('shared.approve.continueChange');
+    case 'apply':
+      return t('shared.approve.applyChange');
+    case 'history':
+      return t('shared.approve.viewHistory');
+    case 'failure':
+      return t('shared.approve.viewFailure');
+    case 'page':
+      return t('shared.approve.goToPage');
+  }
 }

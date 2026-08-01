@@ -21,7 +21,7 @@ function tid(label: string): string {
 // First component-render test in the repo. Uses @testing-library/svelte (v5,
 // Svelte-5-native render) on the jsdom environment configured in
 // vitest.config.ts. We assert the supersession behaviour (a later `applied`
-// iac_apply row retires the stale "Review & approve →" CTA on its
+// iac_apply row retires the stale actionable CTA on its
 // `waiting_for_rebake` siblings) and the new meta-line status token end-to-end
 // through the component, not just via the pure helpers.
 
@@ -63,7 +63,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     expect(link.getAttribute('href')).toBe('/iac-approvals/68');
   });
 
-  it('keeps "Review & approve →" on a lone waiting row with no applied sibling', () => {
+  it('uses "Continue this change →" while a waiting row is not yet merged', () => {
     const decisions: Decision[] = [
       iacRow({ decision_id: 'wait-71', apply_status: 'waiting_for_rebake', pr_number: 71 }),
     ];
@@ -73,11 +73,28 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     });
 
     const link = getByTestId('iac-approve-link');
-    expect(link.textContent?.trim()).toBe('Review & approve →');
+    expect(link.textContent?.trim()).toBe('Continue this change →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/71');
   });
 
-  it('renders the apply_status token on the meta line (applied + awaiting rebuild)', () => {
+  it('uses "Apply this change →" once a waiting row is merged', () => {
+    const decisions: Decision[] = [
+      iacRow({
+        decision_id: 'wait-71-merged',
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'merged',
+        pr_number: 71,
+      }),
+    ];
+
+    const { getByTestId } = render(DecisionsRail, {
+      props: { decisions, activeTraceId: null, onOpenTrace: noop },
+    });
+
+    expect(getByTestId('iac-approve-link').textContent?.trim()).toBe('Apply this change →');
+  });
+
+  it('renders the apply_status token on the meta line (applied + awaiting apply)', () => {
     const decisions: Decision[] = [
       iacRow({ decision_id: 'applied-68', apply_status: 'applied', pr_number: 68, head_sha: '0496b305deadbeef' }),
       iacRow({ decision_id: 'wait-71', apply_status: 'waiting_for_rebake', pr_number: 71, head_sha: '0496b305deadbeef' }),
@@ -98,7 +115,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     // The HelpHint panel is collapsed by default (icon-only button, no text),
     // so both meta lines are the exact token string: action · status · ⎇ sha.
     expect(metas).toContain('iac_apply· applied· ⎇ 0496b30');
-    expect(metas).toContain('iac_apply· awaiting rebuild· ⎇ 0496b30');
+    expect(metas).toContain('iac_apply· awaiting apply· ⎇ 0496b30');
     const applied = metas.find((t) => t?.includes('applied'))!;
     expect(applied.indexOf('applied')).toBeGreaterThan(applied.indexOf('iac_apply'));
     expect(applied.indexOf('applied')).toBeLessThan(applied.indexOf('⎇'));
@@ -131,11 +148,11 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
     });
     const link = getByTestId('iac-approve-link');
-    expect(link.textContent?.trim()).toBe('Review & approve →');
+    expect(link.textContent?.trim()).toBe('Continue this change →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/216');
   });
 
-  it('a superseded_by_pr row also reads "superseded" (ok, done ✓) in the status badge, not "awaiting rebuild"', () => {
+  it('a superseded_by_pr row also reads "superseded" (ok, done ✓) in the status badge, not "awaiting apply"', () => {
     const decisions: Decision[] = [
       iacRow({
         decision_id: 'wait-216',
@@ -149,7 +166,7 @@ describe('DecisionsRail — iac_apply CTA supersession + status token', () => {
     });
     const status = getByTestId('iac-status');
     expect(status.textContent).toContain('superseded');
-    expect(status.textContent).not.toContain('awaiting rebuild');
+    expect(status.textContent).not.toContain('awaiting apply');
     expect(status.classList.contains('iac-status--ok')).toBe(true);
     expect(container.querySelector('.iac-status-check')).not.toBeNull();
   });
@@ -371,12 +388,12 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     // Face = newest doc: applied status on the meta line, PR link title.
     const meta = container.querySelector('.row-meta')?.textContent;
     expect(meta).toContain('applied');
-    expect(meta).not.toContain('awaiting rebuild');
+    expect(meta).not.toContain('awaiting apply');
 
     // The summary carries the status COMPOSITION (exact single-expression
     // string — lifecycleSummaryLabel), never a bare count that hides state.
     const summary = getByTestId('iac-lifecycle-summary');
-    expect(summary.textContent?.trim()).toBe('2 earlier steps · awaiting rebuild ×2');
+    expect(summary.textContent?.trim()).toBe('2 earlier steps · awaiting apply ×2');
 
     // Calm history (waiting steps only) ⇒ the expander defaults to CLOSED, and
     // the step nodes sit structurally INSIDE it so the native expander gates
@@ -394,7 +411,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
       '2026-06-04T14:53:29Z',
       '2026-06-04T14:53:36Z',
     ]);
-    for (const s of steps) expect(s.textContent).toContain('awaiting rebuild');
+    for (const s of steps) expect(s.textContent).toContain('awaiting apply');
     // Each cryptic step also carries the focusable help affordance.
     expect(getAllByTestId('status-help')).toHaveLength(2);
 
@@ -405,7 +422,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     expect(opened).toEqual([tid('trace-waiting')]);
   });
 
-  it('an all-waiting group (no applied sibling) keeps the live "Review & approve →" CTA on ONE row', () => {
+  it('an all-waiting pre-merge group keeps one live "Continue this change →" CTA', () => {
     // The highest-risk CTA case: collapsing must NOT eat the actionable label.
     const decisions: Decision[] = [
       iacRow({ decision_id: 'wait-90-a', apply_status: 'waiting_for_rebake', pr_number: 90 }),
@@ -416,7 +433,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     });
     expect(getAllByTestId('past-decision-item')).toHaveLength(1);
     const link = getByTestId('iac-approve-link');
-    expect(link.textContent?.trim()).toBe('Review & approve →');
+    expect(link.textContent?.trim()).toBe('Continue this change →');
     expect(link.getAttribute('href')).toBe('/iac-approvals/90');
   });
 
@@ -527,7 +544,7 @@ describe('DecisionsRail — collapsed iac_apply lifecycle groups', () => {
     const { getByTestId, queryByTestId } = render(DecisionsRail, {
       props: { decisions, activeTraceId: null, onOpenTrace: noop },
     });
-    expect(getByTestId('iac-approve-link').textContent?.trim()).toBe('Review & approve →');
+    expect(getByTestId('iac-approve-link').textContent?.trim()).toBe('Continue this change →');
     expect(queryByTestId('iac-lifecycle-summary')).toBeNull();
   });
 });

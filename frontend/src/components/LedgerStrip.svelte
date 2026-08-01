@@ -91,19 +91,29 @@
    *  the older sibling the openable one. `decisions` comes straight from the
    *  overview store's snapshot today; anything else needs a sort first.
    *
-   *  What the suppressed row costs the operator: nothing they could not reach
-   *  from the row that stays openable. The siblings are lifecycle stages of ONE
-   *  reasoning run — same trace, same events, same prose — so the older one's
-   *  record would repeat the newer one's almost entirely. It is an intermediate
-   *  recovery pointer, not a separately-reasoned decision.
+   *  Since ds-b0k this is mostly a RESIDUAL guard, and it is worth being exact
+   *  about what is left for it to catch. `ledgerRows`' fold now collapses the
+   *  create-class pair before this function ever sees it: both docs share an
+   *  `event_key` and both are `waiting_for_rebake`, so rule 1 drops the older
+   *  and one row reaches the strip. Verified by rendering the pair — with the
+   *  key, one row (`awaiting_apply`); without it, two.
    *
-   *  It is NOT true that the row itself shows which sibling is which, and an
-   *  earlier version of this comment claimed it did. Both classify `open`
-   *  (isIacAwaitingOperator holds for each), so titleFor and subtitleFor return
-   *  identical strings and only the time cell differs. The gate rests on the
-   *  siblings being STAGES, not on the operator being able to tell them apart.
-   *  If a change ever makes them independently-reasoned decisions, that is the
-   *  premise to re-check here — not the rendering.
+   *  So what still arrives here as two rows on one trace is what the fold
+   *  deliberately cannot reach: a doc with no `event_key`, a status this build
+   *  does not recognise (the fold fails toward RETENTION on purpose), or two
+   *  lanes that happen to share a trace. The gate stays for those, and its
+   *  reason is the one thing true of all of them — the record is keyed by
+   *  TRACE, so a second affordance on the same trace opens the SAME record. It
+   *  is a duplicate door, not a door to something else.
+   *
+   *  Two earlier versions of this comment justified the gate by what the rows
+   *  show, and both were wrong, in opposite directions. Before ds-b0k the pair
+   *  classified identically (`open` for each), so the claim that the row said
+   *  which sibling it was, was false. After ds-b0k they classify
+   *  `awaiting_apply` vs `awaiting_merge` and are plainly distinguishable — so
+   *  the correction was falsified too. Neither fact is what holds the gate up:
+   *  it rests on the destination being identical, which no amount of row copy
+   *  changes.
    *
    *  Null means the row renders as plain text. Never a disabled control: the
    *  strip is a record, and a greyed-out button on a row whose reasoning was
@@ -138,13 +148,20 @@
   // `failed` and `unconfirmed` get DIFFERENT glyphs on purpose. An outcome we
   // could not confirm is not a failure — the operation may still be running —
   // so it reads as a question, not a cross (ds-2mc).
+  // `awaiting_apply` shares the in-flight glyph with `open` — both are work
+  // that has not landed — but keeps its own state so the copy, the CSS hook and
+  // `data-state` can distinguish "nobody has approved this" from "this was
+  // approved and merged, and the apply has not run yet" (ds-db0).
   const GLYPH: Record<LedgerState, string> = {
-    applied: '✓', open: '◍', noted: '⬤', failed: '✕', unconfirmed: '?',
+    applied: '✓', open: '◍', awaiting_merge: '◍', awaiting_apply: '◍',
+    noted: '⬤', failed: '✕', unconfirmed: '?',
   };
 
   function titleFor(row: LedgerRow, tf: TranslateFn): string {
     if (row.state === 'applied') return tf('desk.ledger.appliedTitle');
     if (row.state === 'open') return tf('desk.ledger.openTitle');
+    if (row.state === 'awaiting_merge') return tf('desk.ledger.mergingTitle');
+    if (row.state === 'awaiting_apply') return tf('desk.ledger.applyPendingTitle');
     if (row.state === 'failed') return tf('desk.ledger.failedTitle');
     if (row.state === 'unconfirmed') return tf('desk.ledger.unconfirmedTitle');
     return decisionActionLabel(row.decision.action, tf);
@@ -336,7 +353,9 @@
   .ledger-strip__glyph--applied {
     color: var(--ds-ok);
   }
-  .ledger-strip__glyph--open {
+  .ledger-strip__glyph--open,
+  .ledger-strip__glyph--awaiting_merge,
+  .ledger-strip__glyph--awaiting_apply {
     color: var(--ds-warn);
   }
   .ledger-strip__glyph--noted {

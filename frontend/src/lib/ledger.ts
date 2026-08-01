@@ -24,7 +24,30 @@ import {
   isIacAwaitingOperator,
 } from './approval';
 
-export type LedgerState = 'applied' | 'open' | 'noted' | 'failed' | 'unconfirmed';
+// 'open' and 'awaiting_apply' both mean "this row still needs the operator",
+// but they are NOT interchangeable copy. 'open' is a live solicitation (a
+// rollback approval nobody has spent yet); 'awaiting_apply' is the IaC lane
+// AFTER approval — the backend writes that apply_status at merge time
+// (agent/main.py:7280,7331 record it alongside merge_state pending→merged), so
+// calling it "awaiting your approval" told the operator their own approval had
+// not happened (ds-db0).
+//
+// Named for the APPLY, not the re-bake, deliberately. The `waiting_for_rebake`
+// status does not mean "the re-bake is still running" — the coordinator never
+// observes the external build at all. It writes the status at merge and leaves
+// it there until the operator's second submit resumes the apply
+// (agent/main.py:7187 `_iac_resume_apply`). So "awaiting re-bake" goes stale the
+// instant the build finishes, while "awaiting apply" is true for the whole
+// window from merge to that second submit. A state name that asserts something
+// this client cannot see will mislead the next reader of it (Codex review r3).
+export type LedgerState =
+  | 'applied'
+  | 'open'
+  | 'awaiting_merge'
+  | 'awaiting_apply'
+  | 'noted'
+  | 'failed'
+  | 'unconfirmed';
 
 export interface LedgerRow {
   decision: Decision;
@@ -34,6 +57,26 @@ export interface LedgerRow {
 }
 
 const DEFAULT_MAX = 4;
+
+export interface LedgerOpts {
+  now?: number;
+  origin?: string;
+  /** Keep the row carrying this trace even if the cap would drop it, so a
+   *  deep-linked record always has a row to open under. */
+  keepTraceId?: string | null;
+}
+
+/** The ONE apply_status that may be collapsed into a newer doc for the same
+ *  event_key (ds-b0k). `waiting_for_rebake` is the pre-merge crash-recovery
+ *  pointer — a phase, not an outcome — which is exactly why it is excluded
+ *  from the server's own `_IAC_RUN_ENDED_STATUSES` (agent/main.py:918). Every
+ *  other status, INCLUDING one this build does not recognise, keeps its row. */
+const IAC_FOLDABLE_STATUS = 'waiting_for_rebake';
+
+/** The one status foldable by shared `apply_attempt_id`. See the second fold
+ *  rule in `ledgerRows` for why this is `applied` and nothing else: a terminal
+ *  FAILURE must always keep its own row, no matter what follows it. */
+const IAC_ATTEMPT_FOLDABLE_STATUS = 'applied';
 
 /** Parses `created_at` to epoch-ms, or null if absent/unparseable. Unlike
  *  desk.ts's `parseForOrdering` (which substitutes -Infinity so a missing
@@ -82,8 +125,18 @@ function classify(
   if (isRollbackAwaitingOperator(d, { now, origin })) {
     return 'open';
   }
+  // Same predicate as before — only the STATE differs, so the desk and the
+  // ledger still agree on "does this need the operator". `isIacAwaitingOperator`
+  // is true only for apply_status === 'waiting_for_rebake', which the backend
+  // records at merge, so every row reaching here is already approved.
   if (isIacAwaitingOperator(d, supersededIds)) {
-    return 'open';
+    // `waiting_for_rebake` is recorded TWICE: once before the merge
+    // (merge_state 'pending', agent/main.py:7280) and once after
+    // (merge_state 'merged', :7331). Only the second is waiting on the
+    // operator's apply — while the merge is unfinished (or blocked) the pending
+    // work is the MERGE, so naming the apply there would be a second wrong
+    // claim in place of the one this fix removed.
+    return d.merge_state === 'merged' ? 'awaiting_apply' : 'awaiting_merge';
   }
 
   return 'noted';
@@ -123,7 +176,7 @@ function classify(
 export function ledgerRows(
   decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
   max: number = DEFAULT_MAX,
-  opts?: { now?: number; origin?: string; keepTraceId?: string | null },
+  opts?: LedgerOpts,
 ): LedgerRow[] {
   const now = opts?.now ?? Date.now();
   const origin = opts?.origin;
@@ -157,24 +210,149 @@ export function ledgerRows(
     return b.ts - a.ts;
   });
 
-  const capped = rows.slice(0, cap);
+
+  // One LIFECYCLE, one row (ds-b0k). A single `event_key` accumulates a SEQUENCE
+  // of phase docs by design: PR #168 wrote waiting_for_rebake+pending and then
+  // waiting_for_rebake+merged seven seconds apart, and June's `iac-apply-95`
+  // ran pending → merged → failed_state_suspect. Drawing each doc as its own row
+  // made one event look like several — and with a 4-row cap, one chatty event
+  // could swallow the whole strip.
+  //
+  // ⚠️ `event_key` is NOT unique per occurrence — it hashes the drift signature
+  // / PR generation, so a RECURRENCE reuses it. Live proof: the eventarc key
+  // ...ae4170632c79c599 carries a no_op (07-29) AND a rollback (07-31) two days
+  // apart, and `iac-apply-32-...` carries two separate applied+merged records 27
+  // days apart. A naive collapse-by-key would delete the older of each — on a
+  // strip headed "Recent record", hiding a real record is far worse than
+  // showing a redundant one, so the collapse is deliberately narrow — two rules,
+  // each folding one shape PROVEN to be the same fact written twice:
+  //
+  //   1. an unfinished IaC phase pointer a newer doc for the same event_key has
+  //      already moved past;
+  //   2. an `applied` row a newer `applied` row for the same apply_attempt_id
+  //      has already restated.
+  //
+  // `_IAC_RUN_ENDED_STATUSES` (agent/main.py:918) is the server's own list of
+  // statuses meaning "this apply request already ended", and it deliberately
+  // EXCLUDES waiting_for_rebake — precisely because that value is the pre-merge
+  // crash-recovery pointer, i.e. a phase and not an outcome. A terminal doc is a
+  // completed historical fact and keeps its row unless rule 2 proves a strictly
+  // newer doc is that same attempt restated. Non-iac lanes (rollback, no_op,
+  // escalation) never write multiple docs per key within one lifecycle — their
+  // repeats are recurrences — so they are excluded entirely.
+  //
+  // Runs AFTER the sort (so "newest" is meaningful) and BEFORE the cap, so the
+  // cap is spent on distinct facts rather than on restatements of one. It is
+  // NOT a guarantee of one row per lifecycle, and must not be described as one:
+  // a lifecycle that genuinely records several DIFFERENT outcomes (an apply that
+  // failed, then a later attempt that succeeded) still spends a row on each, by
+  // design. Rows whose identity field is absent or empty are never collapsed on
+  // that rule: absent identity is not shared identity.
+  const seenIacEventKeys = new Set<string>();
+  const seenAppliedAttemptIds = new Set<string>();
+  const deduped: LedgerRow[] = [];
+  for (const row of rows) {
+    const d = row.decision;
+    if (d.action !== 'iac_apply') {
+      deduped.push(row);
+      continue;
+    }
+    const key = d.event_key;
+    const hasKey = typeof key === 'string' && key !== '';
+    const attemptId = d.apply_attempt_id;
+    const hasAttemptId = typeof attemptId === 'string' && attemptId !== '';
+
+    // RULE 1 — the phase pointer. Fold ONLY the one status proven redundant.
+    // Written as a positive test against `waiting_for_rebake` rather than as
+    // `!IAC_RUN_ENDED_STATUSES`, because a negative test silently makes every
+    // UNKNOWN status foldable — a legacy row with no apply_status, a malformed
+    // doc, or a status added server-side later would all be discarded sight
+    // unseen. On an audit surface unknown must fail toward RETENTION: show a
+    // redundant row rather than delete an unrecognised one.
+    if (hasKey && d.apply_status === IAC_FOLDABLE_STATUS && seenIacEventKeys.has(key)) {
+      continue;
+    }
+
+    // RULE 2 — one apply attempt, one row (Codex review r3). Rule 1 alone still
+    // let ONE apply fill the strip: the merge-only reconcile records
+    // `applied`+`merged` (agent/main.py:7117) over an earlier `applied`+`failed`
+    // (:7060) for the same attempt, and both are terminal, so both survived —
+    // as two rows reading identically ("Approved · applied"), because the
+    // ledger's copy turns on apply_status alone. Worse, `reconcile_merge_state`
+    // promotes a stale `failed` to `merged` at SERVE time, so the two rows can
+    // arrive already byte-identical. Repeated reconciles could push four of them
+    // and crowd out every unrelated record.
+    //
+    // `apply_attempt_id` is the right identity and the only one available: the
+    // worker mints it per apply, and the reconcile path passes the ORIGINAL
+    // value straight through (:7219), so rows sharing it are one apply seen at
+    // several moments. Both sides must be `applied`: if the newer row is a
+    // terminal FAILURE it never enters the set, so the older row keeps its place
+    // and the transition stays visible. A failure is never folded into anything.
+    if (
+      hasAttemptId &&
+      d.apply_status === IAC_ATTEMPT_FOLDABLE_STATUS &&
+      seenAppliedAttemptIds.has(attemptId)
+    ) {
+      continue;
+    }
+
+    if (hasKey) seenIacEventKeys.add(key);
+    if (hasAttemptId && d.apply_status === IAC_ATTEMPT_FOLDABLE_STATUS) {
+      seenAppliedAttemptIds.add(attemptId);
+    }
+    deduped.push(row);
+  }
+
+  const capped = deduped.slice(0, cap);
   const keep = opts?.keepTraceId;
   if (typeof keep === 'string' && keep !== '' && !capped.some((r) => r.decision.trace_id === keep)) {
+    // Searches `deduped`, NOT `rows` (ds-jns × ds-b0k). Rescuing from the
+    // pre-fold list would resurrect a phase pointer the fold above deliberately
+    // removed — and for the create-class pair it would rescue the very row
+    // whose surviving sibling already carries this same trace_id, drawing the
+    // lifecycle twice on the one surface built to stop that.
+    //
     // Appended, not spliced into date order: it is out of the window the cap
     // describes, and pretending otherwise would put an older row above a newer
     // one with nothing on screen explaining why.
-    const kept = rows.find((r) => r.decision.trace_id === keep);
+    const kept = deduped.find((r) => r.decision.trace_id === keep);
     if (kept) capped.push(kept);
   }
   return capped;
 }
 
 /**
- * Is there a decision in this snapshot carrying `traceId`? The question
- * `ledgerRows`' `keepTraceId` makes answerable on the caller's side: because a
- * kept row survives the cap, "the snapshot has it" and "the strip renders it"
+ * The rows `ledgerRows` yields with no cap — what "show all" actually renders.
+ *
+ * Both helpers below are defined in terms of this rather than by walking
+ * `decisions` directly, because since ds-b0k the row set is no longer the
+ * decision set: the fold in `ledgerRows` drops redundant phase pointers and
+ * restated applies. A helper that counted raw docs would promise rows that
+ * "show all" then does not draw, and one that looked up a trace among raw docs
+ * would report a row the strip never renders. Deriving both from the same
+ * function makes those answers right by construction instead of by a rule
+ * somebody has to remember to update here too.
+ */
+function uncappedRows(
+  decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
+  opts?: LedgerOpts,
+): LedgerRow[] {
+  return ledgerRows(decisions, Number.MAX_SAFE_INTEGER, opts);
+}
+
+/**
+ * Does the strip RENDER a row carrying `traceId`? The question `ledgerRows`'
+ * `keepTraceId` makes answerable on the caller's side: because a kept row
+ * survives the cap, "the uncapped row set has it" and "the strip renders it"
  * are equivalent, so App can decide whether to pin an out-of-window record
  * without knowing anything about the strip's cap or its "show more" state.
+ *
+ * Answering "is it here" over the RAW decisions would be the wrong question
+ * since the fold landed: a doc that exists but folds away is present in the
+ * snapshot and absent from the strip, and App reading the first as the second
+ * would decline to pin a record that then has no row to open under — the
+ * record rendering NOWHERE.
  *
  * Deliberately NOT gated on `isReplayableTraceId`: this answers "is it here",
  * and a decision doc holding a malformed trace_id would still be here. The
@@ -185,20 +363,19 @@ export function hasDecisionForTrace(
   traceId: string | null | undefined,
 ): boolean {
   if (!traceId) return false;
-  return (decisions ?? []).some((d) => d != null && d.trace_id === traceId);
+  return uncappedRows(decisions).some((r) => r.decision.trace_id === traceId);
 }
 
 /**
- * How many rows `ledgerRows` would classify with no cap — i.e. how many
- * decisions the snapshot actually holds. The strip's "show more" control gates
- * on `total > rendered`, and computing it here rather than in the component
- * keeps "what counts as a row" (skip null elements, and nothing else) in the
- * one module that decides it.
+ * How many rows `ledgerRows` would yield with no cap. The strip's "show more"
+ * control gates on `total > rendered` and labels itself "Show all {n}", so this
+ * has to count what "show all" DRAWS, not what the snapshot holds: counting raw
+ * docs would label the button with a number the expanded strip never reaches
+ * and, because `total > rendered` would stay true after expanding, leave it on
+ * screen forever doing nothing.
  */
 export function ledgerTotal(
   decisions: ReadonlyArray<Decision | null | undefined> | null | undefined,
 ): number {
-  let n = 0;
-  for (const d of decisions ?? []) if (d != null) n++;
-  return n;
+  return uncappedRows(decisions).length;
 }

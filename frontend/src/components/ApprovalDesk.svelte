@@ -20,7 +20,12 @@
   import { deskModel, awaitingCount, type DeskModel, type DeskPending, type DeskStamped } from '../lib/desk';
   import { resourceCards, scopeTotals, type InfraGraph, type PendingApproval } from '../lib/infra_graph';
   import { fmtWhen } from '../lib/format';
-  import { notifyFailed } from '../lib/approval';
+  import {
+    iacApprovalCtaState,
+    notifyFailed,
+    supersededWaitingIds,
+    type IacApprovalCtaState,
+  } from '../lib/approval';
   import type { TraceCache } from '../lib/traceCache';
   import type { Decision } from '../lib/types';
   import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
@@ -251,7 +256,9 @@
     return null;
   }
 
-  function pendingHeadline(m: DeskPending, tf: TranslateFn): string {
+  type DeskIacCtaState = IacApprovalCtaState | { kind: 'approve' };
+
+  function pendingHeadline(m: DeskPending, tf: TranslateFn, cta: DeskIacCtaState): string {
     if (m.source === 'rollback') return tf('desk.pending.rollback.headline');
     if (m.provenance.kind === 'listing' && m.provenance.approval.title) {
       return m.provenance.approval.title;
@@ -260,7 +267,115 @@
       const prTitle = m.provenance.decision.pr_title;
       if (typeof prTitle === 'string' && prTitle !== '') return prTitle;
     }
+    // No title to show. Titleless `decision` provenance means the PR already
+    // merged (desk.ts:78-84); titleless `listing` provenance may STILL be an
+    // already-approved PR held over by the cache. Either way the fallback must
+    // never ask for an approval the operator has already given (ds-db0).
+    if (cta.kind === 'continue' || cta.kind === 'apply') {
+      return tf('desk.pending.iacMerged.headlineFallback', { pr: m.prNumber });
+    }
+    if (cta.kind !== 'approve') {
+      return tf('desk.pending.iacView.headlineFallback', { pr: m.prNumber });
+    }
     return tf('desk.pending.iac.headlineFallback', { pr: m.prNumber });
+  }
+
+  /**
+   * Resolve the desk through approval.ts's ONE semantic CTA discriminator. The
+   * extra `approve` state belongs only to listing provenance: a fresh listing
+   * has no decision yet, so the full first-approval gate must remain available.
+   *
+   * Provenance alone is not enough (Codex review). `selectPendingIac` (the
+   * listing arm) is tried FIRST and returns immediately (desk.ts:627), and the
+   * open-PR listing is cached for up to 60s, so for a minute after the approve
+   * click the listing still carries the just-merged PR and wins. It is filtered
+   * only for `applied`+`merged` (approval.ts:337) — `waiting_for_rebake`+
+   * `merged` does not qualify. So "listing provenance" means "GitHub said this
+   * PR is open", NOT "nobody has approved it", and the byline must key on the
+   * decisions, not on which selector happened to win.
+   *
+   * The listing arm's DTO carries NO generation identity (no event_key, no
+   * head_sha), so every join it makes is PR-WIDE and can misattribute one
+   * generation's decision to another. Exactly one piece of evidence is immune:
+   * `waiting_for_rebake` + `merge_state === 'merged'` proves the PR ITSELF
+   * merged, and a merged PR cannot also be genuinely open with a newer
+   * unapproved generation — so a listing row naming it is provably stale cache.
+   *
+   * Everything else is gated behind that proof, because every non-`approve`
+   * state TAKES THE GATE AWAY. `generation A's apply failed → the PR was never
+   * merged, so it stays open → the operator pushes a fix → generation B` is an
+   * ordinary recovery, not an edge case; letting A's terminal failure decide B's
+   * card leaves a live, unapproved change with nothing but a "view details"
+   * link. That is ds-0rm (desk.ts:620) a third time, and it is the one direction
+   * this component must never fail in. Absent proof of merge: offer the gate.
+   */
+  function pendingIacCtaState(m: DeskPending): DeskIacCtaState {
+    if (m.source === 'rollback') return { kind: 'approve' };
+    const list = decisions ?? [];
+    const supersededIds = supersededWaitingIds(list);
+    if (m.provenance.kind === 'decision') {
+      return iacApprovalCtaState(m.provenance.decision, supersededIds);
+    }
+
+    const prDecisions = list.filter(
+      (d): d is Decision => d?.action === 'iac_apply' && d.pr_number === m.prNumber,
+    );
+    // The misattribution-proof witness. Without one the listing may be pointing
+    // at a live generation, and only the full approval path is safe.
+    //
+    // It must also be the ONLY one. Two merged witnesses means two generations
+    // merged this PR, which is reachable: a same-head C2 rerun mints a second
+    // `event_key` (the key hashes generation_metadata as well as head_sha,
+    // agent/main.py:6406), the two approval POSTs claim independently, and
+    // `merge_pr_at_sha` treats "already merged at the expected head" as success
+    // (driftscribe_lib/github.py:1052), so the later POST records a merged
+    // witness too (:7330). Nothing in this payload says which generation the
+    // approval page will resolve, so scoping to either could describe the wrong
+    // one — and picking the first would let a frozen apply read as live.
+    const witnessKeys = new Set(
+      prDecisions
+        .filter(
+          (d) => d.apply_status === 'waiting_for_rebake' && d.merge_state === 'merged',
+        )
+        .map((d) => d.event_key),
+    );
+    if (witnessKeys.size !== 1) return { kind: 'approve' };
+    const [witnessKey] = witnessKeys;
+
+    // A merged witness proves the PR settled — it does NOT prove the other rows
+    // under this `pr_number` describe the same GENERATION. An apply that fails
+    // before the merge leaves the PR open, so the operator pushes a fix and the
+    // PR accumulates generation A's terminal failure beside generation B's
+    // merge. Joining PR-wide would let A's failure outrank B's live apply: the
+    // card would say "View failure details" while the approval page resolves the
+    // latest artifact (B), keeps its form, and the rail says "Apply this change".
+    //
+    // `event_key` hashes `head_sha` (agent/main.py:6406), so it is the
+    // generation. Scope the join to the witness's own key; without one there is
+    // no proof of generation and the full approval path is the safe answer.
+    if (typeof witnessKey !== 'string' || witnessKey === '') return { kind: 'approve' };
+    const genDecisions = prDecisions.filter((d) => d.event_key === witnessKey);
+
+    // Same generation as the merge, so the page's own suppressions decide:
+    // terminal failure and explicit supersession both render a banner with no
+    // form (agent/main.py:6183, :6165), so a CTA there would point at nothing.
+    // A failure appended AFTER the witness (the resume-apply at :7452) shares
+    // its key and still wins here — a frozen apply must not read as live.
+    const states = genDecisions.map((d) => iacApprovalCtaState(d, supersededIds));
+    return (
+      states.find((state) => state.kind === 'failure') ??
+      states.find(
+        (state) => state.kind === 'superseded' && state.supersededByPr !== null,
+      ) ??
+      states.find((state) => state.kind === 'apply') ?? { kind: 'approve' }
+    );
+  }
+
+  function pendingWhoKey(
+    cta: DeskIacCtaState,
+  ): 'desk.pending.iac.who' | 'desk.pending.iacMerged.who' | 'desk.pending.iacView.who' {
+    if (cta.kind === 'continue' || cta.kind === 'apply') return 'desk.pending.iacMerged.who';
+    return cta.kind === 'approve' ? 'desk.pending.iac.who' : 'desk.pending.iacView.who';
   }
 
   function pendingSubtitleTime(m: DeskPending): string | null {
@@ -378,6 +493,7 @@
            next to the markup that uses them. -->
       {@const proposedAt = pendingSubtitleTime(model)}
       {@const pendingDecision = activeDecision(model)}
+      {@const pendingCta = pendingIacCtaState(model)}
       <!-- Carried an id + tabindex="-1" so the band's awaiting numeral could
            scroll and focus it (ds-7ag.2). That numeral is an inert figure now
            (ds-s61), and nothing else referenced either attribute — a focusable
@@ -391,7 +507,7 @@
           <span
             >{model.source === 'rollback'
               ? $t('desk.pending.rollback.who')
-              : $t('desk.pending.iac.who')}</span
+              : $t(pendingWhoKey(pendingCta))}</span
           >
           {#if proposedAt}
             <span class="approval-desk__meta"
@@ -401,7 +517,7 @@
             >
           {/if}
         </div>
-        <h2>{pendingHeadline(model, $t)}</h2>
+        <h2>{pendingHeadline(model, $t, pendingCta)}</h2>
         {#if model.source === 'iac'}
           <p class="approval-desk__meta">{$t('desk.pending.prMeta', { pr: model.prNumber })}</p>
         {/if}
@@ -443,23 +559,62 @@
             >
           </p>
         {/if}
+        <!-- The shared discriminator keeps the card aligned with the rail and
+             the approval page. Only a fresh/ambiguous listing keeps the full
+             first-approval gate. Recorded approval gets one honest remaining
+             action (continue merge or apply); terminal/superseded states get a
+             view-only link because their page deliberately renders no form. -->
         <div class="approval-desk__acts">
-          <a
-            class="approval-desk__btn approval-desk__btn--primary"
-            data-testid="approval-desk-approve"
-            href={model.href}
-            target="_blank"
-            rel="noopener"
-            onclick={armReturnLadder}>{$t('desk.pending.approveCta')}</a
-          >
-          <a
-            class="approval-desk__btn approval-desk__btn--ghost"
-            data-testid="approval-desk-reject"
-            href={model.href}
-            target="_blank"
-            rel="noopener"
-            onclick={armReturnLadder}>{$t('desk.pending.rejectCta')}</a
-          >
+          {#if pendingCta.kind === 'continue'}
+            <a
+              class="approval-desk__btn approval-desk__btn--primary"
+              data-testid="approval-desk-continue"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.continueCta')}</a
+            >
+          {:else if pendingCta.kind === 'apply'}
+            <a
+              class="approval-desk__btn approval-desk__btn--primary"
+              data-testid="approval-desk-apply"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.applyCta')}</a
+            >
+          {:else if pendingCta.kind === 'approve'}
+            <a
+              class="approval-desk__btn approval-desk__btn--primary"
+              data-testid="approval-desk-approve"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.approveCta')}</a
+            >
+            <a
+              class="approval-desk__btn approval-desk__btn--ghost"
+              data-testid="approval-desk-reject"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.rejectCta')}</a
+            >
+          {:else}
+            <a
+              class="approval-desk__btn approval-desk__btn--primary"
+              data-testid={pendingCta.kind === 'failure'
+                ? 'approval-desk-view-failure'
+                : 'approval-desk-view'}
+              href={model.href}
+              target="_blank"
+              rel="noopener">{$t(
+                pendingCta.kind === 'failure'
+                  ? 'desk.pending.viewFailureCta'
+                  : 'desk.pending.viewDetailsCta',
+              )}</a
+            >
+          {/if}
         </div>
       </div>
     {:else if model.kind === 'unresolved'}

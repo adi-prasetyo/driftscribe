@@ -560,7 +560,7 @@ describe('isIacAwaitingOperator / iacApproveLabel honour supersededIds', () => {
     // Nothing has superseded generation B, so it is awaiting the operator even
     // though PR 95 also carries a finished generation A.
     expect(isIacAwaitingOperator(live, new Set())).toBe(true);
-    expect(iacApproveLabel(live, new Set(), t)).toBe('Review & approve →');
+    expect(iacApproveLabel(live, new Set(), t)).toBe('Continue this change →');
     // Only its own decision_id landing in the set retires it.
     expect(isIacAwaitingOperator(live, new Set(['wB']))).toBe(false);
     expect(iacApproveLabel(live, new Set(['wB']), t)).toBe('Go to approval page →');
@@ -573,9 +573,9 @@ describe('isIacAwaitingOperator / iacApproveLabel honour supersededIds', () => {
     expect(isIacAwaitingOperator(stale, new Set())).toBe(true);
   });
 
-  it('a superseded waiting row stops advertising "Review & approve →"', () => {
+  it('a superseded waiting row stops advertising an action', () => {
     expect(iacApproveLabel(stale, new Set(['w1']), t)).toBe('Go to approval page →');
-    expect(iacApproveLabel(stale, new Set(), t)).toBe('Review & approve →');
+    expect(iacApproveLabel(stale, new Set(), t)).toBe('Continue this change →');
   });
 });
 
@@ -753,11 +753,25 @@ describe('isIacAwaitingOperator — shared "awaiting the operator" predicate, ia
   });
 });
 
-describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
-  it('waiting_for_rebake + PR NOT resolved → "Review & approve →"', () => {
+describe('iacApproveLabel — retire stale CTAs and name the remaining operation', () => {
+  it('waiting_for_rebake + merge not confirmed → "Continue this change →"', () => {
     expect(
-      iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 68 }, new Set(), t),
-    ).toBe('Review & approve →');
+      iacApproveLabel(
+        { apply_status: 'waiting_for_rebake', merge_state: 'pending', pr_number: 68 },
+        new Set(),
+        t,
+      ),
+    ).toBe('Continue this change →');
+  });
+
+  it('waiting_for_rebake + merged → "Apply this change →"', () => {
+    expect(
+      iacApproveLabel(
+        { apply_status: 'waiting_for_rebake', merge_state: 'merged', pr_number: 68 },
+        new Set(),
+        t,
+      ),
+    ).toBe('Apply this change →');
   });
 
   it('waiting_for_rebake whose own generation was superseded → "Go to approval page →"', () => {
@@ -817,14 +831,14 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
     );
   });
 
-  it('waiting_for_rebake with an invalid/missing pr_number against a non-empty set → still "Review & approve →"', () => {
+  it('waiting_for_rebake with an invalid/missing pr_number still follows its merge state', () => {
     // A row that can't be matched to a PR can't be superseded → keep the live CTA.
     expect(iacApproveLabel({ apply_status: 'waiting_for_rebake' }, new Set(), t)).toBe(
-      'Review & approve →',
+      'Continue this change →',
     );
     expect(
       iacApproveLabel({ apply_status: 'waiting_for_rebake', pr_number: 0 }, new Set(), t),
-    ).toBe('Review & approve →');
+    ).toBe('Continue this change →');
   });
 
   // Two generations of the SAME PR: one finished, one still awaiting. The whole
@@ -844,7 +858,7 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
         superseded,
         t,
       ),
-    ).toBe('Review & approve →');
+    ).toBe('Continue this change →');
   });
 
   it('waiting_for_rebake + superseded_by_pr → "superseded by #N →" (wins even when the PR is NOT in resolvedPrs)', () => {
@@ -874,21 +888,21 @@ describe('iacApproveLabel — retire the stale CTA on superseded rows', () => {
         new Set(),
         t,
       ),
-    ).toBe('Review & approve →');
+    ).toBe('Continue this change →');
     expect(
       iacApproveLabel(
         { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: -1 },
         new Set(),
         t,
       ),
-    ).toBe('Review & approve →');
+    ).toBe('Continue this change →');
     expect(
       iacApproveLabel(
         { apply_status: 'waiting_for_rebake', pr_number: 216, superseded_by_pr: 1.5 },
         new Set(),
         t,
       ),
-    ).toBe('Review & approve →');
+    ).toBe('Continue this change →');
   });
 });
 
