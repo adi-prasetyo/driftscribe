@@ -33,11 +33,13 @@ describe('DemoNoticeBell', () => {
     // The load-bearing claim is the BOUND, not a restore schedule. The
     // scheduled self-heal (demo-reset.yml) was removed 2026-08-01, so any
     // "heals itself every couple of hours" promise here would be a lie to
-    // the visitor; what stays true is that every reachable target is a
-    // fixture.
-    expect(popover.textContent).toContain('demo fixture');
-    expect(popover.textContent).toContain('nothing you do lands on real infrastructure');
+    // the visitor. What replaces it must not overcorrect either: a visitor's
+    // rollback really does move traffic on a live Cloud Run service, so the
+    // honest bound is "not production", NOT "not real".
+    expect(popover.textContent).toContain('The changes are real');
+    expect(popover.textContent).toContain('never production');
     expect(popover.textContent).not.toContain('heals itself');
+    expect(popover.textContent).not.toMatch(/nothing you do (lands|touches)/);
     expect(getByTestId('demo-notice-badge')).toBeTruthy();
   });
 

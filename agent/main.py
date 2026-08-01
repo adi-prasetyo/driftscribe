@@ -3385,9 +3385,11 @@ def list_decisions_endpoint(
     # targets, and payment-demo being a fixture rather than a real workload) make
     # handing it out acceptable. 2026-08-01: "self-healing baseline" USED to be a
     # fourth bound here; demo-reset.yml is gone, so restoring the baseline is now
-    # a manual operator step (demo-window.sh open checklist, step 0). The blast
-    # radius is unchanged — always fixture-only — but the recovery is no longer
-    # automatic, so do not re-cite a schedule as part of this acceptance.
+    # a manual operator step (demo-window.sh open checklist, step 0). The RESOURCE
+    # scope is unchanged (always fixture-only); the TIME bound is not — recovery
+    # went from ~2h to "until an operator notices". Do not re-cite a schedule as
+    # part of this acceptance, and do not treat it as grandfathered when the
+    # window reopens.
     # Reverses
     # audit A.2's serve-time scrub for /decisions. (/runs stays always-scrubbed —
     # separate justification there.)

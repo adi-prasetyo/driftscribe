@@ -8,8 +8,14 @@ the tokenized ``?t=`` approval link from anonymous ``GET /decisions`` /
 scrub (audit C1 for the rollback link): a visitor sits in the operator's seat,
 so the rail's Approve CTA and the timeline's approval links must be live for
 them. Safety comes from the bounded blast radius (single-use token, 15-min TTL,
-the worker refuses no-op targets, self-healing baseline), not from withholding
-the link. This file now pins the REVERSED contract as the risk-acceptance record.
+the worker refuses no-op targets, and ``payment-demo`` being a demo fixture),
+not from withholding the link. 2026-08-01: the original rationale also listed a
+"self-healing baseline"; ``demo-reset.yml`` was removed, so restoring the
+fixture is now a manual operator step. The RESOURCE scope is unchanged (it was
+always fixture-only) but the TIME bound is gone — recovery went from ~2h to
+"until an operator notices" — so the acceptance must be re-taken, not assumed,
+before the window reopens. This file pins the REVERSED contract as the
+risk-acceptance record; it does NOT certify that the acceptance still holds.
 
 Contract pinned here:
 

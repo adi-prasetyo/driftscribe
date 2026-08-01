@@ -185,13 +185,44 @@ describe_edge() {
 open_checklist() {
   cat <<EOF
 Window-OPEN ordering (design doc runbook):
-  0. operator: RESTORE THE DEMO FIXTURE BASELINES BY HAND, before anything
-     else — payment-demo env/traffic (demo/ops-contract.yaml), lodash
-     4.17.20 in demo/upgrade-target/package.json, and close any open
-     infra/adopt-* PR. Nothing restores these on a schedule any more
-     (demo-reset.yml removed 2026-08-01), so a fixture left rotted by the
-     LAST window means this one opens with no drift for a visitor to find.
-  1. operator: POST /autonomy {"mode":"propose"}        (pin the dial FIRST)
+  0. operator: RESTORE THE DEMO FIXTURES BY HAND, before anything else.
+     Nothing restores them on a schedule any more (demo-reset.yml removed
+     2026-08-01), so a fixture the LAST window's visitors used up is what
+     this window opens with. DESCRIBE FIRST, update only if drifted:
+
+       gcloud run services describe payment-demo --format=json \\
+         --project=driftscribe-hack-2026 --region=asia-northeast1
+
+     Expect exactly PAYMENT_MODE=mock + FEATURE_NEW_CHECKOUT=false (no
+     other vars) and one traffic entry at 100% with latestRevision=true.
+     A pinned revisionName is the rollback signature. Only if drifted:
+
+       gcloud run services update payment-demo ... \\
+         --update-env-vars=PAYMENT_MODE=mock,FEATURE_NEW_CHECKOUT=false
+       gcloud run services update-traffic payment-demo ... --to-latest
+
+     NEVER update speculatively: gcloud mints a NEW revision even when the
+     values are byte-identical, and a payment-demo mutation feeds Eventarc
+     into /eventarc, which autonomously triggers an Anchor LLM run. That
+     is why the deleted workflow diffed before writing; so must you.
+
+     Then: lodash pinned to 4.17.20 in demo/upgrade-target/package.json
+     (a visitor may have merged the fix), and close any stale adoption PR:
+
+       gh pr list --state open --json number,headRefName \\
+         --jq '.[] | select(.headRefName | startswith("infra/adopt-"))'
+
+  1. operator: POST /autonomy {"mode":"propose_apply"}   (pin the dial FIRST)
+     propose_apply, NOT propose — the window's whole point is that a visitor
+     can approve a live rollback, and the approve gate 409s below
+     propose_apply. This line USED to read "propose"; demo-reset.yml's
+     safety net silently forced propose_apply back every 2h, which is the
+     only reason the mismatch never bit. It would now.
+     Also confirm the kill switch is off — approve 423s while paused:
+
+       curl -s -H "X-DriftScribe-Token: TOKEN" COORD_URL/pause
+       curl -s -H "X-DriftScribe-Token: TOKEN" COORD_URL/autonomy
+
   2. worker/wrangler.toml DEMO_MODE="1" + wrangler deploy
      — deploy output MUST list env.CHAT_RATE_LIMIT as "Rate Limit (5 requests/60s)"
   3. this script: demo-window.sh on                      <- edge gate, LAST

@@ -14,7 +14,7 @@ export const misc = {
     'misc.demoBell.ariaLabelUnread': 'Live sandbox notice, 1 unread',
     'misc.demoBell.lead': 'This is a live sandbox.',
     'misc.demoBell.body':
-      'Ask a crew to investigate drift, propose a fix, or roll back the payment-demo service and watch it happen. Everything you can reach from here is a demo fixture, so nothing you do lands on real infrastructure.',
+      'Ask a crew to investigate drift, propose a fix, or roll back the payment-demo service and watch it happen. The changes are real and land on live Google Cloud resources, but only ones that exist for this demo, never production.',
     'misc.demoBell.gotIt': 'Got it',
     // ReplyPending + FinalResponse hero chrome. The reply body itself is
     // backend/LLM content and is NOT translated.
@@ -34,7 +34,7 @@ export const misc = {
     'misc.demoBell.ariaLabelUnread': '稼働中のサンドボックスのお知らせ、未読1件',
     'misc.demoBell.lead': 'これは実際に操作できるサンドボックス環境です。',
     'misc.demoBell.body':
-      'エージェントチームにドリフトの調査、修正の提案、payment-demo サービスのロールバックを依頼すると、その場で実行される様子を確認できます。ここから操作できるものはすべてデモ用のフィクスチャなので、実際のインフラに変更が及ぶことはありません。',
+      'エージェントチームにドリフトの調査、修正の提案、payment-demo サービスのロールバックを依頼すると、その場で実行される様子を確認できます。変更は実際に Google Cloud 上のリソースへ反映されますが、対象はこのデモ用に用意されたリソースだけで、本番環境に影響が及ぶことはありません。',
     'misc.demoBell.gotIt': 'わかりました',
     'misc.coordinatorReply.label': 'コーディネーターの返信',
     'misc.replyPending.sr': 'コーディネーターの返信を生成しています…',

@@ -155,8 +155,8 @@ mechanically restorable, and is gated when it is not.
   back really moves `payment-demo` traffic to an earlier revision. Every target a
   visitor can reach is a demo fixture whose baseline the operator restores
   between windows: the `payment-demo` service, the upgrade fixture, and any
-  adoption PR, which is closed unmerged rather than applied. Nothing a visitor
-  does is applied to real infrastructure.
+  adoption PR, which is closed unmerged rather than applied. The changes are
+  real and land on live Google Cloud resources; none of them is production.
 - **Gated:** merging an infrastructure PR always requires the operator's
   identity, and free-form infrastructure authoring is operator-only during the
   public window (the one-click Adopt path, which only ever emits a bounded
