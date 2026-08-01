@@ -185,6 +185,12 @@ describe_edge() {
 open_checklist() {
   cat <<EOF
 Window-OPEN ordering (design doc runbook):
+  0. operator: RESTORE THE DEMO FIXTURE BASELINES BY HAND, before anything
+     else — payment-demo env/traffic (demo/ops-contract.yaml), lodash
+     4.17.20 in demo/upgrade-target/package.json, and close any open
+     infra/adopt-* PR. Nothing restores these on a schedule any more
+     (demo-reset.yml removed 2026-08-01), so a fixture left rotted by the
+     LAST window means this one opens with no drift for a visitor to find.
   1. operator: POST /autonomy {"mode":"propose"}        (pin the dial FIRST)
   2. worker/wrangler.toml DEMO_MODE="1" + wrangler deploy
      — deploy output MUST list env.CHAT_RATE_LIMIT as "Rate Limit (5 requests/60s)"
@@ -199,7 +205,9 @@ Window-CLOSE ordering (reverse of open):
   2. worker/wrangler.toml DEMO_MODE="0" + wrangler deploy
   3. operator: restore the autonomy dial if desired
   4. judging-window automation: gh workflow disable demo-health.yml
-     (else it emails a failure every 30 min forever) + demo-reset.yml
+     (else it emails a failure every 30 min forever)
+  5. operator: the demo fixtures are now however the last visitor left them.
+     Restoring them is step 0 of the next OPEN, not a step here.
 EOF
 }
 

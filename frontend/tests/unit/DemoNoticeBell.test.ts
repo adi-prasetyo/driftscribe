@@ -30,8 +30,14 @@ describe('DemoNoticeBell', () => {
     const { findByTestId, getByTestId } = render(DemoNoticeBell, { props: { search: '' } });
     const popover = await findByTestId('demo-notice-popover');
     expect(popover.textContent).toContain('This is a live sandbox.');
-    expect(popover.textContent).toContain('heals itself every couple of hours');
-    expect(popover.textContent).toContain('upgrade demo resets within a couple of hours of being fixed');
+    // The load-bearing claim is the BOUND, not a restore schedule. The
+    // scheduled self-heal (demo-reset.yml) was removed 2026-08-01, so any
+    // "heals itself every couple of hours" promise here would be a lie to
+    // the visitor; what stays true is that every reachable target is a
+    // fixture.
+    expect(popover.textContent).toContain('demo fixture');
+    expect(popover.textContent).toContain('nothing you do lands on real infrastructure');
+    expect(popover.textContent).not.toContain('heals itself');
     expect(getByTestId('demo-notice-badge')).toBeTruthy();
   });
 

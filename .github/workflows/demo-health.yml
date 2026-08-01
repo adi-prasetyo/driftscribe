@@ -1,16 +1,15 @@
 name: demo-health
 
 # Synthetic monitor for the public judging window (opened 2026-07-07 —
-# docs/plans/2026-07-08-demo-health-monitor.md). demo-reset.yml heals demo
-# DATA through the run.app origin with the operator token, so it stays
-# green even when the public hostname is walled off (which happened on
-# 2026-07-08: the window sat CLOSED for hours after an operator flip and
-# nothing noticed). This workflow probes the path an anonymous judge
-# actually takes — CF Access edge -> demo-proxy Worker -> coordinator —
-# and FAILS the run on any unhealthy state. GitHub's failed-scheduled-run
-# email to the owner is the alert: the same notification contract
-# demo-reset.yml documents. Repeated failure emails while broken are the
-# intended urgency during judging week.
+# docs/plans/2026-07-08-demo-health-monitor.md). Every other check we have
+# reaches the coordinator through the run.app origin with the operator
+# token, so all of them stay green even when the public hostname is walled
+# off (which happened on 2026-07-08: the window sat CLOSED for hours after
+# an operator flip and nothing noticed). This workflow probes the path an
+# anonymous judge actually takes — CF Access edge -> demo-proxy Worker ->
+# coordinator — and FAILS the run on any unhealthy state. GitHub's
+# failed-scheduled-run email to the owner is the alert. Repeated failure
+# emails while broken are the intended urgency during judging week.
 #
 # NEVER auto-repairs. Window flips are deliberate operator actions
 # (infra/cloudflare/demo-window.sh), and the runbook's mid-window `off`
@@ -27,8 +26,8 @@ on:
   schedule:
     # :17/:47, NOT */30 — GitHub's docs single out the top of the hour as
     # the most contended (delayed or even dropped) cron slot, and */30
-    # lands half its firings there. demo-reset.yml already rides :00; this
-    # monitor deliberately doesn't.
+    # lands half its firings there. This monitor deliberately rides
+    # neither :00 nor :30.
     - cron: '17,47 * * * *'
   workflow_dispatch:
 
@@ -62,7 +61,9 @@ jobs:
       - name: Summary + verdict
         env:
           # Step output via env:, never ${{ }} in the run: body (repo
-          # convention — see demo-reset.yml's actions-injection comments).
+          # convention — see iac.yml's actions-injection comments: a ${{ }}
+          # expression is substituted into the script BEFORE bash parses it,
+          # so untrusted values must arrive as data, not as code).
           HEALTHY: ${{ steps.probe.outputs.healthy }}
         run: |
           {

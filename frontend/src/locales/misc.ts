@@ -14,7 +14,7 @@ export const misc = {
     'misc.demoBell.ariaLabelUnread': 'Live sandbox notice, 1 unread',
     'misc.demoBell.lead': 'This is a live sandbox.',
     'misc.demoBell.body':
-      "Ask a crew to investigate drift, propose a fix, or roll back the payment-demo service and watch it happen. You can't break it for the next visitor: the service heals itself every couple of hours, the upgrade demo resets within a couple of hours of being fixed, and adoption requests are tidied away after a couple of hours so the next visitor gets the full demo.",
+      'Ask a crew to investigate drift, propose a fix, or roll back the payment-demo service and watch it happen. Everything you can reach from here is a demo fixture, so nothing you do lands on real infrastructure.',
     'misc.demoBell.gotIt': 'Got it',
     // ReplyPending + FinalResponse hero chrome. The reply body itself is
     // backend/LLM content and is NOT translated.
@@ -34,7 +34,7 @@ export const misc = {
     'misc.demoBell.ariaLabelUnread': '稼働中のサンドボックスのお知らせ、未読1件',
     'misc.demoBell.lead': 'これは実際に操作できるサンドボックス環境です。',
     'misc.demoBell.body':
-      'エージェントチームにドリフトの調査、修正の提案、payment-demo サービスのロールバックを依頼すると、その場で実行される様子を確認できます。次に訪れる人のためにこの環境を壊してしまう心配はありません。サービスは数時間ごとに自動で復旧し、アップグレードデモも修正から数時間以内にリセットされ、IaC 管理への取り込みリクエストも数時間後には整理されるため、次の訪問者も同じデモを最初から体験できます。',
+      'エージェントチームにドリフトの調査、修正の提案、payment-demo サービスのロールバックを依頼すると、その場で実行される様子を確認できます。ここから操作できるものはすべてデモ用のフィクスチャなので、実際のインフラに変更が及ぶことはありません。',
     'misc.demoBell.gotIt': 'わかりました',
     'misc.coordinatorReply.label': 'コーディネーターの返信',
     'misc.replyPending.sr': 'コーディネーターの返信を生成しています…',
