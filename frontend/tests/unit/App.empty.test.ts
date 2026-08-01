@@ -120,8 +120,11 @@ describe('App — the empty new-chat state', () => {
 
   it('replaces the estate diagram and the capability card, rather than sitting under them', async () => {
     // The front door is what is on a fresh chat now. Both of these belong
-    // elsewhere (the desk owns the estate; the capability card is behind the
-    // link below) and PR 3 Task 3.3 deletes both mounts outright.
+    // elsewhere — the desk owns the estate (including the unmatched-declarations
+    // group, ds-zld), and the capability card is behind the link below — and
+    // Task 3.3 deleted both chat mounts outright, so this is no longer a claim
+    // about gating. The open-thread half of it lives in App.conversations.test.ts,
+    // because a thread is the state that used to render them.
     stubFetch();
     const { findByTestId, queryByTestId } = render(App);
     await findByTestId('chat-empty-chips');

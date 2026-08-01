@@ -36,16 +36,17 @@ export const TESTIDS = {
   pastDecisionItem: 'past-decision-item',
   openTraceButton: 'open-trace-button',
   historicalBanner: 'historical-banner',
-  infraPanel: 'infra-panel',
-  infraToggle: 'infra-toggle',
-  infraCards: 'infra-cards',
-  infraOther: 'infra-other',
-  infraOtherCards: 'infra-other-cards',
-  infraDriftBadge: 'infra-drift-badge',
-  infraUnmatched: 'infra-unmatched',
-  infraUnmatchedInvestigate: 'infra-unmatched-investigate',
-  infraUnmatchedBadge: 'infra-unmatched-badge',
-  infraRefresh: 'infra-refresh',
+  // The estate is a section of the DESK since ds-cmc, and since ds-jns Task 3.3
+  // it is the only resource inventory an operator can reach: InfraDiagram's
+  // panel had one mount left in the chat transcript, and that is gone. The
+  // `infra*` ids it used to own went with it.
+  estateView: 'estate-view',
+  estateGroupDrift: 'estate-group-drift',
+  estateRow: 'estate-row',
+  estateOther: 'estate-other',
+  estateGroupUnmatched: 'estate-group-unmatched',
+  estateUnmatchedRow: 'estate-unmatched-row',
+  estateUnmatchedInvestigate: 'estate-unmatched-investigate',
   conversationsPane: 'conversations-pane',
   conversationOpen: 'conversation-open',
   conversationThread: 'conversation-thread',

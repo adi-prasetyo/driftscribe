@@ -2444,29 +2444,13 @@
       {#if historicalActive}
         {@render traceOutput()}
       {/if}
-      <!-- Both of these yield to the empty state on a fresh chat: a greeting and
-           four questions are a better front door than an estate diagram and a
-           shut disclosure, and neither belongs to the conversation anyway. They
-           are gated rather than deleted only because Task 3.3 deletes them
-           outright, in its own commit, with the test sweep that needs. Nothing
-           pops into view on first send: the thread follows its own tail, so by
-           the time these mount they are already scrolled off the top. -->
-      {#if !chatEmpty}
-        <div class="tour-target">
-          <!-- No `previewPr` here: the estate preview belongs to the desk now
-               (ds-jns Task 2.4), and `?preview_pr=` routes there. Passing it would
-               put the same ghost overlay on two pages. -->
-          <InfraDiagram
-            {call}
-            {appliedEpoch}
-            onExitPreview={exitPreview}
-            onAdopt={handleAdopt}
-            onInvestigate={handleAdopt}
-            adoptDisabled={chatDisabled}
-          />
-        </div>
-        <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
-      {/if}
+      <!-- The estate diagram and the capability card used to sit here, above
+           every transcript. Neither belongs to a conversation: the estate is
+           the desk's subject and has a section of its own there (the
+           unmatched-declarations group moved with it, ds-zld), and "what is
+           this thing allowed to do" is a question asked once on the way in,
+           now a link under the empty state's chips. What is left in this
+           container is the conversation and nothing else. -->
       {#if !historicalActive && displayTurns.length > 0}
         <ConversationThread turns={displayTurns} cache={traceCache} {conversationId} {autoExpandTraceId} />
       {/if}
@@ -2545,7 +2529,7 @@
       title={$t('capability.card.title')}
       onClose={() => (showCapabilities = false)}
     >
-      <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} embedded />
+      <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} />
     </Modal>
   </section>
   {:else if view === 'desk'}
@@ -2606,7 +2590,6 @@
         {previewPr}
         onExitPreview={exitPreview}
         onAdopt={handleAdopt}
-        onInvestigate={handleAdopt}
         adoptDisabled={chatDisabled}
       />
     </div>

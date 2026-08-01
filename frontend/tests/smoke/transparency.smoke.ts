@@ -499,111 +499,125 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(record.getByTestId('decision-record-prose')).toHaveCount(0);
   });
 
-  test('infrastructure panel: glanceable drift badge, then expand renders the resource cards', async ({ page }) => {
-    await seedToken(page);
-    await mockData(page, freshState());
-    // On an open thread: the panel is a child of the transcript, which a fresh
-    // chat does not render (see gotoOpenThread). PR 3 Task 3.3 deletes this
-    // mount outright — see bead ds-zld for where the unmatched band lands.
-    await gotoOpenThread(page);
-
-    // Collapsed panel shows a glanceable drift badge (data fetched on mount).
-    // Scope-aware: 1 drift in the adoptable Cloud Run type (NOT the secret, which
-    // is out of scope), so the badge reads "1 drift", not the raw total of 2.
-    const panel = page.locator(`[data-testid="${TESTIDS.infraPanel}"]`);
-    await expect(panel).toBeVisible();
-    const badge = page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`);
-    await expect(badge).toBeVisible();
-    await expect(badge).toHaveText(/1 drift/);
-
-    // Expand → the in-scope resource card grid renders (no Mermaid on the normal
-    // path). The adoptable Cloud Run services show by default.
-    await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
-    const cards = page.locator(`[data-testid="${TESTIDS.infraCards}"]`);
-    await expect(cards).toBeVisible();
-    await expect(cards.locator('svg')).toHaveCount(0);
-    await expect(cards).toContainText('payment-demo');
-    await expect(cards).toContainText('storefront');
-
-    // The muted context line keeps the full estate honest (3 indexed, 1 of which
-    // is a type DriftScribe doesn't manage).
-    await expect(panel).toContainText('3 total resources indexed');
-
-    // The non-adoptable secret folds into the "Other resources" disclosure, not
-    // the default grid; open it and confirm the counts-only card is in there.
-    const other = page.locator(`[data-testid="${TESTIDS.infraOther}"]`);
-    await expect(other).toBeVisible();
-    await expect(cards).not.toContainText('1 secret');
-    await other.locator('summary').click();
-    await expect(page.locator(`[data-testid="${TESTIDS.infraOtherCards}"]`)).toContainText('1 secret');
-  });
-
-  test('unmatched-declarations band: separate badge, Investigate prefills a Provision draft (no /chat on click), Adopt still present, layout holds', async ({
+  test('the estate section is the resource inventory: drift named, out-of-scope types accounted for, no diagram', async ({
     page,
   }) => {
+    // This used to drive InfraDiagram's collapsed panel in the chat transcript.
+    // ds-jns Task 3.3 deleted that mount, and it was the panel's last one on the
+    // normal (non-preview) path — the desk mounts InfraDiagram only under
+    // `?preview_pr=`, where it draws the Mermaid ghost map instead. So the
+    // claims move to the surface that carries them now.
+    //
+    // They are the SAME claims, deliberately: what drifted is named, the count
+    // is scope-aware rather than a raw total, resources in types DriftScribe
+    // does not manage are accounted for instead of quietly dropped, and nothing
+    // here costs a Mermaid import.
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/');
+
+    const estate = page.locator(`[data-testid="${TESTIDS.estateView}"]`);
+    await expect(estate).toBeVisible();
+
+    // Scope-aware: the fixture has totals.drift = 2, but one of those is the
+    // SECRET — a type DriftScribe doesn't manage. The drift group counts 1 and
+    // names it; a "2" here would be the raw total leaking through.
+    const driftGroup = page.locator(`[data-testid="${TESTIDS.estateGroupDrift}"]`);
+    await expect(driftGroup).toBeVisible();
+    await expect(driftGroup).toHaveText(/\b1\b/);
+    await expect(estate).toContainText('storefront');
+    // …and the managed one is still on the list, under its own group.
+    await expect(estate).toContainText('payment-demo');
+
+    // The out-of-scope secret is COUNTED, not listed and not forgotten — and
+    // its name never appears (the group is `sensitive`, carries no nodes).
+    await expect(page.locator(`[data-testid="${TESTIDS.estateOther}"]`)).toContainText('1');
+
+    // A plain DOM row list. Mermaid stays the PR-preview overlay's business,
+    // and a diagram here would be a regression nothing else would catch.
+    // Deliberately not `svg` count 0 — the Investigate chip carries an inline
+    // icon, so a blanket svg ban would be a rule about icons wearing the name
+    // of a rule about diagrams, and the next icon added would "break" it.
+    await expect(page.locator('[data-testid="infra-diagram"]')).toHaveCount(0);
+    await expect(estate.locator('svg:not([aria-hidden="true"])')).toHaveCount(0);
+  });
+
+  test('declared in IaC, not found live: Investigate prefills a Provision draft (no /chat on click), layout holds', async ({
+    page,
+  }) => {
+    // Moved to the desk with the group itself (ds-zld). The claims are the
+    // band's own, unchanged: the declaration is shown with its HCL address, the
+    // copy says it is evidence rather than proof, Investigate opens a Provision
+    // DRAFT and sends nothing, and the row survives narrow viewports on a card
+    // that would CLIP an overflow rather than scroll it.
     await seedToken(page);
     await mockData(page, freshState());
     let chatPosts = 0;
     page.on('request', (req) => {
       if (req.url().includes('/chat') && req.method() === 'POST') chatPosts++;
     });
-    await gotoOpenThread(page);
-
-    // The collapsed summary carries a SEPARATE "N IaC unmatched" badge, distinct
-    // from the drift badge (both present, never merged into one number).
-    await expect(page.locator(`[data-testid="${TESTIDS.infraUnmatchedBadge}"]`)).toHaveText(
-      /1 IaC unmatched/,
+    // mockData leaves /infra/pending-approvals unrouted, which the estate reads
+    // as "could not ask GitHub" and answers by SUPPRESSING Adopt (ds-eh6). This
+    // test wants both affordances on screen at once, so the lane has to be
+    // positively empty rather than unavailable.
+    await page.route('**/infra/pending-approvals**', (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ approvals: [] }),
+      }),
     );
-    await expect(page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`)).toHaveText(/1 drift/);
+    await page.goto('/');
 
-    // Expand → the band AND the live unmanaged resource are both visible.
-    await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
-    const band = page.locator(`[data-testid="${TESTIDS.infraUnmatched}"]`);
-    await expect(band).toBeVisible();
-    await expect(band).toContainText('storefront-old');
-    await expect(band).toContainText('google_cloud_run_v2_service.storefront_old');
-    await expect(band).toContainText('did not match the latest Cloud Asset Inventory snapshot');
-    const cards = page.locator(`[data-testid="${TESTIDS.infraCards}"]`);
-    await expect(cards).toContainText('storefront');
-    // The live drift resource keeps its normal Adopt button (band adds none).
-    await expect(page.locator('[data-testid="card-adopt-btn"]').first()).toBeVisible();
+    const estate = page.locator(`[data-testid="${TESTIDS.estateView}"]`);
+    await expect(estate).toBeVisible();
+    await expect(page.locator(`[data-testid="${TESTIDS.estateGroupUnmatched}"]`)).toBeVisible();
+    const row = page.locator(`[data-testid="${TESTIDS.estateUnmatchedRow}"]`);
+    await expect(row).toContainText('storefront-old');
+    await expect(row).toContainText('google_cloud_run_v2_service.storefront_old');
+    await expect(estate).toContainText('did not match the latest Cloud Asset Inventory snapshot');
 
-    // Layout holds at real viewports: the band + all its content (long names,
-    // mono HCL addresses, the Investigate button) fit within the viewport width
-    // and the grid stays visible. Scoped to the band on purpose — the app rail's
-    // own mobile-width behavior is a separate concern, not this feature's.
+    // The live drift resource keeps its own Adopt button: a declaration with no
+    // resource and a resource with no declaration are different findings, and
+    // this group must not have swallowed the other one.
+    await expect(page.locator('[data-testid="estate-adopt-btn"]').first()).toBeVisible();
+
+    // Layout holds at real viewports. Scoped to the estate card, NOT the
+    // document: `.estate-view` is `overflow: hidden`, so a control pushed past
+    // its right edge is clipped rather than scrolled to, and a page-level
+    // scrollWidth check would call this clean while Investigate sits half off
+    // the card (ds-cmc).
     for (const [name, vp] of [
       ['desktop', { width: 1280, height: 900 }],
-      ['mobile', { width: 390, height: 844 }],
+      ['tablet', { width: 768, height: 900 }],
+      ['phone', { width: 390, height: 844 }],
     ] as const) {
       await page.setViewportSize(vp);
-      await expect(band).toBeVisible();
-      await expect(cards).toBeVisible();
-      await page.screenshot({ path: `test-results/infra-unmatched-${name}.png`, fullPage: true });
-      // No band descendant (long name, mono HCL address, Investigate button) may
-      // extend past the band's OWN right edge — i.e. everything wraps within the
-      // space the band is given, adding no horizontal overflow of its own. Scoped
-      // to the band's box (not the viewport) because the desktop-first app shell's
-      // rail is already wider than a 390px viewport, which is a separate concern.
-      const bandOverflow = await band.evaluate((el) => {
-        const boxRight = el.getBoundingClientRect().right;
+      await expect(row.first()).toBeVisible();
+      const overflow = await estate.evaluate((el) => {
+        const right = el.getBoundingClientRect().right;
         return Math.max(
           0,
-          ...[...el.querySelectorAll('*')].map((c) => c.getBoundingClientRect().right - boxRight),
+          ...[...el.querySelectorAll('[data-testid="estate-unmatched-row"] *')].map(
+            (c) => c.getBoundingClientRect().right - right,
+          ),
         );
       });
-      expect(bandOverflow, `band content overflows the band box at ${name}`).toBeLessThanOrEqual(1);
+      expect(overflow, `declaration row overflows the estate card at ${name}`).toBeLessThanOrEqual(1);
     }
+    await page.setViewportSize({ width: 1280, height: 900 });
 
-    // Investigate → a fresh Provision draft, prefilled, NOT submitted.
-    await page.locator(`[data-testid="${TESTIDS.infraUnmatchedInvestigate}"]`).click();
+    // Investigate → a fresh Provision draft, prefilled, NOT submitted. It also
+    // has to WALK the operator to the composer: the button is on the desk and
+    // the composer is not, so a prefill without the navigation would drop the
+    // draft into a box nobody can see.
+    await page.locator(`[data-testid="${TESTIDS.estateUnmatchedInvestigate}"]`).click();
     const prompt = page.locator('#prompt-input');
     await expect(prompt).toHaveValue(/storefront-old/);
     await expect(prompt).toHaveValue(/do not assume a rename/);
-    // The click prefilled a draft only — no chat turn was sent.
     expect(chatPosts).toBe(0);
 
-    // ...and the draft is addressed to PROVISION. This used to read the checked
+    // …and the draft is addressed to PROVISION. This used to read the checked
     // radio, but the crew picker is gone (a thread opens on Explore and moves by
     // handoff), so the draft's crew is no longer rendered anywhere — Investigate
     // stays a deep link that carries explicit intent, and its intent is now

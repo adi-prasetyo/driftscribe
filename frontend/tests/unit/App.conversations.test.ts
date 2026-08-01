@@ -703,6 +703,22 @@ describe('App — New chat + crew lock', () => {
     expect(queryByTestId('composer-new-chat')).toBeNull();
   });
 
+  it('an open thread carries the conversation and nothing else', async () => {
+    // The state that USED to render the estate diagram and the capability card:
+    // a fresh chat hid them behind the empty state, so a test that only checked
+    // the front door would have passed with both mounts still in the tree.
+    // Neither belongs to a conversation — the desk owns the estate, the modal
+    // owns the cage — and Task 3.3 deleted both mounts.
+    stubResumeFetch();
+    const { findByTestId, queryByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    expect(queryByTestId('infra-panel')).toBeNull();
+    expect(queryByTestId('capability-card')).toBeNull();
+    // …and no leftover route to them either.
+    expect(queryByTestId('capability-link')).toBeNull();
+  });
+
   it('keeps sending to the resumed thread\'s crew', async () => {
     // The crew lock survived the picker's removal — it just stopped being
     // something the operator has to see and work around. There is nothing to
@@ -732,11 +748,18 @@ describe('App — New chat + crew lock', () => {
   });
 
   it('an Adopt click on an open thread starts a clean slate before prefilling', async () => {
+    // Driven through the desk since Task 3.3 deleted the chat's copy of the
+    // diagram: resume a thread on chat, walk to the desk, adopt from there.
+    // That is the real route now, and it makes the claim STRICTER rather than
+    // weaker — the thread is not merely on screen when Adopt is clicked, it is
+    // on a different view, and it still has to be gone when the composer
+    // reappears.
     stubResumeFetch(ADOPT_GRAPH);
     const { findByTestId, queryByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('card-adopt-btn'));
+    await fireEvent.click(await findByTestId('nav-desk'));
+    await fireEvent.click(await findByTestId('estate-adopt-btn'));
     await waitFor(() => {
       // Thread dropped (clean slate), composer prefilled.
       expect(queryByTestId('conversation-thread')).toBeNull();
@@ -771,11 +794,14 @@ describe('App — New chat + crew lock', () => {
   });
 
   it('an Investigate click starts a clean Provision draft and sends no /chat', async () => {
+    // Same relocation as the Adopt test above: Investigate lives in the desk's
+    // estate section now (ds-zld), not in a diagram above the transcript.
     stubResumeFetch(UNMATCHED_GRAPH);
     const { findByTestId, queryByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('infra-unmatched-investigate'));
+    await fireEvent.click(await findByTestId('nav-desk'));
+    await fireEvent.click(await findByTestId('estate-unmatched-investigate'));
     await waitFor(() => {
       // Fresh Provision draft (same handleAdopt bridge): thread dropped, composer
       // prefilled with the investigation prompt. The crew it targets is asserted
