@@ -48,11 +48,14 @@ __all__ = ["_configured", "_inmemory"]  # keep the imported fixtures referenced
 
 
 class _FakePull:
-    def __init__(self, *, merged=False, state="open", draft=False, head_sha=_HEAD):
+    def __init__(
+        self, *, merged=False, state="open", draft=False, head_sha=_HEAD, base="main"
+    ):
         self.merged = merged
         self.state = state
         self.draft = draft
         self.head = type("_H", (), {"sha": head_sha})()
+        self.base = type("_B", (), {"ref": base})()
 
 
 class _FakeRepo:
@@ -133,6 +136,20 @@ def test_head_moved_off_the_artifact_suppresses_the_form(
     body = _get(monkeypatch, _FakePull(head_sha="f" * 40))
     assert not _has_form(body)
     assert "moved past" in body
+
+
+def test_base_retargeted_off_main_suppresses_the_form(
+    _configured, _inmemory, monkeypatch
+):
+    """assert_pr_ready_at_sha refuses a non-main base, so the form is doomed.
+
+    Codex found this one missing: the writer-side recheck covers base, but the
+    reader did not, so the fallback the commit claimed for the writer's residual
+    read-to-POST race had a hole in exactly that field.
+    """
+    body = _get(monkeypatch, _FakePull(base="release"))
+    assert not _has_form(body)
+    assert "no longer targets the main branch" in body
 
 
 def test_merged_outranks_head_moved_in_the_reported_reason(
@@ -273,21 +290,18 @@ def test_blocker_reason_localizes_to_japanese(_configured, _inmemory, monkeypatc
     assert "already merged" not in body
 
 
-@pytest.mark.parametrize(
-    "blocker",
-    [
-        gh_lib.FRESH_APPLY_MERGED,
-        gh_lib.FRESH_APPLY_CLOSED,
-        gh_lib.FRESH_APPLY_DRAFT,
-        gh_lib.FRESH_APPLY_HEAD_MOVED,
-    ],
-)
+@pytest.mark.parametrize("blocker", sorted(gh_lib.FRESH_APPLY_BLOCKERS))
 def test_every_blocker_has_operator_copy(blocker):
     """A blocker with no copy would silently degrade to "no blocker" at runtime.
 
     ``_FRESH_APPLY_REASON_KEY.get()`` is deliberately forgiving so an unmapped
     key cannot 500 the always-200 GET; this test is what makes that forgiveness
     safe by failing CI instead.
+
+    Parametrized off ``FRESH_APPLY_BLOCKERS``, NOT a hand-listed set. Codex
+    caught the earlier version listing the four constants inline, which meant a
+    fifth blocker could be added and returned by the helper without this
+    "totality" test noticing — the exact hole the test claims to close.
     """
     from agent import approval_i18n
     from agent.main import _FRESH_APPLY_REASON_KEY
@@ -298,3 +312,17 @@ def test_every_blocker_has_operator_copy(blocker):
     assert approval_i18n.REASON_EN[key] in approval_i18n.REASON_JA, (
         f"{key} renders English under ?lang=ja"
     )
+
+
+def test_blocker_registry_matches_the_helper_module():
+    """FRESH_APPLY_BLOCKERS must list every FRESH_APPLY_* constant.
+
+    Without this, the parametrize above is only as total as the registry, and a
+    new constant left out of the registry would be invisible to both.
+    """
+    declared = {
+        v
+        for k, v in vars(gh_lib).items()
+        if k.startswith("FRESH_APPLY_") and isinstance(v, str)
+    }
+    assert declared == set(gh_lib.FRESH_APPLY_BLOCKERS)

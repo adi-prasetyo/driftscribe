@@ -17,11 +17,14 @@ _HEAD = "a" * 40
 
 
 class _Pull:
-    def __init__(self, *, merged=False, state="open", draft=False, head_sha=_HEAD):
+    def __init__(
+        self, *, merged=False, state="open", draft=False, head_sha=_HEAD, base="main"
+    ):
         self.merged = merged
         self.state = state
         self.draft = draft
         self.head = type("_H", (), {"sha": head_sha})()
+        self.base = type("_B", (), {"ref": base})()
 
 
 class _Repo:
@@ -42,6 +45,7 @@ class _Repo:
         (_Pull(state="closed"), gh.FRESH_APPLY_CLOSED),
         (_Pull(draft=True), gh.FRESH_APPLY_DRAFT),
         (_Pull(head_sha="b" * 40), gh.FRESH_APPLY_HEAD_MOVED),
+        (_Pull(base="release"), gh.FRESH_APPLY_BASE_MOVED),
     ],
 )
 def test_lifecycle_verdicts(pull, expected):
@@ -62,7 +66,9 @@ def test_merged_outranks_every_other_blocker():
     "head moved" there would tell the operator to wait for a fresh plan that can
     never be applied, because the PR is finished.
     """
-    pull = _Pull(merged=True, state="closed", draft=True, head_sha="c" * 40)
+    pull = _Pull(
+        merged=True, state="closed", draft=True, head_sha="c" * 40, base="release"
+    )
     assert gh.fresh_apply_blocker(_Repo(pull), 42, _HEAD) == gh.FRESH_APPLY_MERGED
 
 
@@ -71,6 +77,19 @@ def test_merged_pr_reporting_state_closed_is_still_merged():
     assert (
         gh.fresh_apply_blocker(_Repo(_Pull(merged=True, state="closed")), 42, _HEAD)
         == gh.FRESH_APPLY_MERGED
+    )
+
+
+def test_required_base_default_tracks_assert_pr_ready_at_sha():
+    """The two must not silently diverge — a page that allows what the POST
+    refuses is exactly the ds-2wy defect, one field over."""
+    import inspect
+
+    assert (
+        inspect.signature(gh.fresh_apply_blocker).parameters["required_base"].default
+        == inspect.signature(gh.assert_pr_ready_at_sha)
+        .parameters["required_base"]
+        .default
     )
 
 

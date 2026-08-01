@@ -27,13 +27,17 @@ _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _MARKER = "REACHED_COMMENT_POST"
 
 
-def _guard_shell() -> str:
-    """The recheck block, lifted verbatim from the real workflow step."""
+def _step_run() -> str:
     wf = yaml.safe_load((_ROOT / ".github/workflows/iac.yml").read_text())
     steps = wf["jobs"]["plan-builder"]["steps"]
-    run = next(
+    return next(
         s["run"] for s in steps if s.get("name") == "Post tofu show diff to PR"
     )
+
+
+def _guard_shell() -> str:
+    """The recheck block, lifted verbatim from the real workflow step."""
+    run = _step_run()
     start = run.index("NOW_JSON=$(gh pr view")
     # Through the end of the skip branch — everything after it is the POST the
     # guard exists to prevent.
@@ -44,6 +48,24 @@ def _guard_shell() -> str:
         "this test's anchors need updating rather than deleting"
     )
     return block
+
+
+def test_the_real_comment_post_is_downstream_of_the_guard():
+    """The behavioral tests below run the guard with a SYNTHETIC marker standing
+    in for the comment POST, so on their own they cannot notice the real POST
+    being moved ABOVE the guard — the guard would still "work" and still skip,
+    while the comment went out anyway. This pins the one thing they cannot see.
+    """
+    run = _step_run()
+    guard_at = run.index("NOW_JSON=$(gh pr view")
+    post_at = run.index("/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments")
+    assert guard_at < post_at, (
+        "the PR recheck must precede the comment POST — otherwise the marker is "
+        "already published by the time the guard decides to skip"
+    )
+    assert run.count("issues/$PR_NUMBER/comments") == 1, (
+        "a second comment POST in this step would need its own guard"
+    )
 
 
 def _run(pr_json: str, *, head_sha: str = _HEAD, tmp_path) -> str:

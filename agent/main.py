@@ -3682,6 +3682,7 @@ _FRESH_APPLY_REASON_KEY: dict[str, str] = {
     github.FRESH_APPLY_CLOSED: "pr_closed",
     github.FRESH_APPLY_DRAFT: "pr_draft",
     github.FRESH_APPLY_HEAD_MOVED: "pr_head_moved",
+    github.FRESH_APPLY_BASE_MOVED: "pr_base_moved",
 }
 
 
