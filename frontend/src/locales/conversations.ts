@@ -5,6 +5,10 @@ export const conversations = {
     // ConversationsRail.svelte — rail header. One key serves both the <aside>
     // landmark aria-label and the visible eyebrow heading (identical text).
     'conversations.rail.title': 'Conversations',
+    // The clean-slate action, moved here from the composer (ds-jns PR 3). It
+    // starts a thread and the list below holds the threads, so the two live
+    // together; the composer is now only the box you type in.
+    'conversations.rail.newChat': 'New chat',
     'conversations.rail.helpAriaLabel': 'About conversations',
     'conversations.rail.helpText':
       'Your chats are saved here, so you can reopen any thread and pick up where you left off. ' +
@@ -75,6 +79,7 @@ export const conversations = {
   },
   ja: {
     'conversations.rail.title': 'チャット履歴',
+    'conversations.rail.newChat': '新規チャット',
     'conversations.rail.helpAriaLabel': 'チャットについて',
     'conversations.rail.helpText':
       'チャットはここに保存されるので、いつでもスレッドを再開し、続きから進められます。' +

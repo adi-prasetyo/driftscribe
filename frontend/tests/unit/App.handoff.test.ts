@@ -710,7 +710,7 @@ describe('App — leaving the suggestion unanswered', () => {
     const { findByTestId, queryByTestId } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('handoff-chip');
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() => expect(queryByTestId('handoff-chip')).toBeNull());
     expect(window.sessionStorage.getItem('ds.handoff.c1')).not.toBeNull();
 

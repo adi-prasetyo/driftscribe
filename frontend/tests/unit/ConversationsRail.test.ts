@@ -11,10 +11,55 @@ function conv(partial: Partial<Conversation> & { conversation_id: string }): Con
   return { workload: 'drift', title: partial.conversation_id, ...partial } as Conversation;
 }
 
+describe('ConversationsRail — New chat', () => {
+  it('offers a clean slate even when there is no history to leave', async () => {
+    // Unconditional, unlike the composer button it replaces (ds-jns PR 3): a
+    // control that appears only when it has something to do has to be hunted
+    // for. An empty rail is the case that would tempt a `{#if}`, so it is the
+    // case pinned here.
+    const onNewChat = vi.fn();
+    const { getByTestId } = render(ConversationsRail, {
+      props: { conversations: [], activeConversationId: null, onOpen: noop, onNewChat },
+    });
+    await fireEvent.click(getByTestId('rail-new-chat'));
+    expect(onNewChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('sits above the history, not below it', () => {
+    // It makes threads; the list holds them. Below the list it would also drift
+    // down the column as the history grows, which is the practical half.
+    const { getByTestId, getAllByTestId } = render(ConversationsRail, {
+      props: {
+        conversations: [
+          conv({ conversation_id: 'c1', updated_at: new Date().toISOString() }),
+          conv({ conversation_id: 'c2', updated_at: new Date().toISOString() }),
+        ],
+        activeConversationId: null,
+        onOpen: noop,
+        onNewChat: noop,
+      },
+    });
+    const btn = getByTestId('rail-new-chat');
+    const first = getAllByTestId('conversation-item')[0];
+    expect(btn.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('is never disabled — it is the escape hatch from a run in flight', () => {
+    // The composer's version was deliberately left enabled while the form was
+    // disabled mid-stream, because cancelling is exactly what you want then.
+    // Here the rail never receives a disabled state at all, so the guarantee is
+    // that nothing acquires one by accident.
+    const { getByTestId } = render(ConversationsRail, {
+      props: { conversations: [], activeConversationId: null, onOpen: noop, onNewChat: noop },
+    });
+    expect((getByTestId('rail-new-chat') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
 describe('ConversationsRail', () => {
   it('shows the empty state when there are no conversations', () => {
     const { getByText, queryByTestId } = render(ConversationsRail, {
-      props: { conversations: [], activeConversationId: null, onOpen: noop },
+      props: { conversations: [], activeConversationId: null, onOpen: noop, onNewChat: noop },
     });
     // Substring match — the empty state now carries a fuller resume hint.
     expect(
@@ -26,7 +71,7 @@ describe('ConversationsRail', () => {
   it('explains the chat features through a header help hint (collapsed by default, trust boundary pinned)', async () => {
     const { getByTestId, queryByTestId } = render(ConversationsRail, {
       // Present even with zero conversations — it explains what the rail is for.
-      props: { conversations: [], activeConversationId: null, onOpen: noop },
+      props: { conversations: [], activeConversationId: null, onOpen: noop, onNewChat: noop },
     });
     const btn = getByTestId('conversations-help');
     // Non-status accessible name (this hint is not an iac_apply-status hint).
@@ -48,7 +93,7 @@ describe('ConversationsRail', () => {
       conv({ conversation_id: 'c2', title: 'Adopt the assets bucket', workload: 'provision', updated_at: new Date().toISOString() }),
     ];
     const { getAllByTestId, getByText } = render(ConversationsRail, {
-      props: { conversations, activeConversationId: null, onOpen: noop },
+      props: { conversations, activeConversationId: null, onOpen: noop, onNewChat: noop },
     });
     expect(getAllByTestId('conversation-item')).toHaveLength(2);
     expect(getByText('Why did payment-demo drift?')).toBeTruthy();
@@ -59,7 +104,7 @@ describe('ConversationsRail', () => {
     const onOpen = vi.fn();
     const conversations = [conv({ conversation_id: 'c-42', title: 't', updated_at: new Date().toISOString() })];
     const { getByTestId } = render(ConversationsRail, {
-      props: { conversations, activeConversationId: null, onOpen },
+      props: { conversations, activeConversationId: null, onOpen, onNewChat: noop },
     });
     await fireEvent.click(getByTestId('conversation-open'));
     expect(onOpen).toHaveBeenCalledWith('c-42');
@@ -71,7 +116,7 @@ describe('ConversationsRail', () => {
       conv({ conversation_id: 'c2', title: 'b', updated_at: new Date().toISOString() }),
     ];
     const { getAllByTestId } = render(ConversationsRail, {
-      props: { conversations, activeConversationId: 'c2', onOpen: noop },
+      props: { conversations, activeConversationId: 'c2', onOpen: noop, onNewChat: noop },
     });
     const rows = getAllByTestId('conversation-item');
     expect(rows[0].classList.contains('active')).toBe(false);
@@ -84,7 +129,7 @@ describe('ConversationsRail', () => {
       conv({ conversation_id: 'old', title: 'ancient', updated_at: '2020-01-01T00:00:00Z' }),
     ];
     const { getAllByTestId } = render(ConversationsRail, {
-      props: { conversations, activeConversationId: null, onOpen: noop },
+      props: { conversations, activeConversationId: null, onOpen: noop, onNewChat: noop },
     });
     const groups = getAllByTestId('conv-group');
     expect(groups).toHaveLength(2);
@@ -104,7 +149,7 @@ function manyConvs(n = 8): Conversation[] {
 describe('ConversationsRail — cap + search', () => {
   it('caps the rail to `max` and shows the search affordance with the TOTAL count', () => {
     const { getAllByTestId, getByTestId } = render(ConversationsRail, {
-      props: { conversations: manyConvs(8), activeConversationId: null, onOpen: noop, max: 5 },
+      props: { conversations: manyConvs(8), activeConversationId: null, onOpen: noop, onNewChat: noop, max: 5 },
     });
     expect(getAllByTestId('conversation-item')).toHaveLength(5);
     expect(getByTestId('conversations-search-open').textContent).toContain('(8)');
@@ -112,14 +157,14 @@ describe('ConversationsRail — cap + search', () => {
 
   it('hides the affordance when the list fits within `max`', () => {
     const { queryByTestId } = render(ConversationsRail, {
-      props: { conversations: manyConvs(4), activeConversationId: null, onOpen: noop, max: 5 },
+      props: { conversations: manyConvs(4), activeConversationId: null, onOpen: noop, onNewChat: noop, max: 5 },
     });
     expect(queryByTestId('conversations-search-open')).toBeNull();
   });
 
   it('hides the affordance when active-pinning means every row is already shown (total = max+1)', () => {
     const { getAllByTestId, queryByTestId } = render(ConversationsRail, {
-      props: { conversations: manyConvs(6), activeConversationId: 'c5', onOpen: noop, max: 5 },
+      props: { conversations: manyConvs(6), activeConversationId: 'c5', onOpen: noop, onNewChat: noop, max: 5 },
     });
     expect(getAllByTestId('conversation-item')).toHaveLength(6); // 5 + pinned active = all
     expect(queryByTestId('conversations-search-open')).toBeNull(); // nothing hidden
@@ -127,7 +172,7 @@ describe('ConversationsRail — cap + search', () => {
 
   it('pins the active conversation in the rail even when it falls outside the cap', () => {
     const { getAllByTestId } = render(ConversationsRail, {
-      props: { conversations: manyConvs(8), activeConversationId: 'c7', onOpen: noop, max: 5 },
+      props: { conversations: manyConvs(8), activeConversationId: 'c7', onOpen: noop, onNewChat: noop, max: 5 },
     });
     const rows = getAllByTestId('conversation-item');
     expect(rows).toHaveLength(6); // 5 newest + the pinned active one
@@ -139,7 +184,7 @@ describe('ConversationsRail — cap + search', () => {
     const convs = manyConvs(7);
     convs[6] = conv({ conversation_id: 'c6', title: 'zztarget unique', updated_at: new Date().toISOString() });
     const { getByTestId, queryByTestId, container } = render(ConversationsRail, {
-      props: { conversations: convs, activeConversationId: null, onOpen, max: 5 },
+      props: { conversations: convs, activeConversationId: null, onOpen, onNewChat: noop, max: 5 },
     });
     // Modal closed initially.
     expect(queryByTestId('conversations-search-input')).toBeNull();
@@ -157,7 +202,7 @@ describe('ConversationsRail — cap + search', () => {
 
   it('shows a no-match note when the query matches nothing', async () => {
     const { getByTestId, getByText } = render(ConversationsRail, {
-      props: { conversations: manyConvs(7), activeConversationId: null, onOpen: noop, max: 5 },
+      props: { conversations: manyConvs(7), activeConversationId: null, onOpen: noop, onNewChat: noop, max: 5 },
     });
     await fireEvent.click(getByTestId('conversations-search-open'));
     await fireEvent.input(getByTestId('conversations-search-input'), { target: { value: 'qqqzzz-nomatch' } });
@@ -187,6 +232,7 @@ describe('ConversationsRail — operator message count', () => {
         conversations: [conv({ conversation_id: 'c1', user_turn_count: 3, turn_count: 9 })],
         activeConversationId: null,
         onOpen: noop,
+        onNewChat: noop,
       },
     });
     // 3, not ceil(9/2)=5 — the extra rows are transitions and an un-prompted
@@ -205,6 +251,7 @@ describe('ConversationsRail — operator message count', () => {
         conversations: [conv({ conversation_id: 'c1', user_turn_count: 1, turn_count: 2 })],
         activeConversationId: null,
         onOpen: noop,
+        onNewChat: noop,
       },
     });
     expect(container.querySelector('.conv-count')).toBeNull();
@@ -216,6 +263,7 @@ describe('ConversationsRail — operator message count', () => {
         conversations: [conv({ conversation_id: 'c1', user_turn_count: 2, turn_count: 4 })],
         activeConversationId: null,
         onOpen: noop,
+        onNewChat: noop,
       },
     });
     expect(countText(container)).toContain('2 messages');
@@ -229,6 +277,7 @@ describe('ConversationsRail — operator message count', () => {
         conversations: [conv({ conversation_id: 'c1', turn_count: 4 })],
         activeConversationId: null,
         onOpen: noop,
+        onNewChat: noop,
       },
     });
     expect(countText(container)).toContain('2 messages');
@@ -242,6 +291,7 @@ describe('ConversationsRail — operator message count', () => {
         conversations: [conv({ conversation_id: 'c1', user_turn_count: 0, turn_count: 2 })],
         activeConversationId: null,
         onOpen: noop,
+        onNewChat: noop,
       },
     });
     expect(container.querySelector('.conv-count')).toBeNull();
@@ -255,6 +305,7 @@ describe('ConversationsRail — operator message count', () => {
         conversations: [conv({ conversation_id: 'c1', user_turn_count: 0, turn_count: 6 })],
         activeConversationId: null,
         onOpen: noop,
+        onNewChat: noop,
       },
     });
     expect(container.querySelector('.conv-count')).toBeNull();
@@ -270,6 +321,7 @@ describe('ConversationsRail — operator message count', () => {
         ],
         activeConversationId: null,
         onOpen: noop,
+        onNewChat: noop,
       },
     });
     expect(container.querySelectorAll('.conv-glyph')).toHaveLength(1);

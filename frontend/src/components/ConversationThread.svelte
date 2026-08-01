@@ -11,6 +11,7 @@
   import { crewName } from '../lib/workloads';
   import { turnOwnsReasoning } from '../lib/conversations';
   import { iacApprovalHref } from '../lib/approval';
+  import { fmtClock, fmtStamp } from '../lib/format';
   import { t, locale } from '../lib/i18n';
   import type { TraceCache } from '../lib/traceCache';
   import type { ConversationTurn } from '../lib/types';
@@ -38,6 +39,41 @@
   // Same-origin /iac-approvals/<n> link for a turn that opened an infra PR.
   function prHref(turn: ConversationTurn): string | null {
     return turn.iac_pr ? iacApprovalHref(turn.iac_pr.pr_number, $locale) : null;
+  }
+
+  // Two turns fall on the same calendar day, in the reader's own timezone.
+  // Either missing or unparseable => false, which downgrades to showing the
+  // fuller stamp: over-labelling a time is recoverable, silently implying two
+  // turns share a day is not.
+  function sameDay(a: string | undefined, b: string | undefined): boolean {
+    if (!a || !b) return false;
+    const x = new Date(a);
+    const y = new Date(b);
+    if (Number.isNaN(x.getTime()) || Number.isNaN(y.getTime())) return false;
+    return (
+      x.getFullYear() === y.getFullYear() &&
+      x.getMonth() === y.getMonth() &&
+      x.getDate() === y.getDate()
+    );
+  }
+
+  /**
+   * A turn's visible time. The first turn of each calendar-day run carries the
+   * date ('Aug 1, 14:32'); the rest of that run carry the clock alone
+   * ('15:10'). Always visible, never hover-only — a hover affordance is
+   * unreachable on touch (design §2).
+   *
+   * The date is on the RUN, not on every bubble: a thread resumed a week later
+   * would otherwise read as one continuous sitting, and stamping all twenty
+   * bubbles with the same date to prevent that is noise the operator has to
+   * read past on every turn. The rule is relative between turns rather than to
+   * the current clock, so it does not change under the reader's feet at
+   * midnight, and it needs no injected `now` to test.
+   */
+  function turnTime(turn: ConversationTurn, prev: ConversationTurn | undefined): string {
+    const iso = turn.created_at;
+    if (!iso) return '';
+    return sameDay(prev?.created_at, iso) ? fmtClock(iso, $locale) : fmtStamp(iso, $locale);
   }
 
   // Server-authored transition rows (`crew_change` / `handoff_declined`) are
@@ -75,7 +111,8 @@
   tabindex="-1"
 >
   <ol class="thread">
-    {#each turns as turn (turn.seq)}
+    {#each turns as turn, i (turn.seq)}
+      {@const stamp = turnTime(turn, turns[i - 1])}
       {#if isTransition(turn)}
         {@const accepted = turn.role === 'crew_change'}
         {@const crews = transitionCrews(turn)}
@@ -108,7 +145,10 @@
       {:else if turn.role === 'user'}
         <li class="turn turn--user" data-testid="thread-turn-user">
           <div class="bubble bubble--user">
-            <p class="turn__byline">{$t('conversations.thread.you')}</p>
+            <p class="turn__byline">
+              <span>{$t('conversations.thread.you')}</span>
+              {#if stamp}<time class="turn__time" data-testid="turn-time" datetime={turn.created_at}>{stamp}</time>{/if}
+            </p>
             <div class="turn__text">{turn.text}</div>
           </div>
         </li>
@@ -136,7 +176,10 @@
             role={live ? 'status' : undefined}
             aria-live={live ? 'polite' : undefined}
           >
-            <p class="turn__byline">{crewName(turn.workload)}</p>
+            <p class="turn__byline">
+              <span>{crewName(turn.workload)}</span>
+              {#if stamp}<time class="turn__time" data-testid="turn-time" datetime={turn.created_at}>{stamp}</time>{/if}
+            </p>
             <!-- The reasoning line sits between the crew header and the reply,
                  where the thinking happened relative to the answer. It renders
                  on an OPTIMISTIC turn too — unlike the action links below —
@@ -304,12 +347,29 @@
   }
 
   .turn__byline {
+    display: flex;
+    align-items: baseline;
+    gap: var(--ds-sp-2);
     margin: 0 0 var(--ds-sp-1);
     font-size: 0.6875rem; /* 11px — quiet attribution */
     font-weight: var(--ds-fw-semibold);
     text-transform: uppercase;
     letter-spacing: var(--ds-tracking-caps);
     color: var(--ds-muted);
+  }
+
+  /* Rides the byline but opts out of its eyebrow treatment: caps tracking on
+     digits reads as a spaced-out serial number, and one weight below the name
+     keeps the attribution first. Tabular figures so the times in a run line up
+     down the column instead of jittering per glyph width. */
+  .turn__time {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-weight: var(--ds-fw-normal);
+    letter-spacing: normal;
+    text-transform: none;
+    font-variant-numeric: tabular-nums;
+    color: var(--ds-faint);
   }
 
   .turn__text {

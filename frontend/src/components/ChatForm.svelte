@@ -20,8 +20,6 @@
     onSubmit,
     prefill = null,
     workload = $bindable('explore'),
-    showNewChat = false,
-    onNewChat = () => {},
   }: {
     disabled?: boolean;
     onSubmit: (prompt: string, workload: Workload) => void;
@@ -42,14 +40,6 @@
      * to Explore, the crew whose job is to figure out where a question belongs.
      */
     workload?: Workload;
-    /**
-     * Show the composer's New chat button — true whenever a clean slate would
-     * clear something (open thread, in-flight exchange, leftover one-shot
-     * output). App gates it on !historicalActive: in historical replay the
-     * banner's own "← new chat" is the single exit.
-     */
-    showNewChat?: boolean;
-    onNewChat?: () => void;
   } = $props();
 
   let prompt = $state('');
@@ -136,26 +126,10 @@
 </script>
 
 <form id="chat-form" class="chat-form" class:historical={disabled} onsubmit={handle}>
-  <!-- Crew-card workload picker, above the input ("who → what"). The selected
-       card's glyph loops; the rest are static. Bound to `workload`. The New chat
-       button hugs the trailing edge of this row when there's something to reset. -->
-  <!-- The row the crew cards used to occupy. With the picker gone it carries
-       only the clean-slate action, and it collapses entirely when there is
-       nothing to reset — so a fresh composer is just prompt + Send. -->
-  {#if showNewChat}
-    <div class="chat-form__actions">
-      <!-- Deliberately NOT {disabled}: while a reply streams this is the
-           cancel/escape hatch (App's newChat bumps runSeq). Pill + borderless
-           at rest so it reads as a quiet action, not a second Send. -->
-      <button
-        type="button"
-        class="chat-form__new-chat"
-        data-testid="composer-new-chat"
-        onclick={onNewChat}
-      ><Icon name="plus" size={13} />{$t('composer.chatForm.newChat')}</button>
-    </div>
-  {/if}
-
+  <!-- Prompt + Send, and nothing else. The crew picker went first (a fresh
+       thread routes itself), the New chat button second (ds-jns PR 3 — it moved
+       to the conversations rail, where the threads it starts and reopens live).
+       What is left is the box you type in. -->
   <textarea
     id="prompt-input"
     data-testid="chat-prompt"
@@ -227,47 +201,6 @@
 
   /* The crew picker + New chat button share the full-width row above the input:
      picker grows, button hugs the trailing edge. */
-  .chat-form__actions {
-    flex: 1 1 100%;
-    min-width: 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--ds-sp-2);
-  }
-
-  /* Quiet clean-slate action: borderless at rest + pill radius + no glyph, so
-     it reads as an escape hatch above the prompt rather than a second Send. */
-  .chat-form__new-chat {
-    flex: 0 0 auto;
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3em;
-    appearance: none;
-    border: 1px solid transparent;
-    border-radius: var(--ds-radius-pill);
-    background: transparent;
-    color: var(--ds-fg-soft);
-    font-size: var(--ds-fs-1);
-    font-weight: var(--ds-fw-semibold);
-    line-height: 1.2;
-    padding: 0.32em 0.7em;
-    cursor: pointer;
-    transition:
-      background-color var(--ds-dur) var(--ds-ease),
-      border-color var(--ds-dur) var(--ds-ease),
-      color var(--ds-dur) var(--ds-ease);
-  }
-  .chat-form__new-chat:hover {
-    background: var(--ds-surface-2);
-    border-color: var(--ds-border-strong);
-    color: var(--ds-fg);
-  }
-  .chat-form__new-chat:active {
-    transform: translateY(1px);
-  }
-
   /* Visually-hidden helper for the aria-describedby keyboard hint (matches the
      CrewPicker / ReplyPending sr-only pattern). */
   .chat-form__sr-only {

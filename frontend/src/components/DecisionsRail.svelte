@@ -16,6 +16,7 @@
     appliedAtDiffersMaterially,
     decisionActionLabel,
     decisionActionHelp,
+    fmtStamp,
   } from '../lib/format';
   import {
     groupRailDecisions,
@@ -33,7 +34,7 @@
   import Modal from './Modal.svelte';
   import type { Decision } from '../lib/types';
   import { isReplayableTraceId } from '../lib/deeplink';
-  import { t, locale, localeTag, type MessageKey, type TranslateFn } from '../lib/i18n';
+  import { t, locale, type MessageKey, type TranslateFn } from '../lib/i18n';
   import { modeLabel } from '../lib/autonomy';
 
   let {
@@ -211,25 +212,6 @@
       : (mode ?? '');
   }
 
-  // Render `created_at` as a compact, readable wall-clock string in the ACTIVE
-  // app locale (not the host browser's), so dates follow the EN/JA toggle like
-  // the rest of the rail. Falls back to the raw value when it doesn't parse,
-  // and to '' when absent.
-  function fmtCreatedAt(iso: string | undefined): string {
-    if (!iso) return '';
-    const parsed = Date.parse(iso);
-    if (Number.isNaN(parsed)) return iso;
-    try {
-      return new Intl.DateTimeFormat(localeTag($locale), {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(parsed);
-    } catch {
-      return iso;
-    }
-  }
 </script>
 
 {#snippet decisionCard(d: Decision, subtitle: string | undefined, isActive: boolean, lifecycle: Decision[] | null)}
@@ -257,7 +239,7 @@
         <span class="row-action" title={d.action}>{decisionActionLabel(d.action, $t)}</span>
       {/if}
       {#if d.created_at}
-        <time class="row-time" datetime={d.created_at}>{fmtCreatedAt(d.created_at)}</time>
+        <time class="row-time" datetime={d.created_at}>{fmtStamp(d.created_at, $locale)}</time>
       {/if}
     </div>
 
@@ -278,7 +260,7 @@
         d.apply_status === 'applied' &&
         d.applied_at &&
         appliedAtDiffersMaterially(d.applied_at, d.created_at)
-          ? fmtCreatedAt(d.applied_at)
+          ? fmtStamp(d.applied_at, $locale)
           : ''}
       <!-- HelpHint sits at the END so its opened inline panel breaks cleanly
            onto its own line below the meta (never mid-line, never clipped). -->
@@ -380,7 +362,7 @@
                    where text nodes meet). HelpHint is LAST so its flex-basis:100%
                    panel wraps onto its own line below when opened. -->
               <span class={stepToneClass}>{#if stepMeta.done}<Icon name="check" size={12} extraClass="iac-status-check" />{/if}{stepMeta.label || $t('decisions.lifecycle.statusNotRecorded')}</span>
-              {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtCreatedAt(step.created_at)}</time>{/if}
+              {#if step.created_at}<time class="row-time" datetime={step.created_at}>{fmtStamp(step.created_at, $locale)}</time>{/if}
               {#if openable(step.trace_id)}
                 <button class="open-trace-btn" data-testid="lifecycle-open-trace" type="button"
                   onclick={() => handleOpenTrace(step.trace_id as string)}>{traceButtonLabel(step.action, $t)}</button>

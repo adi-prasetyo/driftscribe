@@ -248,14 +248,18 @@ test('single-door crew handoff walkthrough', async ({ page }) => {
 
   const form = page.locator('#chat-form');
   await expect(form).toBeVisible();
-  const newChatBtn = page.getByTestId('composer-new-chat');
+  // New chat lives in the conversations rail now (ds-jns PR 3), not in the
+  // composer — so unlike the chip below it is present in every frame here.
+  const newChatBtn = page.getByTestId('rail-new-chat');
   const chip = page.getByTestId('handoff-chip');
 
-  // ── 1. Fresh composer: a prompt and a Send button, nothing to choose ───────
+  // ── 1. Fresh composer: a prompt and a Send button, nothing else ───────────
   // The whole point of the redesign: the operator is never asked to name a
-  // specialist before they have said what they want.
+  // specialist before they have said what they want, and the box they type in
+  // carries no thread management of its own.
   await expect(page.locator('#chat-form input[type="radio"]')).toHaveCount(0);
-  await expect(newChatBtn).toHaveCount(0);
+  await expect(page.locator('#chat-form button')).toHaveCount(1);
+  await expect(newChatBtn).toBeVisible();
   await expect(chip).toHaveCount(0);
   await form.screenshot({ path: resolve(SHOTS, '1-fresh-composer.png'), animations: 'disabled' });
 
@@ -285,7 +289,6 @@ test('single-door crew handoff walkthrough', async ({ page }) => {
 
   // ── 4. New chat → clean slate, the thread and its history left in the rail ─
   await newChatBtn.click();
-  await expect(newChatBtn).toHaveCount(0);
   await expect(page.getByTestId('conversation-thread')).toHaveCount(0);
   await form.screenshot({ path: resolve(SHOTS, '4-after-new-chat.png'), animations: 'disabled' });
 });

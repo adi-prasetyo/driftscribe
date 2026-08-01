@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, contractStatusLabel, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, fmtStamp, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, contractStatusLabel, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
 
 // The whole suite asserts English (the shared.en catalog is byte-for-byte the
@@ -210,6 +210,44 @@ describe('fmtClock', () => {
   // now that hourCycle is fixed rather than locale-default.
   it('EN and JA render the identical string for the same instant', () => {
     expect(fmtClock(ISO, 'en')).toBe(fmtClock(ISO, 'ja'));
+  });
+});
+
+describe('fmtStamp', () => {
+  // 14:32 UTC — an AFTERNOON instant on purpose. In the morning h12 and h23
+  // print the same digits and differ only by a suffix, so a morning fixture
+  // would still pass against a 12-hour clock in most of the world.
+  const PM = '2026-07-28T14:32:00Z';
+
+  it('returns "" when there is no timestamp, and the raw value when it will not parse', () => {
+    // The rails hand it optional fields directly; neither absent nor garbage
+    // may render as "Invalid Date" on a card.
+    expect(fmtStamp('')).toBe('');
+    expect(fmtStamp(undefined)).toBe('');
+    expect(fmtStamp('not-a-date')).toBe('not-a-date');
+  });
+
+  it('carries a date AND a 24-hour clock, with no AM/PM in either locale', () => {
+    for (const l of ['en', 'ja'] as const) {
+      const out = fmtStamp(PM, l);
+      expect(out).not.toMatch(/AM|PM/i);
+      // A date part, so it is distinguishable from fmtClock's bare HH:mm —
+      // which is the whole reason ConversationThread has two formatters.
+      expect(out).not.toMatch(/^\d{2}:\d{2}$/);
+      expect(out.length).toBeGreaterThan(5);
+    }
+  });
+
+  it('agrees with fmtClock on the hour, for the same instant', () => {
+    // The regression this function was consolidated to kill (ds-jns PR 3): the
+    // conversations rail printed 'Jul 28, 02:32 PM' from its own unpinned copy
+    // while the thread turn it links to printed '14:32' — one instant, two
+    // clock conventions, both on screen at once. Asserting the SHARED hour is
+    // the claim; asserting an absolute value would pin the CI runner's zone.
+    for (const l of ['en', 'ja'] as const) {
+      const hour = fmtClock(PM, l).slice(0, 2);
+      expect(fmtStamp(PM, l)).toContain(`${hour}:32`);
+    }
   });
 });
 

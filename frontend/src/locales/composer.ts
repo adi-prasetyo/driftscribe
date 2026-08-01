@@ -6,6 +6,10 @@
 // crew-lock hint to explain why the other three are greyed out. The lock is
 // still real — it is just no longer something the operator has to work around,
 // because a crew that needs a sibling now offers the handoff itself.
+//
+// `newChat` left for the same reason (ds-jns PR 3): starting a thread belongs
+// beside the list of threads, not beside the box you type in. It is now
+// `conversations.rail.newChat`.
 export const composer = {
   en: {
     // ChatForm.svelte — the prompt composer.
@@ -16,7 +20,6 @@ export const composer = {
     // tech (the placeholder itself vanishes once typing starts).
     'composer.chatForm.enterShiftHint':
       'Press Enter to send. Press Shift plus Enter for a new line.',
-    'composer.chatForm.newChat': 'New chat',
     'composer.chatForm.send': 'Send',
   },
   ja: {
@@ -25,7 +28,6 @@ export const composer = {
     'composer.chatForm.promptAriaLabel': 'プロンプト',
     'composer.chatForm.enterShiftHint':
       'Enter で送信します。Shift+Enter で改行します。',
-    'composer.chatForm.newChat': '新規チャット',
     'composer.chatForm.send': '送信',
   },
 };

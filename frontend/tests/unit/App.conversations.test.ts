@@ -354,6 +354,11 @@ describe('App — a chat turn settles into the thread', () => {
     await findByTestId('thread-typing');
     expect(getByText('why did it drift?')).toBeTruthy();
     expect(queryByTestId('final-response')).toBeNull();
+    // Both live bubbles are already stamped, from the client's own clock: the
+    // server has persisted nothing yet, so waiting for its `created_at` would
+    // make the time appear out of nowhere on the very bubble the operator is
+    // watching, at the moment the reply lands (design §2).
+    expect(document.querySelectorAll('[data-testid="turn-time"]')).toHaveLength(2);
 
     // Release the reply → it fills that same bubble, the typing indicator goes
     // away, and the turn settles into the thread. The persisted crew bubble's
@@ -684,15 +689,21 @@ function stubResumeFetchWithTrace(graph: unknown = GRAPH, decisions: unknown[] =
   );
 }
 
-describe('App — composer New chat + crew lock', () => {
-  it('hides the composer New chat button on a fresh boot', async () => {
+describe('App — New chat + crew lock', () => {
+  it('offers New chat from the rail on a fresh boot, when there is no thread to leave', async () => {
+    // The control moved out of the composer (ds-jns PR 3) and stopped being
+    // conditional in the same move. Both halves are asserted here, because the
+    // second is what the composer version got wrong: it appeared only once
+    // there was something to clear, so the operator had to learn where it
+    // WOULD be before they could aim at it.
     stubResumeFetch();
     const { findByTestId, queryByTestId } = render(App);
     await findByTestId('chat-prompt');
+    await findByTestId('rail-new-chat');
     expect(queryByTestId('composer-new-chat')).toBeNull();
   });
 
-  it('resuming a thread shows New chat and keeps sending to that thread\'s crew', async () => {
+  it('keeps sending to the resumed thread\'s crew', async () => {
     // The crew lock survived the picker's removal — it just stopped being
     // something the operator has to see and work around. There is nothing to
     // grey out any more, so the lock is observable only in where the next
@@ -701,20 +712,18 @@ describe('App — composer New chat + crew lock', () => {
     const { findByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await findByTestId('composer-new-chat');
     await sendPrompt(container);
     await waitFor(() => expect(lastChatPostWorkload()).toBe('drift'));
   });
 
-  it('New chat drops the thread, returns the composer to Explore, and hides itself', async () => {
+  it('New chat drops the thread and returns the composer to Explore', async () => {
     stubResumeFetch();
     const { findByTestId, queryByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() => {
       expect(queryByTestId('conversation-thread')).toBeNull();
-      expect(queryByTestId('composer-new-chat')).toBeNull();
     });
     // A clean slate is a clean slate: the next prompt must not inherit the
     // abandoned thread's crew, it goes back to the routing crew.
@@ -828,7 +837,7 @@ describe('App — ?conversation boot deep-link', () => {
     // The COMPOSER's New chat, not the replay banner's: with no replay on
     // screen there is no banner, and the composer's button is the exit the
     // operator actually has.
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
 
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
@@ -909,7 +918,7 @@ describe('App — ?conversation boot deep-link', () => {
     const { findByTestId, queryByTestId } = render(App);
     await findByTestId('trace-detail');
 
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() =>
       expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull(),
     );
@@ -1050,7 +1059,7 @@ describe('App — ?conversation boot deep-link', () => {
 
     // The boot conversation fetch is in flight — conversationId was already
     // set synchronously (before the awaited fetch), so New chat is showing.
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
 
     // Release the stalled boot fetch AFTER the interruption; let openConversation's
     // own runSeq guard (drops the stale detail) and the boot continuation's guard
@@ -1173,7 +1182,7 @@ describe('App — ?conversation boot deep-link', () => {
 
     // Interrupt the pending resume with New chat — Send must re-enable now,
     // not stay disabled waiting for a resume that no longer matters.
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() => expect(sendBtn.disabled).toBe(false));
 
     // The stale detail landing afterwards (openConversation's own runSeq guard
@@ -1468,7 +1477,7 @@ describe('App — ephemeral (non-persisted) exchanges', () => {
     await findByTestId('chat-prompt');
     await sendPrompt(container, 'anything');
     await findByTestId('thread-turn-error');
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() => expect(queryByTestId('conversation-thread')).toBeNull());
   });
 

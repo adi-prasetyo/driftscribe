@@ -510,6 +510,12 @@
     prompt: string;
     workload: Workload;
     baseSeq: number;
+    /** Client-side timestamp, stamped when Send is pressed. Nothing has been
+     *  persisted yet, so there is no server `created_at` — and without this the
+     *  turn's time would be blank for the whole run and then appear out of
+     *  nowhere when the reply lands, which is the one moment the operator is
+     *  watching that bubble. Same reason EphemeralExchange carries one. */
+    createdAt: string;
     /** A confirmed handoff runs a turn the operator never typed (the backend
      *  sets `omit_user_turn` for exactly this reason), so the live exchange is
      *  a lone crew bubble. Rendering the synthetic brief as an operator prompt
@@ -637,7 +643,7 @@
         } satisfies ConversationTurn,
       ];
     }
-    const { prompt, workload, baseSeq, omitUserTurn } = liveExchange;
+    const { prompt, workload, baseSeq, createdAt, omitUserTurn } = liveExchange;
     return [
       ...conversationTurns,
       ...(omitUserTurn
@@ -649,6 +655,7 @@
               text: prompt,
               workload,
               trace_id: traceId,
+              created_at: createdAt,
               optimistic: true,
             } satisfies ConversationTurn,
           ]),
@@ -659,6 +666,7 @@
         workload,
         trace_id: traceId,
         iac_pr: iacPr,
+        created_at: createdAt,
         optimistic: true,
         pending: finalReply == null,
       },
@@ -668,14 +676,20 @@
   // clears liveExchange, so both-true is impossible — this guard is belt.
   const liveExchangeActive = $derived(!historicalActive && liveExchange != null);
 
-  // The composer's New chat button shows whenever a clean slate would clear
-  // something. displayTurns already unifies "persisted thread + optimistic
-  // in-flight exchange" (reuse it — one source of thread visibility, no drift);
-  // finalReply/busy/events cover the timeline-only states (a paused / one-shot
-  // / error reply persists no thread but still occupies the screen), and
-  // conversationId is a belt for an open-but-empty thread edge. Hidden in
-  // historical replay — the banner owns the exit there.
-  const composerNewChat = $derived(
+  // Something a clean slate would clear is on this screen. displayTurns already
+  // unifies "persisted thread + optimistic in-flight exchange" (reuse it — one
+  // source of thread visibility, no drift); finalReply/busy/events cover the
+  // timeline-only states (a paused / one-shot / error reply persists no thread
+  // but still occupies the screen), and conversationId is a belt for an
+  // open-but-empty thread edge. False in historical replay — a replay is a
+  // record, not a chat in progress, and the banner owns its own exit.
+  //
+  // This used to gate the composer's New chat button, whose whole point was to
+  // appear only when it had something to do; that button now lives in the
+  // conversations rail and is unconditional (see ConversationsRail.onNewChat
+  // for why). Its one remaining reader is the emptiness rule below, which is
+  // the same question asked from the other side.
+  const chatOccupied = $derived(
     !historicalActive &&
       (conversationId !== null ||
         displayTurns.length > 0 ||
@@ -688,15 +702,15 @@
   // and the composer sits in the MIDDLE of the column instead of pinned to the
   // bottom of an empty one (ds-jns PR 3).
   //
-  // Derived from composerNewChat rather than re-listing its terms, so "there is
+  // Derived from chatOccupied rather than re-listing its terms, so "there is
   // something here to clear" and "there is nothing here" cannot drift apart —
   // one expression, two readings. handoffOffer and iacPr are deliberately NOT
   // extra terms: neither can exist before a turn has landed, and a turn is
-  // something composerNewChat already sees.
+  // something chatOccupied already sees.
   //
   // resumingConversation is a SECOND arm over the same window, and measured
   // against today's code it never fires: openConversation writes
-  // setConversationId(id) BEFORE awaiting the detail, so composerNewChat is
+  // setConversationId(id) BEFORE awaiting the detail, so chatOccupied is
   // already true for the whole fetch and a `?conversation=` deep link cannot
   // flash the greeting in front of the thread it is loading. Injecting the
   // reorder (id written after the fetch) proves the arm real rather than
@@ -705,7 +719,7 @@
   // away. That ordering is load-bearing for a different reason of its own (a
   // failed rehydrate must not leave a stale crew lock), which makes it exactly
   // the kind of thing a later change moves without thinking about this rule.
-  const chatEmpty = $derived(!historicalActive && !resumingConversation && !composerNewChat);
+  const chatEmpty = $derived(!historicalActive && !resumingConversation && !chatOccupied);
 
   // Suggestion chips. Frozen order, one per crew's flavour, broadest first —
   // see locales/chat.ts for why none of them names its crew.
@@ -1201,12 +1215,18 @@
   function appendLocalTurns(prompt: string, reply: string | null, tid: string | null) {
     const base = conversationTurns.length;
     const crew = conversationWorkload ?? composerWorkload;
+    // The server stamped these a moment ago; we just don't have its value until
+    // the next refetch replaces these rows wholesale. Our own clock is close
+    // enough for a turn that is seconds old, and far better than a blank time
+    // on the turn that just landed (design §2).
+    const now = new Date().toISOString();
     const userTurn: ConversationTurn = {
       seq: base, role: 'user', text: prompt, workload: crew, trace_id: tid,
+      created_at: now,
     };
     const crewTurn: ConversationTurn = {
       seq: base + 1, role: 'crew', text: reply ?? '', workload: crew,
-      trace_id: tid, iac_pr: iacPr,
+      trace_id: tid, iac_pr: iacPr, created_at: now,
     };
     conversationTurns = [...conversationTurns, userTurn, crewTurn];
   }
@@ -1268,7 +1288,12 @@
     // optimistic user bubble + a "thinking" crew bubble that fills with the
     // reply in place. baseSeq is captured AFTER the crew-switch reset above so
     // it reflects the (possibly cleared) thread and matches appendLocalTurns.
-    liveExchange = { prompt, workload, baseSeq: conversationTurns.length };
+    liveExchange = {
+      prompt,
+      workload,
+      baseSeq: conversationTurns.length,
+      createdAt: new Date().toISOString(),
+    };
 
     // The proposal this turn minted, if the crew made one. Both transports set
     // it; settleConversation takes custody, because the backend only emits it
@@ -1721,6 +1746,7 @@
         prompt: '',
         workload: offer.to as Workload,
         baseSeq: conversationTurns.length,
+        createdAt: new Date().toISOString(),
         omitUserTurn: true,
       };
     }
@@ -2375,6 +2401,7 @@
       {conversations}
       activeConversationId={conversationId}
       onOpen={openConversation}
+      onNewChat={newChat}
     />
     <DecisionsRail {decisions} {activeTraceId} onOpenTrace={openDeskRecordFromRail} />
   </div>
@@ -2468,8 +2495,6 @@
         onSubmit={submitChat}
         prefill={chatPrefill}
         bind:workload={composerWorkload}
-        showNewChat={composerNewChat}
-        onNewChat={newChat}
       />
     </div>
     <!-- Below the composer, not above it: the greeting introduces the box and

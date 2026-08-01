@@ -177,6 +177,116 @@ describe('ConversationThread', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Turn timestamps (ds-jns PR 3, design §2).
+//
+// Asserted STRUCTURALLY rather than against exact strings: the format is
+// Intl's and the suite runs in whatever locale the app defaults to, so pinning
+// 'Aug 1, 14:32' would pin the locale as a side effect. `hourCycle: 'h23'` is
+// pinned in lib/format, which makes /^\d{2}:\d{2}$/ a locale-independent
+// description of "clock only, no date" in both EN and JA.
+// ---------------------------------------------------------------------------
+
+const CLOCK_ONLY = /^\d{2}:\d{2}$/;
+
+describe('ConversationThread — turn timestamps', () => {
+  it('shows a time on every turn without asking for a hover', () => {
+    // A hover-only timestamp is unreachable on touch, which is most of the
+    // devices a link to a thread gets opened on.
+    const iso = '2026-08-01T05:32:00Z';
+    const turns = [
+      turn({ seq: 0, role: 'user', text: 'hello', created_at: iso }),
+      turn({ seq: 1, role: 'crew', text: 'hi', created_at: iso }),
+    ];
+    const { getAllByTestId } = render(ConversationThread, {
+      props: { turns, cache: makeCache() },
+    });
+    const times = getAllByTestId('turn-time');
+    expect(times).toHaveLength(2);
+    for (const el of times) {
+      expect(el.tagName).toBe('TIME');
+      expect(el.getAttribute('datetime')).toBe(iso);
+      expect((el.textContent ?? '').trim()).not.toBe('');
+    }
+  });
+
+  it('puts the date on the first turn of each day, not on every bubble', () => {
+    // A thread resumed a week later must not read as one continuous sitting;
+    // stamping the date on all twenty bubbles to prevent that is noise on
+    // nineteen of them.
+    const turns = [
+      turn({ seq: 0, role: 'user', text: 'a', created_at: '2026-08-01T01:00:00Z' }),
+      turn({ seq: 1, role: 'crew', text: 'b', created_at: '2026-08-01T02:00:00Z' }),
+      turn({ seq: 2, role: 'user', text: 'c', created_at: '2026-08-05T01:00:00Z' }),
+    ];
+    const { getAllByTestId } = render(ConversationThread, {
+      props: { turns, cache: makeCache() },
+    });
+    const text = getAllByTestId('turn-time').map((e) => (e.textContent ?? '').trim());
+    // Opens the thread → carries its date. (Both bounds matter: a rule that
+    // only ever emitted the long form would pass a "second one is short" check
+    // written the other way round.)
+    expect(text[0]).not.toMatch(CLOCK_ONLY);
+    // Same day as the turn above it → clock alone.
+    expect(text[1]).toMatch(CLOCK_ONLY);
+    // Four days later → the date comes back.
+    expect(text[2]).not.toMatch(CLOCK_ONLY);
+  });
+
+  it('shows no time at all on a turn the server never stamped', () => {
+    // Pre-Phase-19 rows, and any row a future writer forgets. An empty <time>
+    // or an "Invalid Date" would be worse than silence.
+    const turns = [turn({ seq: 0, role: 'user', text: 'a' })];
+    const { queryByTestId } = render(ConversationThread, {
+      props: { turns, cache: makeCache() },
+    });
+    expect(queryByTestId('turn-time')).toBeNull();
+  });
+
+  it('leaves transition rows unstamped — a seam is not a message', () => {
+    // It still counts as the previous turn for the day-run rule below it: the
+    // conversation changed hands on a day, even if the row does not say so.
+    const turns = [
+      turn({ seq: 0, role: 'user', text: 'a', created_at: '2026-08-01T01:00:00Z' }),
+      turn({
+        seq: 1,
+        role: 'crew_change',
+        text: '',
+        created_at: '2026-08-01T02:00:00Z',
+        handoff: { from: 'explore', to: 'provision' },
+      }),
+      turn({ seq: 2, role: 'crew', text: 'b', workload: 'provision', created_at: '2026-08-01T03:00:00Z' }),
+    ];
+    const { getAllByTestId } = render(ConversationThread, {
+      props: { turns, cache: makeCache() },
+    });
+    const times = getAllByTestId('turn-time');
+    expect(times).toHaveLength(2); // the two bubbles, not the seam
+    expect((times[1].textContent ?? '').trim()).toMatch(CLOCK_ONLY);
+  });
+
+  it('stamps a still-streaming crew turn, so the time does not appear from nowhere', () => {
+    // The pending bubble is the one the operator is watching. A time that
+    // materialises on it the instant the reply lands reads as the bubble
+    // changing under them (App stamps live turns client-side for this).
+    const turns = [
+      turn({
+        seq: 0,
+        role: 'crew',
+        text: '',
+        optimistic: true,
+        pending: true,
+        created_at: '2026-08-01T05:32:00Z',
+      }),
+    ];
+    const { getByTestId } = render(ConversationThread, {
+      props: { turns, cache: makeCache() },
+    });
+    getByTestId('thread-typing');
+    expect((getByTestId('turn-time').textContent ?? '').trim()).not.toBe('');
+  });
+});
+
 // Crew-handoff transition rows.
 //
 // A conversation's crew used to be fixed for life. Now a confirmed handoff
