@@ -189,7 +189,17 @@
    *  would offer an action on a change that has already ended.
    *
    *  Follows the rail's own href rule: a superseded row links to the PR that
-   *  superseded it, not to its own dead page. */
+   *  superseded it, not to its own dead page.
+   *
+   *  `[...decisions, doc]` is load-bearing, and getting it wrong is how the
+   *  first version of this shipped a fail-open (Codex review round 3).
+   *  `supersededWaitingIds` can only mark a WAITING row it can see, and a
+   *  PINNED record is by definition a decision outside the recent list — so
+   *  passing the snapshot alone left the pinned doc unmarked, and a change
+   *  already ended read "Apply this change →". Adding `doc` is what lets the
+   *  helper compare it against the newer terminal row beside it. Harmless when
+   *  the doc IS in the list: the helper keys on decision identity, so a
+   *  duplicate is the same row twice. */
   const iacApproval = $derived.by((): { href: string; label: string } | null => {
     if (!doc || doc.action !== 'iac_apply' || decisions === null) return null;
     const sup = doc.superseded_by_pr;
@@ -197,7 +207,8 @@
       typeof sup === 'number' && Number.isInteger(sup) && sup > 0 ? sup : doc.pr_number;
     const href = iacApprovalHref(target, $locale);
     if (href === null) return null;
-    return { href, label: iacApproveLabel(doc, supersededWaitingIds(decisions), $t) };
+    const seen = supersededWaitingIds([...decisions, doc]);
+    return { href, label: iacApproveLabel(doc, seen, $t) };
   });
 
   const github = $derived.by((): { href: string; labelKey: MessageKey } | null => {

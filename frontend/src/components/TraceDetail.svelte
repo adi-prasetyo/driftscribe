@@ -173,7 +173,7 @@
           </li>
         {:else if row.kind === 'tool'}
           {@const ok = row.result ? row.result.result_ok !== false : null}
-          {@const toolLat = num(row.result?.latency_ms)}
+          {@const toolLat = num(row.result?.latency_ms ?? row.call?.latency_ms)}
           <li class="trace-row trace-row--tool" data-testid="trace-row-tool">
             <details class="event" data-insert-id={eventKey((row.call ?? row.result)!)}>
               <summary class="event__summary">
@@ -190,7 +190,11 @@
                      absent and this renders nothing. Legacy and replayed traces
                      DO carry it, and the deleted Timeline showed it — a tool
                      call that took 1.8s is the answer to "why did that turn feel
-                     slow", and there is no other place to read it. -->
+                     slow", and there is no other place to read it.
+                     Result first, then CALL: an in-flight or replayed call
+                     without a result is exactly the row where the number is
+                     most wanted, and reading the result alone left it blank
+                     there (Codex review round 3). -->
                 {#if toolLat != null}
                   <span class="event__lat" data-testid="trace-row-tool-latency"
                     >{$t('timeline.latencyMs', { ms: toolLat })}</span>

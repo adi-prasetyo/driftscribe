@@ -412,6 +412,43 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
     expect(link.textContent).toContain('71');
   });
 
+  it('does not offer "Apply" on a PINNED change a newer row has already ended', async () => {
+    // The fail-open my own first fix shipped, caught by review round 3.
+    // `supersededWaitingIds` can only mark a WAITING row it can SEE, and a
+    // pinned record is by definition a decision outside the recent list — so
+    // passing the snapshot alone left the pinned doc unmarked and its label
+    // read "Apply this change" for work that had already ended. The doc has to
+    // join the input it is being judged against.
+    const waiting = {
+      decision_id: 'd-waiting',
+      trace_id: TID,
+      action: 'iac_apply',
+      created_at: '2026-05-31T15:06:00Z',
+      pr_number: 68,
+      event_key: 'ek-1',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    } as Decision;
+    const newerTerminal = {
+      decision_id: 'd-applied',
+      trace_id: 'b'.repeat(32),
+      action: 'iac_apply',
+      created_at: '2026-05-31T16:00:00Z',
+      pr_number: 71,
+      event_key: 'ek-1',
+      apply_status: 'applied',
+      merge_state: 'merged',
+    } as Decision;
+    // `decisions` is the recent snapshot and does NOT contain the pinned doc,
+    // which is the whole shape of the bug.
+    const { findByTestId } = mount(() => res(traceResponse()), {
+      decision: waiting,
+      decisions: [newerTerminal],
+    });
+    const link = await findByTestId('iac-approve-link');
+    expect(link.textContent).not.toMatch(/apply this change/i);
+  });
+
   it('offers no approval link at all when it cannot tell whether the change was superseded', async () => {
     // `decisions` is the only input that answers "did a newer PR overtake this
     // while it waited". Without it the label would guess, and the guess is

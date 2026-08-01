@@ -395,6 +395,36 @@ describe('TraceDetail — what the run spent and what it consulted', () => {
     expect(b.queryByTestId('trace-tokens')).toBeNull();
   });
 
+  it('reads a tool call\'s own latency when no result came back', () => {
+    // The row where the number is most wanted: an in-flight or replayed call
+    // with no result yet. Reading the RESULT alone left it blank exactly there
+    // (Codex review round 3) — the deleted Timeline fell back to the call.
+    const { getByTestId } = mount(
+      entry({
+        events: [
+          ev({ event: 'tool_call', tool_name: 'read_live_env_tool', latency_ms: 1840, insert_id: 'c9' }),
+        ],
+      }),
+    );
+    expect(getByTestId('trace-row-tool-latency').textContent).toContain('1840');
+  });
+
+  it('prefers the RESULT\'s latency once one arrives', () => {
+    // Both can carry it. The result's is the settled measurement; the call's is
+    // whatever was known when it was dispatched.
+    const { getByTestId } = mount(
+      entry({
+        events: [
+          ev({ event: 'tool_call', tool_name: 't', latency_ms: 10, insert_id: 'c1' }),
+          ev({ event: 'tool_result', tool_name: 't', result_ok: true, latency_ms: 990, insert_id: 'r1' }),
+        ],
+      }),
+    );
+    const lat = getByTestId('trace-row-tool-latency').textContent ?? '';
+    expect(lat).toContain('990');
+    expect(lat).not.toContain('10 ');
+  });
+
   it('says how many documents an MCP call came back with, and omits an empty one', () => {
     const { getAllByTestId, getByTestId } = mount(
       entry({

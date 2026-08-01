@@ -1205,7 +1205,27 @@ describe('App — desk decision records (ds-jns)', () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.includes('/trace/'))
-          return okJson({ trace_id: TID, complete: true, events: [], decision: null });
+          return okJson({
+            trace_id: TID,
+            complete: true,
+            events: [],
+            // A WAITING iac_apply: the one shape whose approval label is
+            // actionable, so the tests below can tell "no link" from "no
+            // linkable decision".
+            decision: {
+              decision_id: 'dt-1',
+              trace_id: TID,
+              action: 'iac_apply',
+              created_at: '2026-07-28T09:00:00Z',
+              pr_number: 68,
+              event_key: 'ek-1',
+              apply_status: 'waiting_for_rebake',
+              merge_state: 'merged',
+              // Its PR link is the witness that the card renders links at all,
+              // so "no approval link" reads as withheld rather than as blank.
+              github: { url: 'https://github.com/acme/ops/pull/68' },
+            },
+          });
         if (url.includes('/decisions')) {
           // A cycle that never completes leaves `settled` false — the state in
           // which the desk must not yet call anything out of window.
@@ -1251,6 +1271,32 @@ describe('App — desk decision records (ds-jns)', () => {
     const { getByTestId, queryByTestId } = render(App);
     await waitFor(() => expect(getByTestId('decision-record')).toBeTruthy());
     expect(queryByTestId('decision-record-outofwindow')).toBeNull();
+  });
+
+  it('offers no approval action on a pinned record while the decisions list is unknown', async () => {
+    // Same ds-eh6 distinction as the out-of-window note above, on a control
+    // rather than a sentence — and therefore worse to get wrong. The store's
+    // pre-first-fetch value is NO_DECISIONS_YET: a NON-NULL empty array meaning
+    // "we have not looked". Handed to DecisionRecord it defeats that
+    // component's own absent-means-no-link guard, and a change that a newer row
+    // may already have ended renders "Apply this change" — briefly on a fast
+    // /trace, and for good if /decisions never answers (Codex review round 3).
+    stubDesk([], { hangDecisions: true });
+    history.replaceState(null, '', `/?reasoning=${TID}`);
+    const { findByTestId, queryByTestId } = render(App);
+
+    // PREMISE FIRST. Asserting the link's absence before the record has even
+    // resolved its decision is unfailable — the fourth time in this PR that a
+    // negative assertion had to be taught to establish what it is negating.
+    // The action row only renders once `doc` is loaded, and this trace's
+    // decision is a WAITING iac_apply, i.e. exactly the shape whose label is
+    // actionable. So: the record knows what it is about…
+    await findByTestId('decision-record-action');
+    // …and still offers nothing to click, because the list it would have to
+    // consult has not answered.
+    expect(queryByTestId('iac-approve-link')).toBeNull();
+    // Its GitHub link is present, proving the card is not simply blank.
+    await findByTestId('decision-github-link');
   });
 
   it('expands the ledger row instead of pinning, when the snapshot does carry it', async () => {
