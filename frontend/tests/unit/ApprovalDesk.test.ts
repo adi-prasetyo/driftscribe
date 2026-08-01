@@ -788,6 +788,55 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(queryByTestId('approval-desk-view-failure')).toBeNull();
   });
 
+  // Two merged witnesses = two generations merged this PR, which a same-head C2
+  // rerun makes reachable (distinct event_key, independent approval claims, and
+  // merge_pr_at_sha calls "already merged at the expected head" a success —
+  // driftscribe_lib/github.py:1052 — so the later POST records a witness too).
+  // The payload cannot say which generation the page will resolve, so picking
+  // one would let a frozen apply read as live. Fall back to the gate.
+  it('two merged witnesses license nothing — the card cannot pick a generation', () => {
+    const approval = pendingIac({ title: undefined });
+    const witnessA = iacDecision({
+      decision_id: 'iac-a-merged',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-genA',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const witnessB = iacDecision({
+      decision_id: 'iac-b-merged',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-genB',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:02:00Z',
+    });
+    // B is the generation the approval page resolves, and it is FROZEN. Scoping
+    // to A (the first match) would have offered "Apply this change" for it.
+    const frozenB = iacDecision({
+      decision_id: 'iac-b-frozen',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-genB',
+      apply_status: 'failed_state_suspect',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:09:00Z',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [frozenB, witnessB, witnessA],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+  });
+
   // The witness is the only thing that licenses reading sibling rows, so a
   // witness with no generation identity licenses nothing. Fail toward the gate,
   // exactly as the no-witness branch does — the page keeps a live form for

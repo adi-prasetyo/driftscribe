@@ -306,12 +306,27 @@
     const prDecisions = list.filter(
       (d): d is Decision => d?.action === 'iac_apply' && d.pr_number === m.prNumber,
     );
-    // The one misattribution-proof witness. Without it the listing may be
-    // pointing at a live generation, and only the full approval path is safe.
-    const witness = prDecisions.find(
-      (d) => d.apply_status === 'waiting_for_rebake' && d.merge_state === 'merged',
+    // The misattribution-proof witness. Without one the listing may be pointing
+    // at a live generation, and only the full approval path is safe.
+    //
+    // It must also be the ONLY one. Two merged witnesses means two generations
+    // merged this PR, which is reachable: a same-head C2 rerun mints a second
+    // `event_key` (the key hashes generation_metadata as well as head_sha,
+    // agent/main.py:6406), the two approval POSTs claim independently, and
+    // `merge_pr_at_sha` treats "already merged at the expected head" as success
+    // (driftscribe_lib/github.py:1052), so the later POST records a merged
+    // witness too (:7330). Nothing in this payload says which generation the
+    // approval page will resolve, so scoping to either could describe the wrong
+    // one — and picking the first would let a frozen apply read as live.
+    const witnessKeys = new Set(
+      prDecisions
+        .filter(
+          (d) => d.apply_status === 'waiting_for_rebake' && d.merge_state === 'merged',
+        )
+        .map((d) => d.event_key),
     );
-    if (!witness) return { kind: 'approve' };
+    if (witnessKeys.size !== 1) return { kind: 'approve' };
+    const [witnessKey] = witnessKeys;
 
     // A merged witness proves the PR settled — it does NOT prove the other rows
     // under this `pr_number` describe the same GENERATION. An apply that fails
@@ -324,9 +339,8 @@
     // `event_key` hashes `head_sha` (agent/main.py:6406), so it is the
     // generation. Scope the join to the witness's own key; without one there is
     // no proof of generation and the full approval path is the safe answer.
-    const generation = witness.event_key;
-    if (typeof generation !== 'string' || generation === '') return { kind: 'approve' };
-    const genDecisions = prDecisions.filter((d) => d.event_key === generation);
+    if (typeof witnessKey !== 'string' || witnessKey === '') return { kind: 'approve' };
+    const genDecisions = prDecisions.filter((d) => d.event_key === witnessKey);
 
     // Same generation as the merge, so the page's own suppressions decide:
     // terminal failure and explicit supersession both render a banner with no
