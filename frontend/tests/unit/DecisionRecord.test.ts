@@ -355,6 +355,91 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
   });
 });
 
+// The two tokens that say a decision did LESS than its headline implies. Both
+// lived only in the decisions rail; between deleting that (ds-jns Task 3.3) and
+// this, NOTHING read `suppressed_by_autonomy` or `github.dry_run` at all — a
+// drift_issue row said it filed an issue that a dry run never created. This is
+// the highest-stakes class of thing on the card, so it is pinned per-token,
+// per-direction, and for position.
+describe('DecisionRecord — what the decision did NOT do', () => {
+  function withDecision(over: Partial<Decision>) {
+    return mount(() => res(traceResponse()), {
+      decision: {
+        decision_id: 'd-x',
+        trace_id: TID,
+        action: 'drift_issue',
+        created_at: '2026-05-31T15:06:00Z',
+        rationale: 'EXTRA drifted on payment-demo.',
+        ...over,
+      } as Decision,
+    });
+  }
+
+  it('says a dry run created nothing on GitHub', async () => {
+    const { findByTestId } = await Promise.resolve(
+      withDecision({ github: { url: 'https://github.com/acme/ops/issues/99', dry_run: true } }),
+    );
+    expect((await findByTestId('decision-dry-run')).textContent).toContain('dry run');
+  });
+
+  it('says which autonomy mode stopped the action, by its LABEL not its key', async () => {
+    const { findByTestId } = withDecision({
+      suppressed_by_autonomy: true,
+      autonomy_mode: 'observe',
+    } as Partial<Decision>);
+    const pill = await findByTestId('decision-autonomy-suppressed');
+    // The localized mode name, never the raw enum leaking into operator copy.
+    expect(pill.textContent).toContain('Observe');
+    expect(pill.textContent).not.toContain('propose_apply');
+  });
+
+  it('falls back to the raw mode string for a mode the dial does not know', async () => {
+    // The backend only suppresses in observe today. A future value must not
+    // render a catalog key at the operator, and must not blank the pill either
+    // — the FACT of suppression is the load-bearing half.
+    const { findByTestId } = withDecision({
+      suppressed_by_autonomy: true,
+      autonomy_mode: 'some_future_mode',
+    } as Partial<Decision>);
+    const pill = await findByTestId('decision-autonomy-suppressed');
+    expect(pill.textContent).toContain('some_future_mode');
+    expect(pill.textContent).not.toContain('decisions.autonomy');
+  });
+
+  it('claims neither for an ordinary decision, and not on a rollback dry run', async () => {
+    // The rollback exclusion is the one that matters: on a rollback row
+    // `dry_run=true` does NOT suppress the worker calls — a real approval is
+    // minted — so a "nothing was created" token there would be a lie in the
+    // opposite direction.
+    const plain = withDecision({ github: { url: 'https://github.com/acme/ops/issues/99' } });
+    await plain.findByTestId('decision-record');
+    expect(plain.queryByTestId('decision-dry-run')).toBeNull();
+    expect(plain.queryByTestId('decision-autonomy-suppressed')).toBeNull();
+    cleanup();
+
+    const rollback = withDecision({
+      action: 'rollback',
+      github: { url: 'https://github.com/acme/ops/issues/99', dry_run: true },
+    } as Partial<Decision>);
+    await rollback.findByTestId('decision-record');
+    expect(rollback.queryByTestId('decision-dry-run')).toBeNull();
+  });
+
+  it('reads BEFORE the prose it qualifies, not after it', async () => {
+    // Position is the claim. "This was a dry run" placed under the rationale it
+    // contradicts is a footnote on a paragraph the operator has already
+    // believed. jsdom has no layout, but DOM order is what drives both the
+    // visual order and the screen-reader order here.
+    const { findByTestId, container } = withDecision({
+      github: { url: 'https://github.com/acme/ops/issues/99', dry_run: true },
+    });
+    const caveat = await findByTestId('decision-dry-run');
+    const prose = await findByTestId('decision-record-prose');
+    expect(caveat.compareDocumentPosition(prose) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container).toBeTruthy();
+  });
+});
+
 describe('DecisionRecord — record incomplete', () => {
   it('says so when the trace loaded and no decision doc is attached', async () => {
     // Reachable: a bare ?reasoning= link can name a CHAT turn's trace, which has

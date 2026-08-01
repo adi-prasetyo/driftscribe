@@ -312,6 +312,26 @@ export function decisionsResponse(origin: string) {
         created_at: '2026-06-08T01:01:00+00:00',
         github: { url: 'javascript:alert(document.cookie)', dry_run: false },
       },
+      {
+        // A decision that did LESS than its action name implies, twice over:
+        // the coordinator was in Observe (so nothing ran) and its GitHub side
+        // effect was a dry run (so nothing was created). Both tokens are
+        // honesty-class — a row reading "filed an issue" for an issue that was
+        // never filed is the one failure this product exists not to have — and
+        // between ds-jns deleting the decisions rail and re-homing them onto
+        // the record, NOTHING rendered either field.
+        decision_id: 'd-drift-quiet',
+        trace_id: 'cc11bb22cc33dd44ee55ff6600112233',
+        action: 'drift_issue',
+        created_at: '2026-06-08T01:02:00+00:00',
+        rationale: 'EXTRA drifted on payment-demo; an issue would name the two variables.',
+        suppressed_by_autonomy: true,
+        autonomy_mode: 'observe',
+        // No `url`, deliberately: a dry run created nothing, so there is no
+        // issue to link. That is the shape the coordinator actually persists,
+        // and it keeps this row out of the github-link spec's population.
+        github: { dry_run: true },
+      },
     ],
   };
 }

@@ -459,6 +459,38 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.locator('a[href*="/approvals/ap-1"]').first()).toBeVisible();
   });
 
+  test('a suppressed / dry-run decision says so on the record, above its own rationale', async ({
+    page,
+  }) => {
+    // The record has to be able to contradict itself out loud. This decision's
+    // headline is "drift_issue" and its rationale reads like work happened;
+    // both are true of the REQUEST and false of the OUTCOME, because the dial
+    // was in Observe and the GitHub call was a dry run.
+    //
+    // Driven by deep link rather than by hunting a row: three seeded rows share
+    // the same "drift" ledger line, and this one is named by trace id.
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/?reasoning=cc11bb22cc33dd44ee55ff6600112233');
+
+    const record = page.getByTestId('decision-record');
+    await expect(record).toBeVisible();
+    await expect(record.getByTestId('decision-autonomy-suppressed')).toContainText('Observe');
+    await expect(record.getByTestId('decision-dry-run')).toContainText('dry run');
+
+    // Both read ABOVE the rationale they qualify. A "nothing was created" note
+    // placed under the paragraph claiming otherwise is a footnote on something
+    // the operator has already believed. Measured, not inferred from DOM order:
+    // this is exactly the kind of claim jsdom cannot make.
+    const [caveatBottom, proseTop] = await Promise.all([
+      record.getByTestId('decision-dry-run').evaluate((el) => el.getBoundingClientRect().bottom),
+      record
+        .getByTestId('decision-record-prose')
+        .evaluate((el) => el.getBoundingClientRect().top),
+    ]);
+    expect(caveatBottom).toBeLessThanOrEqual(proseTop);
+  });
+
   test('decision github.url: valid github.com link renders, javascript: url does not', async ({ page }) => {
     // Also re-homed by Task 3.3: the rail listed every decision at once and
     // could show all their links side by side. A record shows ONE decision, so
@@ -471,13 +503,14 @@ test.describe('transparency UI (mock smoke)', () => {
     const rows = page.locator(`[data-testid="${TESTIDS.ledgerRow}"]`).filter({ hasText: 'drift' });
     await expect(rows.first()).toBeVisible();
 
-    // Two seeded drift_issue rows: one with a real github.com issue, one with a
-    // `javascript:` payload. Open each and collect what its record offered,
+    // Three seeded drift_issue rows: one with a real github.com issue, one with
+    // a `javascript:` payload, and one dry run that created nothing and so
+    // carries no url at all. Open each and collect what its record offered,
     // rather than indexing by position — the pass/fail must not depend on which
-    // way the ledger happens to sort two rows a minute apart.
+    // way the ledger happens to sort rows a minute apart.
     const hrefs: (string | null)[] = [];
     const n = await rows.count();
-    expect(n, 'both drift_issue rows must reach the ledger').toBe(2);
+    expect(n, 'every drift_issue row must reach the ledger').toBe(3);
     for (let i = 0; i < n; i++) {
       await rows.nth(i).click();
       await expect(page.getByTestId('decision-record')).toBeVisible();

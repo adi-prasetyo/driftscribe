@@ -21,7 +21,8 @@
   import type { Decision } from '../lib/types';
   import { crewName } from '../lib/workloads';
   import { decisionActionLabel, fmtWhen } from '../lib/format';
-  import { decisionGithubLink } from '../lib/approval';
+  import { decisionGithubLink, decisionGithubDryRun } from '../lib/approval';
+  import { modeLabel, type AutonomyMode } from '../lib/autonomy';
   import { prefersReducedMotion } from '../lib/motion';
   import { t, locale } from '../lib/i18n';
   import CrewGlyph from './CrewGlyph.svelte';
@@ -149,6 +150,28 @@
    *  intact; see decisionGithubLink for why both halves are load-bearing. */
   const github = $derived(doc ? decisionGithubLink(doc) : null);
 
+  /** Two tokens that say a decision did LESS than its headline implies. Both
+   *  rendered only in the deleted decisions rail; nothing read the fields at
+   *  all between that deletion and this. They are the highest-stakes thing on
+   *  the card — a row that reads "filed issue #99" for an issue that was never
+   *  filed, or that shows an action the operator's own dial actually stopped,
+   *  is the one failure this whole product is built not to have.
+   *
+   *  Deliberately NOT folded into DecisionSummary's field table: that table is
+   *  what the decision RECORDS, and these two are statements about whether it
+   *  happened. */
+  const dryRun = $derived(doc ? decisionGithubDryRun(doc) : false);
+  const suppressedMode = $derived.by((): string | null => {
+    if (doc?.suppressed_by_autonomy !== true) return null;
+    const m = doc.autonomy_mode;
+    // The backend only suppresses in observe today, but all three dial modes
+    // localize through the shared label; an unrecognized future value falls
+    // back to its raw string rather than rendering a catalog key.
+    return m === 'observe' || m === 'propose' || m === 'propose_apply'
+      ? modeLabel(m as AutonomyMode, $t)
+      : (m ?? '');
+  });
+
   // "The trace loaded and nothing is attached to it" — a different fact from
   // "it wouldn't load", which TraceDetail's own error line already states, and
   // from "still loading". Reachable without anything being wrong: a bare
@@ -200,6 +223,19 @@
           >{when}</time>
       {/if}
     </header>
+  {/if}
+
+  {#if suppressedMode !== null || dryRun}
+    <p class="record__caveats">
+      {#if suppressedMode !== null}
+        <span class="ds-pill ds-pill--muted" data-testid="decision-autonomy-suppressed"
+          >{$t('decisions.autonomy.suppressed', { mode: suppressedMode })}</span>
+      {/if}
+      {#if dryRun}
+        <span class="ds-pill ds-pill--muted" data-testid="decision-dry-run"
+          >{$t('decisions.dryRun.pill')}</span>
+      {/if}
+    </p>
   {/if}
 
   {#if prose !== null}
@@ -287,6 +323,14 @@
   }
 
   .record__github {
+    margin: 0;
+  }
+  /* Directly under the header, above everything the decision claims — these
+     qualify the whole card, so they must be read before it, not after. */
+  .record__caveats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ds-sp-2);
     margin: 0;
   }
   .record__github-link {

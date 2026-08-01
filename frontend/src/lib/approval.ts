@@ -269,6 +269,27 @@ const GITHUB_LINK_LABEL: Record<string, MessageKey> = {
   upgrade_pr: 'decisions.row.githubLink.viewPr',
 };
 
+/**
+ * Did this decision's GitHub side effect get SKIPPED because the coordinator is
+ * running DRY_RUN=true? Gated on the same action allowlist as the link above,
+ * for the same reason and one more: on a rollback row `dry_run=true` does NOT
+ * suppress the worker calls — a real approval is minted (agent/main.py,
+ * dry_run_effective) — so a "dry run" token there would falsely say nothing
+ * happened. `no_op` is excluded too: its sidecar mirrors the setting but there
+ * was nothing to skip.
+ *
+ * Honesty-class, not decoration. Without it a row reads "filed issue #99" for
+ * an issue that was never filed.
+ */
+export function decisionGithubDryRun(decision: {
+  action?: string;
+  github?: { dry_run?: boolean } | null;
+}): boolean {
+  const action = decision?.action;
+  if (typeof action !== 'string' || !Object.hasOwn(GITHUB_LINK_LABEL, action)) return false;
+  return decision.github?.dry_run === true;
+}
+
 export function decisionGithubLink(decision: {
   action?: string;
   github?: { url?: string | null } | null;
