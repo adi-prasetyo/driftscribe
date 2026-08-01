@@ -211,14 +211,12 @@
    *  decisions-derived IaC rule before it consults `degraded`, so a row whose
    *  terminal outcome landed meanwhile can still be offered (ds-smr — filed,
    *  and not this component's to fix). That is a reason to fix the hero, not a
-   *  reason for this card to start making the claim too. Every remaining state is either read off the
-   *  decision's own fields (`history`, `failure`) or is a POSITIVE finding
-   *  (`superseded`), and those are safe under a bounded or stale list.
+   *  reason for this card to start making the claim too.
    *
-   *  `[...decisions, doc]` keeps the positive `superseded` finding available
-   *  for a pinned record, which is by definition absent from the list. Exact
-   *  duplicates are harmless: terminal times are map-keyed by generation and
-   *  stale ids land in a Set.
+   *  Every remaining state is either read off the decision's own fields
+   *  (`history`, `failure`, explicit `superseded`) or is the neutral page
+   *  label, and those are safe under a bounded or stale list — which is why
+   *  this card needs no snapshot at all (see NO_SUPERSEDED).
    *
    *  Follows the rail's href rule: a superseded row links to the PR that
    *  superseded it, not to its own dead page. */
