@@ -7,7 +7,12 @@
   //    open and caches for the component's lifetime (data is static per deploy).
   //  - Render order is anxiety-first: gates → denylist → workloads.
   //  - The `call` prop is the same token-aware fetch wrapper as InfraDiagram.
+  //
+  // Two shapes, one body (see `embedded`): the self-disclosing card it has
+  // always been, and a body-only mode for a host that has already done the
+  // disclosing — today the capability modal behind the empty chat's link.
 
+  import { onMount } from 'svelte';
   import {
     groupRules,
     categoryHeading,
@@ -51,6 +56,7 @@
   let {
     call,
     autonomyNote = null,
+    embedded = false,
   }: {
     /** App's token-aware fetch wrapper. */
     call: (path: string, init?: RequestInit) => Promise<Response>;
@@ -58,7 +64,24 @@
      *  autonomyNoteFor(); null = render nothing (loading/unknown/propose_apply).
      *  The card is a dumb renderer — best-effort silence lives in the selector. */
     autonomyNote?: string | null;
+    /** Drop the `<details>` chrome and render the body open, fetching on mount.
+     *
+     *  For a host that has already asked the question this card's summary asks.
+     *  The capability modal is opened BY a link that says what it will show, so
+     *  mounting the card as-is would hand the operator a dialog containing one
+     *  shut disclosure they have to click a second time to get what they asked
+     *  for. Lazy-on-open is the right default for a panel squatting in a column;
+     *  it is exactly wrong for a panel that only exists because it was asked
+     *  for. */
+    embedded?: boolean;
   } = $props();
+
+  /** Heading levels shift down one inside a host that supplies its own heading
+   *  (the Modal titles itself h2). Standalone: h1 page header → h2 sections →
+   *  h3 groups. Embedded: → h2 modal title → h3 sections → h4 groups. Same
+   *  document outline either way, and no skipped level in either. */
+  const sectionTag = $derived(embedded ? 'h3' : 'h2');
+  const groupTag = $derived(embedded ? 'h4' : 'h3');
 
   let data = $state<Capabilities | null>(null);
   let loading = $state(false);
@@ -133,6 +156,21 @@
     }
   }
 
+  // Embedded mode has no toggle to hang the lazy fetch on, so mount IS the
+  // open. onMount rather than an $effect: `embedded` never changes for a given
+  // instance, and an effect that writes the same state it would have to read to
+  // guard itself is a loop waiting to happen.
+  //
+  // The host is expected to mount this only while it is showing (Modal renders
+  // its children under {#if open}), which means a reopen refetches rather than
+  // reusing the previous instance's cache. That is one small GET on an explicit
+  // operator action, and it buys the thing a lifetime cache would cost: a first
+  // open that failed comes back clean on the second, without the operator
+  // having to find the Retry button.
+  onMount(() => {
+    if (embedded) void fetchCapabilities();
+  });
+
   // Per-crew lazy prompt state — keyed by workload name.
   // A fetch in flight (promptLoading[name]) blocks duplicate calls; a prior
   // error does NOT block — closing and reopening the disclosure retries
@@ -170,12 +208,25 @@
      got (Group's `quiet` variant) — no box when closed, a hairline above the
      label row, and the body on a well when open. The DOM contract is untouched:
      capability-card / cap-summary and every inner testid stay put. -->
-<details class="cap-card" data-testid="capability-card" ontoggle={onToggle}>
-  <summary class="cap-summary" data-testid="cap-summary">
-    <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />{$t('capability.card.title')}</span>
-    <span class="cap-summary__hint">{$t('capability.card.hint')}</span>
-  </summary>
+{#if embedded}
+  <!-- Body only. Keeps `capability-card` so a consumer asking "is the panel up?"
+       asks it the same way in both shapes; `cap-summary` is deliberately gone,
+       because in this shape there is nothing to summarise — the whole thing is
+       already open. -->
+  <div class="cap-card cap-card--embedded" data-testid="capability-card">
+    {@render capBody()}
+  </div>
+{:else}
+  <details class="cap-card" data-testid="capability-card" ontoggle={onToggle}>
+    <summary class="cap-summary" data-testid="cap-summary">
+      <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />{$t('capability.card.title')}</span>
+      <span class="cap-summary__hint">{$t('capability.card.hint')}</span>
+    </summary>
+    {@render capBody()}
+  </details>
+{/if}
 
+{#snippet capBody()}
   <div class="cap-body">
     {#if loading && !data}
       <p class="ds-subtle cap-loading">{$t('common.loading')}</p>
@@ -190,11 +241,12 @@
         >{$t('common.retry')}</button>
       </div>
     {:else if data}
-      <!-- Heading hierarchy: the page has one h1 (App header); these panel
-           sections are h2, their sub-groups h3 — no skipped levels. -->
+      <!-- Heading hierarchy: see sectionTag/groupTag — h2/h3 standing alone on
+           the page, h3/h4 inside a host that already spent an h2 on its own
+           title. No skipped levels either way. -->
       <!-- 1. Gates — anxiety-first: operator wants to know what requires their approval -->
       <section class="cap-section" data-testid="cap-gates" aria-labelledby="cap-gates-heading">
-        <h2 class="cap-section__heading" id="cap-gates-heading">{$t('capability.gates.heading')}</h2>
+        <svelte:element this={sectionTag} class="cap-section__heading" id="cap-gates-heading">{$t('capability.gates.heading')}</svelte:element>
         {#each data.human_gates as gate (gate.id)}
           <div class="cap-gate">
             <p class="cap-gate__title"><strong>{gateTitle(gate, $t)}</strong></p>
@@ -205,11 +257,11 @@
 
       <!-- 2. Denylist — blocked outright, approval cannot override -->
       <section class="cap-section" data-testid="cap-denylist" aria-labelledby="cap-denylist-heading">
-        <h2 class="cap-section__heading" id="cap-denylist-heading">{$t('capability.denylist.heading')}</h2>
+        <svelte:element this={sectionTag} class="cap-section__heading" id="cap-denylist-heading">{$t('capability.denylist.heading')}</svelte:element>
         <p class="ds-subtle cap-denylist__summary">{data.denylist.summary}</p>
         {#each ruleGroups as group (group.category)}
           <div class="cap-rule-group">
-            <h3 class="cap-rule-group__heading">{categoryHeading(group.category, $t)}</h3>
+            <svelte:element this={groupTag} class="cap-rule-group__heading">{categoryHeading(group.category, $t)}</svelte:element>
             <ul class="cap-rule-list">
               {#each group.rules as rule (rule.id)}
                 <li class="cap-rule">
@@ -241,7 +293,7 @@
 
       <!-- 3. Workloads — what each workload can use -->
       <section class="cap-section" data-testid="cap-workloads" aria-labelledby="cap-workloads-heading">
-        <h2 class="cap-section__heading" id="cap-workloads-heading">{$t('capability.workloads.heading')}</h2>
+        <svelte:element this={sectionTag} class="cap-section__heading" id="cap-workloads-heading">{$t('capability.workloads.heading')}</svelte:element>
         {#each data.workloads as wl (wl.name)}
           <details class="cap-workload">
             <summary
@@ -358,7 +410,7 @@
       </footer>
     {/if}
   </div>
-</details>
+{/snippet}
 
 <style>
   /* Quiet disclosure, mirroring Group's `quiet` variant (ds-7ag.5) — see the
@@ -414,6 +466,20 @@
     padding: var(--ds-sp-4) var(--ds-sp-5) var(--ds-sp-5);
     background: var(--ds-surface-2);
     border-radius: var(--ds-radius);
+  }
+
+  /* Embedded: the host owns the frame. The Modal already supplies a surface,
+     a border, a radius and body padding, so the standalone card's well would
+     be a second box drawn a few pixels inside the first — the boxed-in-a-box
+     look .ds-card was demoted for in ds-7ag.5. Strip the well, keep the
+     inner layout untouched. */
+  .cap-card--embedded {
+    margin: 0;
+  }
+  .cap-card--embedded .cap-body {
+    padding: 0;
+    background: none;
+    border-radius: 0;
   }
 
   .cap-loading {

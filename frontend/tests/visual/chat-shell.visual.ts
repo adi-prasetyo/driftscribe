@@ -56,12 +56,34 @@ async function mock(page: Page) {
     json(r, { mode: 'propose_apply', reason: null, actor: null }),
   );
   await page.route('**/pause', (r) => json(r, { paused: false }));
+  // The real DTO shape. The previous body here was a guess from an older API
+  // (`gates`, no `version`) and CapabilityCard's structural check rejects it —
+  // harmless while nothing in this file opened the card, and a guaranteed error
+  // row the moment the capability-modal test below does.
   await page.route('**/capabilities', (r) =>
     json(r, {
-      autonomy: { mode: 'propose_apply' },
-      gates: [{ name: 'HITL approval', detail: 'Rollbacks need a single-use signed link.' }],
-      denylist: { rules: [] },
+      version: 1,
+      provenance: 'Generated from the same constants the enforcement code imports.',
+      iam_note: 'Each worker runs as its own least-privilege service account.',
       workloads: [],
+      human_gates: [
+        {
+          id: 'iac_apply',
+          title: 'IaC plan apply',
+          description: 'Applying an OpenTofu plan needs a single-use signed link.',
+        },
+      ],
+      denylist: {
+        summary: 'It cannot touch its own control plane, or change who has access.',
+        enforced_at: ['plan', 'apply'],
+        rules: [
+          {
+            id: 'iam-change-forbidden-v1',
+            description: 'Any IAM change at all (v1 floor).',
+            category: 'iam',
+          },
+        ],
+      },
     }),
   );
 }
@@ -417,6 +439,11 @@ const emptyGeometry = (page: Page) =>
     const area = box('#chat-area')!;
     const greeting = box('[data-testid="chat-empty-greeting"]')!;
     const chips = box('[data-testid="chat-empty-chips"]')!;
+    // The link's WRAPPER, not the button: the wrapper is what carries the
+    // closing auto margin and the group's trailing padding, so its box is where
+    // the group actually ends. (The chips were measured the same way — the old
+    // `ul` rect included its own padding-bottom.)
+    const more = box('.chat-empty__more')!;
     const form = box('#chat-form')!;
     return {
       threadDisplay: getComputedStyle(thread).display,
@@ -429,6 +456,8 @@ const emptyGeometry = (page: Page) =>
       chipCount: document.querySelectorAll('[data-testid="chat-empty-chip"]').length,
       chipsTop: chips.top,
       chipsBottom: chips.bottom,
+      moreTop: more.top,
+      moreBottom: more.bottom,
       formTop: form.top,
       formBottom: form.bottom,
     };
@@ -454,13 +483,20 @@ test('chat: a fresh chat centres the composer instead of pinning it to an empty 
   expect(g.greetingBottom).toBeLessThanOrEqual(g.formTop);
   expect(g.chipsTop).toBeGreaterThanOrEqual(g.formBottom);
   expect(g.chipCount).toBe(4);
+  // The capability link is the quiet footnote under all of it — last, so it
+  // never comes between the operator and the box.
+  expect(g.moreTop).toBeGreaterThanOrEqual(g.chipsBottom);
 
   // Centred: the space above the group and the space below it are the same.
   // This is the assertion that fails if the auto margins are dropped — without
   // them the group sits at the TOP of the column and `below` is the whole
-  // remaining height. Two lines of tolerance, not zero: sub-pixel layout.
+  // remaining height. Measured to the LAST member of the group (the link, not
+  // the chips): the auto margin has to travel with whatever ends up last, and
+  // measuring the old last element would keep passing while the new one hung
+  // off the bottom edge on its own. Two lines of tolerance, not zero:
+  // sub-pixel layout.
   const above = g.greetingTop - g.areaTop;
-  const below = g.areaBottom - g.chipsBottom;
+  const below = g.areaBottom - g.moreBottom;
   expect(Math.abs(above - below)).toBeLessThan(2);
   // Non-vacuity: there has to BE free space, or "centred" and "at the top" are
   // the same measurement and this proves nothing.
@@ -568,17 +604,67 @@ test('chat: a viewport too short for the empty state scrolls it instead of clipp
     const area = document.querySelector('#chat-area') as HTMLElement;
     const before = area.scrollHeight - area.clientHeight;
     area.scrollTop = 99999;
-    const chips = document
-      .querySelector('[data-testid="chat-empty-chips"]')!
+    // The LAST thing in the column, which is the capability link — measuring
+    // the chips would keep passing with the link still cut off below them.
+    const last = document
+      .querySelector('[data-testid="capability-link"]')!
       .getBoundingClientRect();
-    return { overflow: before, scrolledTo: area.scrollTop, chipsBottom: chips.bottom, vh: window.innerHeight };
+    return { overflow: before, scrolledTo: area.scrollTop, lastBottom: last.bottom, vh: window.innerHeight };
   });
   // Non-vacuity: the state must genuinely not fit, or "reachable" is free.
   expect(r.overflow).toBeGreaterThan(50);
-  // The column is a scroll container, and scrolling it brings the chips in.
+  // The column is a scroll container, and scrolling it brings the tail in.
   // (+1: the column starts on a fractional y, so the box lands a half-pixel
   // past the fold — 300.47 against a 300px viewport. Clipping is 125px, not
   // half of one.)
   expect(r.scrolledTo).toBe(r.overflow);
-  expect(r.chipsBottom).toBeLessThanOrEqual(r.vh + 1);
+  expect(r.lastBottom).toBeLessThanOrEqual(r.vh + 1);
+});
+
+test('chat: the capability link opens a dialog that is already showing the answer', async ({
+  page,
+}) => {
+  // Browser-only on three counts: <dialog>.showModal() puts the panel in the top
+  // layer (jsdom has no top layer and no ::backdrop), the body scroll-lock is a
+  // measurement, and "the content is on screen" is a rect. The unit suite pins
+  // the wiring; this pins that the wiring produces something you can read.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await seed(page);
+  await mock(page);
+  await page.goto('/?view=chat');
+  await page.getByTestId('capability-link').click();
+
+  const card = page.getByTestId('capability-card');
+  await expect(card).toBeVisible();
+  // Open on arrival — not a disclosure inside a dialog waiting for a second
+  // click. `cap-summary` is the standalone card's toggle; there must be none.
+  await expect(page.getByTestId('cap-summary')).toHaveCount(0);
+  await expect(page.getByTestId('cap-gates')).toBeVisible();
+  await expect(card).toContainText('IaC plan apply');
+
+  const r = await page.evaluate(() => {
+    const dlg = document.querySelector('[data-testid="capability-card"]')!.closest('dialog')!;
+    const body = dlg.querySelector('.modal__body') as HTMLElement;
+    const rect = dlg.getBoundingClientRect();
+    return {
+      open: dlg.open,
+      // The <dialog> is the app's only modal-mode dialog; matches() proves the
+      // top-layer path (showModal), not merely `open`.
+      modalMode: dlg.matches(':modal'),
+      bodyOverflow: getComputedStyle(document.body).overflow,
+      modalBodyOverflowY: getComputedStyle(body).overflowY,
+      onScreen: rect.top >= 0 && rect.bottom <= window.innerHeight && rect.width > 200,
+    };
+  });
+  expect(r.open).toBe(true);
+  expect(r.modalMode).toBe(true);
+  expect(r.onScreen).toBe(true);
+  // The page behind does not scroll; the long read scrolls inside the panel.
+  expect(r.bodyOverflow).toBe('hidden');
+  expect(r.modalBodyOverflowY).toBe('auto');
+
+  // Escape gives it back, and the front door is still there.
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('capability-card')).toHaveCount(0);
+  await expect(page.getByTestId('chat-empty-chips')).toBeVisible();
 });

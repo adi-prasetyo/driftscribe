@@ -29,6 +29,18 @@ const GRAPH = {
   edges: [],
 };
 
+/** The smallest body CapabilityCard's structural check accepts and its template
+ *  can render end to end. Content fidelity is CapabilityCard.test.ts's job with
+ *  the verbatim DTO fixture; what is tested from here is the wiring. */
+const CAPS = {
+  version: 1,
+  provenance: 'generated',
+  iam_note: 'least privilege',
+  workloads: [],
+  human_gates: [{ id: 'iac_apply', title: 'IaC plan apply', description: 'you approve the plan' }],
+  denylist: { summary: 'nothing destructive', enforced_at: ['plan'], rules: [] },
+};
+
 /** Every endpoint the chat view touches on boot, all empty. */
 type Override = (url: string) => Response | null | Promise<Response | null>;
 
@@ -108,13 +120,48 @@ describe('App — the empty new-chat state', () => {
 
   it('replaces the estate diagram and the capability card, rather than sitting under them', async () => {
     // The front door is what is on a fresh chat now. Both of these belong
-    // elsewhere (the desk owns the estate; the capability card gets a modal in
-    // Task 3.2) and PR 3 Task 3.3 deletes both mounts outright.
+    // elsewhere (the desk owns the estate; the capability card is behind the
+    // link below) and PR 3 Task 3.3 deletes both mounts outright.
     stubFetch();
     const { findByTestId, queryByTestId } = render(App);
     await findByTestId('chat-empty-chips');
     expect(queryByTestId('infra-panel')).toBeNull();
     expect(queryByTestId('capability-card')).toBeNull();
+  });
+
+  it('keeps the safety cage one click away, and fetches nothing until it is asked for', async () => {
+    // The capability detail is a long read, asked for once on the way in. As an
+    // inline card it was a column of it to scroll past on every visit; as a link
+    // it is a footnote that costs nothing until clicked. That "costs nothing" is
+    // half the point of the move, so the no-fetch-yet assertion is not a detail.
+    const capPaths: string[] = [];
+    stubFetch((url) => {
+      if (!/\/capabilities$/.test(url)) return null;
+      capPaths.push(url);
+      return okJson(CAPS);
+    });
+    const { findByTestId, queryByTestId } = render(App);
+
+    const link = await findByTestId('capability-link');
+    // The label IS the destination's title — no guessing what the click gets you.
+    expect(link.textContent?.trim()).toBe(enMessages['capability.card.title']);
+    expect(capPaths).toHaveLength(0);
+    expect(queryByTestId('capability-card')).toBeNull();
+
+    await fireEvent.click(link);
+
+    // Open on arrival: the modal contains the answer, not a disclosure that
+    // still has to be opened to reveal it.
+    await findByTestId('cap-gates');
+    expect(queryByTestId('cap-summary')).toBeNull();
+    await waitFor(() => expect(capPaths).toHaveLength(1));
+    // And it is a real dialog, titled the same as the link that opened it.
+    // Located FROM the card rather than by `document.querySelector('dialog')`:
+    // the chat view mounts other Modals (the rails' search), and the first
+    // <dialog> in the document is a shut one whose body has not rendered.
+    const dialog = (await findByTestId('capability-card')).closest('dialog');
+    expect(dialog).toBeTruthy();
+    expect(dialog?.textContent).toContain(enMessages['capability.card.title']);
   });
 
   it('a chip PREFILLS the composer with its own text and sends nothing', async () => {
@@ -165,6 +212,7 @@ describe('App — the empty new-chat state', () => {
     await waitFor(() => {
       expect(queryByTestId('chat-empty-greeting')).toBeNull();
       expect(queryByTestId('chat-empty-chips')).toBeNull();
+      expect(queryByTestId('capability-link')).toBeNull();
     });
   });
 

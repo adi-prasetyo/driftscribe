@@ -561,3 +561,83 @@ describe('CapabilityCard — per-crew prompt disclosure (Task 4)', () => {
     await waitFor(() => expect(promptsDetails.textContent?.toLowerCase()).toContain('unavailable'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Embedded mode (ds-jns Task 3.2) — the shape the capability modal mounts.
+//
+// The card's whole default posture is "collapsed until asked". A modal opened
+// by a link that names this panel HAS been asked, so mounting the default shape
+// there would answer the operator's click with a second thing to click. These
+// pin the inversion: no chrome, body open, fetch on mount — and that the error
+// path still has a way out, since in this shape there is no disclosure to close
+// and reopen and the Retry button is the only recovery there is.
+// ---------------------------------------------------------------------------
+
+describe('CapabilityCard — embedded (modal) mode', () => {
+  it('fetches on mount and renders the body open, with nothing to click first', async () => {
+    const paths: string[] = [];
+    const { getByTestId, queryByTestId, container } = render(CapabilityCard, {
+      props: { call: makeCall(paths), embedded: true },
+    });
+
+    // No toggle, no click — the content is simply there.
+    await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
+    expect(paths.filter((p) => p === '/capabilities')).toHaveLength(1);
+
+    // And the disclosure chrome is gone rather than merely pre-opened: a
+    // <details open> would still offer a summary that closes it, which on a
+    // panel that exists only because it was asked for is a control whose only
+    // function is to undo the operator's own request.
+    expect(container.querySelector('details[data-testid="capability-card"]')).toBeNull();
+    expect(queryByTestId('capability-card')).toBeTruthy();
+    expect(queryByTestId('cap-summary')).toBeNull();
+  });
+
+  it('still reaches Retry when the mount fetch fails', async () => {
+    // The standalone card can recover by closing and reopening. This one cannot
+    // — it has no summary — so the error row IS the recovery path.
+    let n = 0;
+    const paths: string[] = [];
+    const call = async (path: string): Promise<Response> => {
+      paths.push(path);
+      n += 1;
+      if (n === 1) return new Response('Server error', { status: 500 });
+      return new Response(JSON.stringify(FIXTURE), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const { getByTestId } = render(CapabilityCard, { props: { call, embedded: true } });
+
+    await waitFor(() => expect(getByTestId('cap-error')).toBeTruthy());
+    await fireEvent.click(getByTestId('cap-retry'));
+    await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
+    expect(paths).toHaveLength(2);
+  });
+
+  it('drops its headings one level, because the host already spent an h2', async () => {
+    // Standalone the page's h1 is above it, so sections are h2. In the modal the
+    // dialog's own title is the h2, so sections that stayed h2 would read as its
+    // siblings rather than its contents — one flat list of five headings to
+    // anyone navigating by heading.
+    const paths: string[] = [];
+    const { getByTestId } = render(CapabilityCard, {
+      props: { call: makeCall(paths), embedded: true },
+    });
+    await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
+    expect(getByTestId('cap-gates').querySelector('.cap-section__heading')?.tagName).toBe('H3');
+    expect(getByTestId('cap-denylist').querySelector('.cap-rule-group__heading')?.tagName).toBe('H4');
+
+    cleanup();
+
+    // Same card standing alone: unchanged, h2/h3.
+    const el = render(CapabilityCard, { props: { call: makeCall([]) } }).getByTestId(
+      'capability-card',
+    ) as HTMLDetailsElement;
+    el.open = true;
+    await fireEvent(el, new Event('toggle'));
+    await waitFor(() => expect(el.querySelector('.cap-section__heading')).toBeTruthy());
+    expect(el.querySelector('.cap-section__heading')?.tagName).toBe('H2');
+    expect(el.querySelector('.cap-rule-group__heading')?.tagName).toBe('H3');
+  });
+});

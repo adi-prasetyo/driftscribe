@@ -62,6 +62,7 @@
   import { initialChatPrefill, crewName, WORKLOADS } from './lib/workloads';
   import type { ChatPrefill } from './lib/workloads';
   import CapabilityCard from './components/CapabilityCard.svelte';
+  import Modal from './components/Modal.svelte';
   import PausePill from './components/PausePill.svelte';
   import PauseBanner from './components/PauseBanner.svelte';
   import { createPauseStore } from './lib/pauseStore';
@@ -915,6 +916,14 @@
   // card note, so the two surfaces never diverge or double-fetch) ----
   const autonomy = createAutonomyStore(call);
   const capabilityAutonomyNote = $derived(autonomyNoteFor($autonomy, $t));
+
+  /** The capability detail, opened from the empty chat's link (ds-jns Task 3.2).
+   *  A modal rather than a panel in the column: "what is this thing allowed to
+   *  do" is a question asked once, on the way in, and answered at length — it
+   *  does not want to be re-read past on every visit, which is what the inline
+   *  card had it doing. The card mounts only while this is true (Modal renders
+   *  its children under `{#if open}`), so nothing is fetched until asked for. */
+  let showCapabilities = $state(false);
 
   // ---- landing-page overview store (Task 3.0a) — single owner of the
   // graph/pending-approvals/decisions refresh triple (lib/overviewStore.ts).
@@ -2515,7 +2524,29 @@
           </li>
         {/each}
       </ul>
+      <!-- The last thing on the front door, and the quietest. Its label IS the
+           modal's title — you click a sentence and get the thing that sentence
+           names, with no guessing in between. -->
+      <p class="chat-empty__more">
+        <button
+          type="button"
+          class="chat-empty__more-link"
+          data-testid="capability-link"
+          onclick={() => (showCapabilities = true)}
+        ><Icon name="shield" size={13} />{$t('capability.card.title')}</button>
+      </p>
     {/if}
+    <!-- Outside the {#if chatEmpty} that owns the link: the dialog traps focus,
+         so nothing can flip chatEmpty while it is up, but a card yanked
+         mid-render by a state change that arrives from elsewhere (a rail New
+         chat, a deep link) is not a failure mode worth leaving open. -->
+    <Modal
+      open={showCapabilities}
+      title={$t('capability.card.title')}
+      onClose={() => (showCapabilities = false)}
+    >
+      <CapabilityCard {call} autonomyNote={capabilityAutonomyNote} embedded />
+    </Modal>
   </section>
   {:else if view === 'desk'}
   <!-- The real approval desk (Task 3.5). Data comes exclusively from the
@@ -2941,7 +2972,11 @@
   .chat-area--empty .chat-empty__greeting {
     margin-top: auto;
   }
-  .chat-area--empty .chat-empty__chips {
+  /* The auto margin that closes the centring pair lives on the LAST thing in
+     the group, which is now the capability link rather than the chips. Left on
+     the chips it would eat the free space between them and the link and shove
+     the link alone onto the bottom edge of the column. */
+  .chat-area--empty .chat-empty__more {
     margin-bottom: auto;
   }
   .chat-empty__greeting {
@@ -2959,7 +2994,46 @@
     gap: var(--ds-sp-2);
     list-style: none;
     margin: 0;
+    /* Was sp-5, the whole gap to the bottom of the group. The link now sits in
+       that space, so this is only the gap to the link. */
+    padding: 0 0 var(--ds-sp-3);
+  }
+  /* Third rank on this screen, under the chips which are already under the
+     Send button: no border, no fill, muted until pointed at. It is a footnote
+     for the operator who wants to know the cage before they use the tool, not
+     something to steer the other 90% away from the box. */
+  .chat-empty__more {
+    margin: 0;
     padding: 0 0 var(--ds-sp-5);
+    text-align: center;
+  }
+  .chat-empty__more-link {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    border: none;
+    background: none;
+    padding: 0.2em 0.4em;
+    color: var(--ds-muted);
+    font: inherit;
+    font-size: var(--ds-fs-1);
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
+    text-decoration-color: var(--ds-border-strong);
+    cursor: pointer;
+    transition:
+      color var(--ds-dur) var(--ds-ease),
+      text-decoration-color var(--ds-dur) var(--ds-ease);
+  }
+  .chat-empty__more-link:hover {
+    color: var(--ds-fg-soft);
+    text-decoration-color: currentColor;
+  }
+  .chat-empty__more-link:focus-visible {
+    outline: none;
+    border-radius: var(--ds-radius-sm);
+    box-shadow: var(--ds-ring);
   }
   /* Quiet by construction: one saturated control on this screen is the Send
      button, and four blue pills either side of it would turn the front door
