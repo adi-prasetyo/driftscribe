@@ -204,9 +204,14 @@
    *
    *  Demotion rather than suppression, because the division is real: a RECORD
    *  says what happened, and the desk's pending hero says what to do next. The
-   *  hero runs the same helper safely because it only ever selects a decision
-   *  FROM the snapshot it reasons over, so its absence claim is over a list
-   *  that contains the row. Every remaining state is either read off the
+   *  hero's SELECTION is sound — it only ever picks a decision FROM the
+   *  snapshot it reasons over, so its absence claim is over a list that
+   *  contains the row. Its FRESHNESS is not, yet: on a failed `/decisions`
+   *  refresh the store retains the previous array and `deskModel` reaches the
+   *  decisions-derived IaC rule before it consults `degraded`, so a row whose
+   *  terminal outcome landed meanwhile can still be offered (ds-smr — filed,
+   *  and not this component's to fix). That is a reason to fix the hero, not a
+   *  reason for this card to start making the claim too. Every remaining state is either read off the
    *  decision's own fields (`history`, `failure`) or is a POSITIVE finding
    *  (`superseded`), and those are safe under a bounded or stale list.
    *
