@@ -389,7 +389,7 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
       [{ apply_status: 'waiting_for_rebake', merge_state: 'merged' }, /approval page/i],
     ] as const) {
       const d = { ...base, ...state } as Decision;
-      const view = mount(() => res(traceResponse()), { decision: d, decisions: [d] });
+      const view = mount(() => res(traceResponse()), { decision: d });
       const link = await view.findByTestId('iac-approve-link');
       expect(link.getAttribute('href')).toContain('/iac-approvals/68');
       expect(link.textContent, JSON.stringify(state)).toMatch(expected);
@@ -397,31 +397,12 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
     }
   });
 
-  it('points a SUPERSEDED change at the change that overtook it, and says so', async () => {
-    // Linking a superseded row to its own dead page would send the operator to
-    // a plan nobody will ever apply. The rail's rule travelled with the link.
-    const d = {
-      decision_id: 'd-old',
-      trace_id: TID,
-      action: 'iac_apply',
-      created_at: '2026-05-31T15:06:00Z',
-      pr_number: 68,
-      apply_status: 'waiting_for_rebake',
-      superseded_by_pr: 71,
-    } as Decision;
-    const { findByTestId } = mount(() => res(traceResponse()), { decision: d, decisions: [d] });
-    const link = await findByTestId('iac-approve-link');
-    expect(link.getAttribute('href')).toContain('/iac-approvals/71');
-    expect(link.textContent).toContain('71');
-  });
-
-  it('does not offer "Apply" on a PINNED change a newer row has already ended', async () => {
-    // The fail-open my own first fix shipped, caught by review round 3.
-    // `supersededWaitingIds` can only mark a WAITING row it can SEE, and a
-    // pinned record is by definition a decision outside the recent list — so
-    // passing the snapshot alone left the pinned doc unmarked and its label
-    // read "Apply this change" for work that had already ended. The doc has to
-    // join the input it is being judged against.
+  it('says nothing actionable about a change a newer row has already ended', async () => {
+    // Started life proving that the opened document joined the supersession
+    // lookup, which is how round 3's fix worked. Round 4 removed the claim that
+    // lookup supported and round 5 removed the lookup, so what survives is the
+    // OUTCOME: a waiting change with a newer terminal row beside it reads as a
+    // page link and nothing more.
     const waiting = {
       decision_id: 'd-waiting',
       trace_id: TID,
@@ -432,32 +413,29 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
       apply_status: 'waiting_for_rebake',
       merge_state: 'merged',
     } as Decision;
-    // SAME pr_number as the waiting row, because an event_key is derived per
-    // generation and includes the PR — two rows sharing a key are two attempts
-    // at ONE change, not two PRs (Codex review round 4 flagged the earlier
-    // fixture as unfaithful on exactly this).
-    const newerTerminal = {
-      decision_id: 'd-applied',
-      trace_id: 'b'.repeat(32),
-      action: 'iac_apply',
-      created_at: '2026-05-31T16:00:00Z',
-      pr_number: 68,
-      event_key: 'ek-1',
-      apply_status: 'applied',
-      merge_state: 'merged',
-    } as Decision;
-    // `decisions` is the recent snapshot and does NOT contain the pinned doc,
-    // which is the whole shape of the bug.
-    const { findByTestId } = mount(() => res(traceResponse()), {
-      decision: waiting,
-      decisions: [newerTerminal],
-    });
+    const { findByTestId } = mount(() => res(traceResponse()), { decision: waiting });
     const link = await findByTestId('iac-approve-link');
-    // Exact, not merely "not apply": the neutral page label, at the change's
-    // own approval page. A weaker assertion would also pass on a blank label
-    // or a link that had quietly moved.
     expect(link.textContent?.trim()).toBe(enMessages['shared.approve.goToPage']);
     expect(link.getAttribute('href')).toContain('/iac-approvals/68');
+  });
+
+  it('still names the PR that superseded a change, from the decision itself', async () => {
+    // The one label the removed snapshot might have looked load-bearing for.
+    // It never was: an EXPLICIT `superseded_by_pr` is the decision's own field,
+    // and it both names the PR and redirects the href to it.
+    const d = {
+      decision_id: 'd-old',
+      trace_id: TID,
+      action: 'iac_apply',
+      created_at: '2026-05-31T15:06:00Z',
+      pr_number: 68,
+      apply_status: 'waiting_for_rebake',
+      superseded_by_pr: 71,
+    } as Decision;
+    const { findByTestId } = mount(() => res(traceResponse()), { decision: d });
+    const link = await findByTestId('iac-approve-link');
+    expect(link.textContent).toContain('71');
+    expect(link.getAttribute('href')).toContain('/iac-approvals/71');
   });
 
   it('never says "apply" on a WAITING change, however complete the snapshot looks', async () => {
@@ -486,16 +464,13 @@ describe('DecisionRecord — the GitHub artifact it produced', () => {
       { ...base, merge_state: 'merged' } as Decision, // -> apply
       { ...base, merge_state: 'pending' } as Decision, // -> continue
     ];
-    for (const [d, snapshot] of cases.flatMap((c) => [
-      [c, [c]] as const,
-      [c, null] as const,
-    ])) {
-      const view = mount(() => res(traceResponse()), { decision: d, decisions: snapshot });
+    for (const d of cases) {
+      const view = mount(() => res(traceResponse()), { decision: d });
       const link = await view.findByTestId('iac-approve-link');
       // Still reachable — the plan and the history are worth a click.
       expect(link.getAttribute('href')).toContain('/iac-approvals/68');
       // …but the copy claims nothing about what is left to do.
-      const why = `${d.merge_state} / ${snapshot === null ? 'no snapshot' : 'snapshot'}`;
+      const why = String(d.merge_state);
       expect(link.textContent, why).not.toMatch(/apply this change|continue/i);
       expect(link.textContent?.trim(), why).toBe(enMessages['shared.approve.goToPage']);
       cleanup();

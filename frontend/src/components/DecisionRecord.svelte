@@ -28,7 +28,6 @@
     iacApprovalHref,
     iacApproveLabel,
     iacApprovalCtaState,
-    supersededWaitingIds,
   } from '../lib/approval';
   import { modeLabel, type AutonomyMode } from '../lib/autonomy';
   import { prefersReducedMotion } from '../lib/motion';
@@ -41,7 +40,6 @@
     cache,
     decision = null,
     note = null,
-    decisions = null,
   }: {
     traceId: string;
     cache: TraceCache;
@@ -49,13 +47,6 @@
      *  which has only a trace id until GET /trace answers. */
     decision?: Decision | null;
     note?: 'outOfWindow' | null;
-    /** The snapshot this record was opened from, for the ONE question a single
-     *  decision cannot answer about itself: has a newer PR superseded this
-     *  change while it waited? Omitted → the link still renders, with the
-     *  neutral page label: no label this card can produce is actionable (see
-     *  `iacApproval`), so a missing snapshot costs a "Superseded by PR #N"
-     *  refinement rather than risking a claim. */
-    decisions?: ReadonlyArray<Decision | null | undefined> | null;
   } = $props();
 
   // Absent until the cache has been touched for this id — one frame, since the
@@ -130,6 +121,21 @@
     return null;
   }
   const crew = $derived(firstWorkload(entry.events));
+
+  /** Always empty, and provably equivalent to the real thing HERE.
+   *
+   *  The set only distinguishes IMPLICIT supersession — a newer terminal row
+   *  for this generation — from `apply`/`continue`. Those two are demoted above,
+   *  and implicit supersession has no PR number to name, so it renders the same
+   *  neutral page label. Three inputs, one output.
+   *
+   *  This card carried a `decisions` prop for exactly that computation until
+   *  the demotion made it unable to change anything (Codex review round 5).
+   *  Threading a snapshot through two call sites to feed a lookup whose result
+   *  cannot reach a pixel is worse than not having it: the next reader has to
+   *  work out that it is inert. The EXPLICIT "Superseded by PR #N" label is
+   *  unaffected — it reads `doc.superseded_by_pr` and never consulted this. */
+  const NO_SUPERSEDED: ReadonlySet<string> = new Set();
 
   const str = (v: unknown): string => (typeof v === 'string' && v !== '' ? v : '');
   const action = $derived(decisionActionLabel(doc?.action, $t));
@@ -218,12 +224,11 @@
       typeof sup === 'number' && Number.isInteger(sup) && sup > 0 ? sup : doc.pr_number;
     const href = iacApprovalHref(target, $locale);
     if (href === null) return null;
-    const seen = supersededWaitingIds(decisions === null ? [doc] : [...decisions, doc]);
-    const kind = iacApprovalCtaState(doc, seen).kind;
+    const kind = iacApprovalCtaState(doc, NO_SUPERSEDED).kind;
     const label =
       kind === 'apply' || kind === 'continue'
         ? $t('shared.approve.goToPage')
-        : iacApproveLabel(doc, seen, $t);
+        : iacApproveLabel(doc, NO_SUPERSEDED, $t);
     return { href, label };
   });
 

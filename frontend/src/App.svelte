@@ -2248,18 +2248,9 @@
        guess about a list we have not read yet (ds-eh6's rule). -->
   {#if deskPinnedRecord !== null}
     <div class="desk-pinned-record">
-      <!-- `decisions` only once a real payload has landed. The store's
-           pre-first-fetch value is NO_DECISIONS_YET — a NON-NULL empty array
-           meaning "we have not looked", which the record cannot tell from "we
-           looked and there is nothing". Handing it over would defeat the
-           record's own absent-means-no-link guard and let an actionable label
-           render on a change that may already have been superseded, briefly on
-           a fast /trace and indefinitely if /decisions fails (Codex round 3).
-           Same ds-eh6 distinction the desk keys its unknown state off. -->
       <DecisionRecord
         traceId={deskPinnedRecord}
         cache={traceCache}
-        decisions={decisions === NO_DECISIONS_YET ? null : decisions}
         note={$overview.settled ? 'outOfWindow' : null}
       />
     </div>
