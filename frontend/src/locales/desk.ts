@@ -24,12 +24,20 @@ export const desk = {
     // than relying on visible-text concatenation order.
     'desk.band.managedLabel': 'Managed by IaC',
     'desk.band.driftLabel': 'Drift detected',
-    'desk.band.awaitingLabel': 'Awaiting your approval',
+    // "decision", not "approval" (ds-22k). `awaitingCount` unions two lanes: an
+    // unspent rollback approval, AND an iac row whose remaining operator step is
+    // the post-merge apply. Both need the operator, but only the first is
+    // waiting on an approval nobody has given — and the card directly beneath
+    // this figure now says "Continue/Apply this change" for the second, so naming the
+    // whole total "approval" put two names on one item. Echoes the resting
+    // headline ("Nothing needs your decision right now"), which is the same
+    // claim with the count at zero.
+    'desk.band.awaitingLabel': 'Needs your decision',
     // awaiting is the band's one inert figure (ds-s61 — the queue it counts is
     // directly below it), so it is the one stat whose name promises nothing.
     // managed/drift have no plain variant at all: they are always controls, and
     // a control's name must say where it leads (see the next block).
-    'desk.band.awaitingAria': '{n} awaiting your approval',
+    'desk.band.awaitingAria': '{n} needing your decision',
     // ds-7ag.2 — an INTERACTIVE stat names its destination, because the
     // aria-label overrides all descendant text: the visible hover hint is
     // invisible to a screen reader, so the accessible name has to make the same
@@ -49,7 +57,7 @@ export const desk = {
     // Read instead of the *Aria keys above when a figure is not yet known
     // (ds-eh6). The visible numeral becomes an em dash, which a screen reader
     // announces as nothing at all, so these carry the state in words.
-    'desk.band.awaitingUnknownAria': 'Awaiting your approval: not yet known',
+    'desk.band.awaitingUnknownAria': 'Needs your decision: not yet known',
     // Unknown AND still a control: managed/drift stay clickable while unknown
     // (the map is where you go to find out), so their accessible name carries
     // the destination as well.
@@ -60,16 +68,37 @@ export const desk = {
     // hero. `openTitle`/`appliedTitle` cover the two states this module
     // classifies with fixed copy; `noted` rows fall back to
     // decisionActionLabel's per-action text instead of a fixed string here.
+    // Register: settled rows are RECORD entries, so they read as noun phrases
+    // ("Approved · applied") to sit level with the `noted` fallback's bare
+    // action labels ("Rollback", "Escalation") in the same strip. They also
+    // avoid the second person on purpose: the approval doc records
+    // status/phase/resolved_at but NO actor, so "You approved" asserts an
+    // identity the system never captured — during an open demo window an
+    // anonymous visitor's click produces a byte-identical record. `openTitle`
+    // keeps "your" because that row is a live call to action addressed to the
+    // reader, and it is true regardless of who eventually clicks.
     'desk.ledger.heading': 'Recent record',
-    'desk.ledger.appliedTitle': 'You approved · applied',
+    'desk.ledger.appliedTitle': 'Approved · applied',
     'desk.ledger.openTitle': 'Awaiting your approval',
-    'desk.ledger.failedTitle': 'You approved · did not apply',
+    // NOT "awaiting your approval": the backend records waiting_for_rebake at
+    // merge time, so the operator has already approved (ds-db0).
+    //
+    // Names the APPLY, not the re-bake. The coordinator never observes the
+    // external build — it writes waiting_for_rebake at merge and leaves it until
+    // the operator's second submit resumes the apply — so "awaiting re-bake"
+    // would go stale the moment the build finished, while the apply is genuinely
+    // outstanding for the whole window (Codex review r3).
+    'desk.ledger.applyPendingTitle': 'Approved · awaiting apply',
+    // merge_state 'pending': approval is recorded but the merge has not landed
+    // (or is blocked), so the apply is not yet what this is waiting on.
+    'desk.ledger.mergingTitle': 'Approved · not yet applied',
+    'desk.ledger.failedTitle': 'Approved · did not apply',
     // Deliberately not "failed": the operation may still be running or may
     // have succeeded with the response lost. Saying "failed" here would be a
     // second false claim in the opposite direction (ds-2mc).
-    'desk.ledger.unconfirmedTitle': 'You approved · outcome unconfirmed',
+    'desk.ledger.unconfirmedTitle': 'Approved · outcome unconfirmed',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
-    'desk.unresolved.who': 'You approved',
+    'desk.unresolved.who': 'Approved',
     'desk.unresolved.failed.detail': 'Did not apply',
     'desk.unresolved.failed.headline': 'The rollback did not apply.',
     'desk.unresolved.failed.body':
@@ -97,9 +126,20 @@ export const desk = {
     // chat request) — the desk has no reliable field to attribute WHICH crew
     // authored a given PR, so this stays crew-neutral rather than guessing.
     'desk.pending.iac.who': 'An infrastructure change is waiting for your review',
-    // Fallback headline for the decisions-derived arm (rule 2b), which never
-    // carries a PR title — see DeskPendingIacProvenance's header comment.
+    // Fallback headline for a row with no PR title. Correct ONLY for `listing`
+    // provenance (a PR the open-PR listing still sees, i.e. genuinely
+    // unapproved). The `decision` arm exists specifically for a PR "the open-PR
+    // listing can no longer see because it already merged" (desk.ts:78-84), so
+    // it gets the merged copy below instead — telling an operator who just
+    // approved that their change awaits approval is a false claim on the exact
+    // frame the approve→stamp beat lands (ds-db0).
     'desk.pending.iac.headlineFallback': 'Infrastructure change PR #{pr} is waiting for your approval.',
+    'desk.pending.iacMerged.who': 'An approved infrastructure change is waiting to be applied',
+    'desk.pending.iacMerged.headlineFallback':
+      'Infrastructure change PR #{pr} is approved and waiting to be applied.',
+    'desk.pending.iacView.who': 'An infrastructure change needs attention',
+    'desk.pending.iacView.headlineFallback':
+      'Review the details for infrastructure change PR #{pr}.',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': 'Proposed {time}',
     // Both anchors point at the SAME href (deskModel's `href`) — the actual
@@ -113,6 +153,13 @@ export const desk = {
       'No notification could be sent for this proposal, so it has been waiting here unannounced.',
     'desk.pending.approveCta': 'Approve this proposal',
     'desk.pending.rejectCta': 'Reject',
+    // Shown INSTEAD of the pair above once the first approval is recorded
+    // (ds-22k). A merge that has not landed must be continued before it can be
+    // applied; after merge confirmation the remaining step is the apply.
+    'desk.pending.continueCta': 'Continue this change',
+    'desk.pending.applyCta': 'Apply this change',
+    'desk.pending.viewDetailsCta': 'View approval details',
+    'desk.pending.viewFailureCta': 'View failure details',
     // The mockup's `.why` line reads "view the reasoning behind this (N
     // steps)". The step count is dropped deliberately: it lives in the trace
     // this link would open, so printing it would mean either fetching every
@@ -121,7 +168,9 @@ export const desk = {
     // `shared.rail.traceButton.viewReasoning` so one product means one phrase.
     'desk.pending.viewReasoning': 'view the reasoning behind this →',
 
-    'desk.stamped.who': 'You approved',
+    // No second person — see the register note on desk.ledger.* above; the
+    // approval doc records no actor, so this byline cannot name one.
+    'desk.stamped.who': 'Approved',
     'desk.stamped.rollback.detail': 'Rollback applied',
     'desk.stamped.iac.detail': 'Change applied',
     'desk.stamped.rollback.headline': 'The proposed rollback was applied.',
@@ -205,24 +254,37 @@ export const desk = {
     // label with no number.
     'desk.band.managedLabel': 'IaC 管理下',
     'desk.band.driftLabel': 'ドリフト検出',
-    'desk.band.awaitingLabel': 'あなたの承認待ち',
-    // 承認待ちだけが操作できない数値（ds-s61 — 対象のキューがすぐ下にあるため）。
-    'desk.band.awaitingAria': '{n}件、あなたの承認待ち',
+    // 「承認」ではなく「判断」（ds-22k）。awaitingCount はロールバックの未使用承認と、
+    // マージ後の適用を待つ IaC 行の両方を数える。後者に必要なのは承認ではなく適用で、
+    // すぐ下のカードも「この変更を適用する」と表示するため、合計を「承認待ち」と
+    // 呼ぶと同じ項目に二つの名前が付く。待機ゼロ時の見出しと同じ言い回しに揃える。
+    'desk.band.awaitingLabel': 'あなたの判断待ち',
+    // これだけが操作できない数値（ds-s61 — 対象のキューがすぐ下にあるため）。
+    'desk.band.awaitingAria': '{n}件、あなたの判断待ち',
     // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
     // `Desk` サフィックスは名残：2026-07-31 の統合前は文脈を表していた。
     'desk.band.managedAriaDesk': '{n}件、IaC 管理下 — インフラを見る',
     'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
     'desk.band.statHintEstate': 'インフラを見る →',
-    'desk.band.awaitingUnknownAria': 'あなたの承認待ち：未取得',
+    'desk.band.awaitingUnknownAria': 'あなたの判断待ち：未取得',
     'desk.band.managedUnknownAriaDesk': 'IaC 管理下：未取得 — インフラを見る',
     'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',
     'desk.ledger.heading': '最近の記録',
-    'desk.ledger.appliedTitle': 'あなたが承認 → 適用完了',
+    // 記録欄は体言止め（「ロールバック」「エスカレーション」と同じ調子）。
+    // 承認記録に actor は残らないため「あなたが」とは書けない。openTitle だけは
+    // 読み手への呼びかけなので「あなたの」を残す。EN 側の註記も参照。
+    'desk.ledger.appliedTitle': '承認済み → 適用完了',
     'desk.ledger.openTitle': 'あなたの承認待ち',
-    'desk.ledger.failedTitle': 'あなたが承認 → 適用されず',
-    'desk.ledger.unconfirmedTitle': 'あなたが承認 → 結果は未確認',
+    // 「承認待ち」ではない。waiting_for_rebake はマージ時点で記録されるため、
+    // 承認は済んでいる（ds-db0）。再ビルドの完了はコーディネーターからは
+    // 観測できないため「再ビルド待ち」とは書かず、実際に未完了である「適用」を
+    // 主語にする（Codex review r3）。
+    'desk.ledger.applyPendingTitle': '承認済み → 適用待ち',
+    'desk.ledger.mergingTitle': '承認済み → 未適用',
+    'desk.ledger.failedTitle': '承認済み → 適用されず',
+    'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',
     // ---- unresolved rollback outcome (desk rule 2.5) ----
-    'desk.unresolved.who': 'あなたが承認しました',
+    'desk.unresolved.who': '承認済み',
     'desk.unresolved.failed.detail': '適用されず',
     'desk.unresolved.failed.headline': 'ロールバックは適用されませんでした。',
     'desk.unresolved.failed.body':
@@ -238,15 +300,24 @@ export const desk = {
     'desk.pending.rollback.headline': '承認が必要なロールバック提案があります。',
     'desk.pending.iac.who': 'インフラ変更があなたの確認を待っています',
     'desk.pending.iac.headlineFallback': 'インフラ変更 PR #{pr} があなたの承認を待っています。',
+    'desk.pending.iacMerged.who': '承認済みのインフラ変更が適用を待っています',
+    'desk.pending.iacMerged.headlineFallback': 'インフラ変更 PR #{pr} は承認済みで、適用を待っています。',
+    'desk.pending.iacView.who': '確認が必要なインフラ変更があります',
+    'desk.pending.iacView.headlineFallback': 'インフラ変更 PR #{pr} の詳細を確認してください。',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': '提案 {time}',
     'desk.pending.notifyFailed':
       'この提案の通知は送信できませんでした。お知らせのないまま、ここでお待ちしていました。',
     'desk.pending.approveCta': 'この提案を承認する',
     'desk.pending.rejectCta': '却下する',
+    // 初回承認済みの場合は上記2つに代えて状態に合う操作を1つだけ表示する（ds-22k）。
+    'desk.pending.continueCta': 'この変更を続行する',
+    'desk.pending.applyCta': 'この変更を適用する',
+    'desk.pending.viewDetailsCta': '承認の詳細を見る',
+    'desk.pending.viewFailureCta': '失敗の詳細を見る',
     'desk.pending.viewReasoning': 'この提案に至った推論を見る →',
 
-    'desk.stamped.who': 'あなたが承認しました',
+    'desk.stamped.who': '承認済み',
     'desk.stamped.rollback.detail': 'ロールバック適用',
     'desk.stamped.iac.detail': '適用完了',
     'desk.stamped.rollback.headline': '提案されたロールバックを適用しました。',

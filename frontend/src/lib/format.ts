@@ -87,10 +87,12 @@ export function fmtPreview(s: string, max: number = DEFAULT_PREVIEW_MAX): string
  */
 const IAC_STATUS_LABEL_KEYS: Record<string, MessageKey> = {
   applied: 'shared.iac.applied',
-  // "rebuild" not "re-bake": the operator-facing label uses plain language —
-  // the internal enum stays `waiting_for_rebake`. The help text (iacStatusHelp)
-  // explains rebuild-of-what (the apply worker, from merged code).
-  waiting_for_rebake: 'shared.iac.awaitingRebuild',
+  // The label names the APPLY, not the rebuild, and not "re-bake" — plain
+  // language, and the only claim true across the whole window (the coordinator
+  // never sees the external build finish) and both merge_state variants. The
+  // internal enum stays `waiting_for_rebake`; the help text (iacStatusHelp)
+  // explains the rebuild step, where saying so is accurate.
+  waiting_for_rebake: 'shared.iac.awaitingApply',
   failed: 'shared.iac.failed',
   failed_state_suspect: 'shared.iac.failedStateSuspect',
   ambiguous: 'shared.iac.ambiguous',
@@ -116,7 +118,7 @@ const IAC_STATUS_HELP_KEYS: Record<string, MessageKey> = {
   // merge_state="pending" (before the irreversible merge / kept on merge
   // failure) AND merge_state="merged" (after) — so it must NOT assert the merge
   // already happened (agent/main.py records the pending pointer pre-merge).
-  waiting_for_rebake: 'shared.iac.help.awaitingRebuild',
+  waiting_for_rebake: 'shared.iac.help.awaitingApply',
   // Plain `failed` (NOT the state-suspect variant): the apply aborted but the
   // tofu-apply worker PROVED the live state stayed clean (TofuStepError, vs
   // ApplyStateSuspect's "may be mutated"). We deliberately do NOT point the
@@ -180,7 +182,7 @@ export function iacApplyMeta(
   // A parked `waiting_for_rebake` plan that was re-expressed in a NEW PR (that new
   // PR carries the real `applied` row) is terminal here: its own saved plan is
   // permanently stale, so the row must read as RESOLVED ('superseded', done),
-  // not the still-pending 'awaiting rebuild'. Gated to `waiting_for_rebake` + a
+  // not the still-pending 'awaiting apply'. Gated to `waiting_for_rebake` + a
   // positive int, mirroring the rail label (approval.ts `iacApproveLabel`) and
   // the GET/POST resume guards (agent/main.py) — see recovery runbook §7e.
   if (

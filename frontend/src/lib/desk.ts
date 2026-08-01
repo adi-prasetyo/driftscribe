@@ -381,8 +381,8 @@ function selectPendingIac(
 /**
  * Rule 2b: when the open-PR listing (rule 2a) has no candidate, fall back to
  * scanning `decisions` for the newest `isIacAwaitingOperator` row (the same
- * predicate approval.ts's `iacApproveLabel` uses to decide the rail's own
- * "Review & approve →" CTA — see that predicate's doc comment for the full
+ * predicate approval.ts's shared CTA discriminator uses to decide whether the
+ * rail still has an actionable link — see that predicate's doc comment for the full
  * gap this closes). Ties break by strict `>` (first-encountered wins),
  * mirroring rule 1's `selectPendingRollback` — deterministic, not
  * last-write-wins.

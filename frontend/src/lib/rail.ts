@@ -154,7 +154,7 @@ export function hasAnomalousStep(earlier: ReadonlyArray<Decision>): boolean {
 /**
  * The complete `<summary>` text for a lifecycle expander: a count plus a
  * status composition, so the collapsed row never hides WHAT the earlier steps
- * were — e.g. `2 earlier steps · awaiting rebuild ×2`, `1 earlier step ·
+ * were — e.g. `2 earlier steps · awaiting apply ×2`, `1 earlier step ·
  * failed`. Labels are merge-aware (via `iacApplyMeta`), so an earlier applied
  * step reads `applied & merged` / `applied · merge pending` rather than a bare
  * `applied` that hides its merge outcome. `earlier` arrives in list

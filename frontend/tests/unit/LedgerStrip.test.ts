@@ -76,10 +76,23 @@ describe('LedgerStrip', () => {
     expect(notedRow?.querySelector('[role="img"]')).toBeFalsy();
   });
 
-  it('applied row title reads "You approved · applied"', () => {
+  it('applied row title reads "Approved · applied"', () => {
     const d = decision({ decision_id: 'a2', apply_status: 'applied', action: 'iac_apply' });
     const { getByText } = render(LedgerStrip, { props: { decisions: [d] } });
-    expect(getByText('You approved · applied')).toBeTruthy();
+    expect(getByText('Approved · applied')).toBeTruthy();
+  });
+
+  // The settled rows must not name an actor: the approval doc carries
+  // status/phase/resolved_at but no actor field, so second-person copy would
+  // assert an identity the system never captured (an anonymous demo-window
+  // click produces an identical record). Pins the claim, not just the string.
+  it('settled row titles never claim who approved', () => {
+    const rows = [
+      decision({ decision_id: 's1', apply_status: 'applied', action: 'iac_apply' }),
+      decision({ decision_id: 's2', apply_status: 'failed', action: 'rollback' }),
+    ];
+    const { container } = render(LedgerStrip, { props: { decisions: rows } });
+    expect(container.textContent).not.toMatch(/You approved/);
   });
 
   it('open row title reads "Awaiting your approval"', () => {
@@ -89,6 +102,28 @@ describe('LedgerStrip', () => {
     });
     const { getByText } = render(LedgerStrip, { props: { decisions: [d] } });
     expect(getByText('Awaiting your approval')).toBeTruthy();
+  });
+
+  // ds-db0: an IaC row reaching the strip is in waiting_for_rebake, which the
+  // backend records at merge — the operator already approved it. Borrowing the
+  // rollback lane's solicitation copy told them otherwise.
+  it('a merged iac row awaits the apply, never the approval already given', () => {
+    const d = decision({
+      decision_id: 'r1',
+      action: 'iac_apply',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      pr_number: 168,
+    });
+    const { getByText, container } = render(LedgerStrip, { props: { decisions: [d] } });
+    expect(getByText('Approved · awaiting apply')).toBeTruthy();
+    expect(container.textContent).not.toContain('Awaiting your approval');
+    // Codex r3: name the APPLY, not the re-bake. The coordinator never observes
+    // the external build — it writes waiting_for_rebake at merge and leaves it
+    // until the operator's second submit — so a row claiming the re-bake is
+    // outstanding goes stale the moment the build finishes, and this surface has
+    // no way to notice. The apply is genuinely outstanding for the whole window.
+    expect(container.textContent).not.toMatch(/re-?bake/i);
   });
 
   it('noted row title falls back to decisionActionLabel (e.g. no_op → the friendly label)', () => {

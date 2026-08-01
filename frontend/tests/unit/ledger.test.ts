@@ -110,16 +110,39 @@ describe('ledgerRows', () => {
       expect(rows[0].state).toBe('open');
     });
 
-    it('classifies a non-superseded waiting_for_rebake iac row as open', () => {
+    // ds-db0: waiting_for_rebake is written at MERGE, so the operator has
+    // already approved. It still needs them (the apply), but it is NOT the
+    // same state as an unspent rollback approval and must not borrow its copy.
+    it('classifies a non-superseded waiting_for_rebake iac row as awaiting_apply, not open', () => {
       const d = decision({
         decision_id: 'o3',
         action: 'iac_apply',
         apply_status: 'waiting_for_rebake',
+        merge_state: 'merged',
         pr_number: 300,
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([d], 4, { now: NOW, origin: ORIGIN });
-      expect(rows[0].state).toBe('open');
+      expect(rows[0].state).toBe('awaiting_apply');
+      expect(rows[0].state).not.toBe('open');
+    });
+
+    // waiting_for_rebake is written TWICE — before the merge (merge_state
+    // 'pending', agent/main.py:7280) and after it (:7331). Only the second is
+    // actually waiting on the operator's apply; naming it while the merge is
+    // unfinished would replace one false claim with another (Codex, ds-db0).
+    it('separates the pre-merge waiting_for_rebake record from the post-merge one', () => {
+      const beforeMerge = decision({
+        decision_id: 'm1',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        merge_state: 'pending',
+        pr_number: 301,
+        created_at: '2026-07-28T09:00:00Z',
+      });
+      const rows = ledgerRows([beforeMerge], 4, { now: NOW, origin: ORIGIN });
+      expect(rows[0].state).toBe('awaiting_merge');
+      expect(rows[0].state).not.toBe('awaiting_apply');
     });
 
     it('falls back to noted for everything else (e.g. no_op)', () => {
@@ -194,7 +217,12 @@ describe('ledgerRows', () => {
       expect(rows[0].state).toBe('noted');
     });
 
-    it('this generation’s own applied row (same event_key) → noted, not open', () => {
+    // ds-b0k CHANGED THIS: the earlier waiting doc used to survive as its own
+    // 'noted' row, so one event drew two rows. It is now collapsed away by the
+    // event_key dedup, which satisfies this test's original intent (the stale
+    // waiting doc must never read as live work) more strongly than 'noted' did
+    // — an absent row cannot mislead at all.
+    it('this generation’s own applied row (same event_key) collapses the earlier waiting doc', () => {
       const waiting = decision({
         decision_id: 's2',
         action: 'iac_apply',
@@ -212,17 +240,25 @@ describe('ledgerRows', () => {
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([waiting, applied], 4, { now: NOW, origin: ORIGIN });
-      const waitingRow = rows.find((r) => r.decision.decision_id === 's2');
-      expect(waitingRow?.state).toBe('noted');
+      // One event → exactly one row, and it is the LATEST phase of that event.
+      expect(rows).toHaveLength(1);
+      expect(rows[0].decision.decision_id).toBe('s3');
+      expect(rows[0].state).toBe('applied');
+      // The superseded waiting doc is gone, not merely relabelled.
+      expect(rows.find((r) => r.decision.decision_id === 's2')).toBeUndefined();
+      expect(rows.some((r) => r.state === 'open' || r.state === 'awaiting_apply')).toBe(false);
     });
 
     // ds-dzd: a terminal row from a DIFFERENT generation is not this row's
     // outcome, so the ledger must keep showing it as open work.
-    it('a different generation’s applied row leaves the waiting row OPEN', () => {
+    // Also guards ds-b0k's dedup blast radius: the key is the GENERATION, not
+    // the PR number, so two generations of the same PR must both survive.
+    it('a different generation’s applied row leaves the waiting row awaiting_apply', () => {
       const waiting = decision({
         decision_id: 's4',
         action: 'iac_apply',
         apply_status: 'waiting_for_rebake',
+        merge_state: 'merged',
         pr_number: 400,
         event_key: 'iac-apply-400-generationB',
         created_at: '2026-07-28T09:30:00Z',
@@ -236,7 +272,269 @@ describe('ledgerRows', () => {
         created_at: '2026-07-28T09:00:00Z',
       });
       const rows = ledgerRows([waiting, applied], 4, { now: NOW, origin: ORIGIN });
-      expect(rows.find((r) => r.decision.decision_id === 's4')?.state).toBe('open');
+      expect(rows.find((r) => r.decision.decision_id === 's4')?.state).toBe('awaiting_apply');
+      // Distinct event_keys → the dedup must NOT fold them together.
+      expect(rows).toHaveLength(2);
+    });
+
+    // ds-b0k, drawn from the live PR #168 pair: the backend records a phase
+    // sequence under ONE event_key (waiting_for_rebake+pending at 15:31:01,
+    // then waiting_for_rebake+merged at 15:31:08). Both classify identically,
+    // so neither supersedes the other and the desk drew the same event twice.
+    it('collapses same-event_key phase-transition docs to the latest phase', () => {
+      const pendingPhase = decision({
+        decision_id: '26f475d9',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        pr_number: 168,
+        event_key: 'iac-apply-168-d58dd9c035304939e834717bb17bcac1',
+        created_at: '2026-07-31T15:31:01Z',
+      });
+      const mergedPhase = decision({
+        decision_id: 'f66d3ce4',
+        action: 'iac_apply',
+        apply_status: 'waiting_for_rebake',
+        pr_number: 168,
+        event_key: 'iac-apply-168-d58dd9c035304939e834717bb17bcac1',
+        created_at: '2026-07-31T15:31:08Z',
+      });
+      const rows = ledgerRows([pendingPhase, mergedPhase], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].decision.decision_id).toBe('f66d3ce4');
+    });
+
+    // Unknown must fail toward RETENTION on an audit surface (Codex). The fold
+    // is a positive test against waiting_for_rebake, so a legacy row with no
+    // apply_status — or a status this build has never heard of — keeps its row
+    // rather than being discarded sight unseen. A `!isTerminal` test would
+    // have silently swallowed both.
+    it.each([undefined, 'some_future_status'])(
+      'never folds an iac row whose apply_status is unrecognised (%s)',
+      (status) => {
+        const older = decision({
+          decision_id: 'u1',
+          action: 'iac_apply',
+          apply_status: status,
+          pr_number: 700,
+          event_key: 'iac-apply-700-onegeneration',
+          created_at: '2026-07-28T08:00:00Z',
+        });
+        const newer = decision({
+          decision_id: 'u2',
+          action: 'iac_apply',
+          apply_status: 'waiting_for_rebake',
+          merge_state: 'merged',
+          pr_number: 700,
+          event_key: 'iac-apply-700-onegeneration',
+          created_at: '2026-07-28T09:00:00Z',
+        });
+        const rows = ledgerRows([older, newer], 4, { now: NOW, origin: ORIGIN });
+        expect(rows).toHaveLength(2);
+      },
+    );
+
+    // A terminal record is a completed historical fact. Two applies 27 days
+    // apart really do share an event_key in the live feed (iac-apply-32-...),
+    // so collapsing them would delete a real record.
+    it('never folds a terminal iac row into a newer one sharing its event_key', () => {
+      const first = decision({
+        decision_id: 't1',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 32,
+        event_key: 'iac-apply-32-a1473c8a',
+        created_at: '2026-05-30T11:16:12Z',
+      });
+      const second = decision({
+        decision_id: 't2',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 32,
+        event_key: 'iac-apply-32-a1473c8a',
+        created_at: '2026-06-26T16:03:27Z',
+      });
+      const rows = ledgerRows([first, second], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+    });
+
+    // Codex r3: rule 1 alone still let ONE apply fill the strip. The merge-only
+    // reconcile records applied+failed (agent/main.py:7060) and, once the merge
+    // lands, applied+merged (:7117) — same apply_attempt_id, carried through by
+    // :7219. Both are terminal, so both used to survive, as rows reading
+    // IDENTICALLY ("Approved · applied"): the ledger's copy turns on
+    // apply_status alone. Four reconciles could crowd out every other record.
+    it('folds a reconciled apply into one row: same apply_attempt_id, both applied', () => {
+      const mergeFailed = decision({
+        decision_id: 'ra1',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'failed',
+        pr_number: 44,
+        event_key: 'iac-apply-44-9f2b',
+        apply_attempt_id: 'att-44-1',
+        created_at: '2026-07-27T10:00:00Z',
+      });
+      const mergedLater = decision({
+        decision_id: 'ra2',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 44,
+        event_key: 'iac-apply-44-9f2b',
+        apply_attempt_id: 'att-44-1',
+        created_at: '2026-07-27T10:04:00Z',
+      });
+      const rows = ledgerRows([mergeFailed, mergedLater], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(1);
+      // The SURVIVOR is the newest, so the strip shows the current truth.
+      expect(rows[0].decision.decision_id).toBe('ra2');
+      expect(rows[0].decision.merge_state).toBe('merged');
+    });
+
+    // The fold must never swallow a status TRANSITION. Only an `applied` row
+    // may absorb an older `applied` row; a terminal failure never enters the
+    // set, so an apply that later froze keeps both rows and the failure stays
+    // on the strip. Same invariant as rule 1: failures are never folded.
+    it.each(['failed', 'failed_state_suspect', 'ambiguous'])(
+      'a later %s row does not fold the applied row it shares an attempt with',
+      (terminalStatus) => {
+        const applied = decision({
+          decision_id: 'rf1',
+          action: 'iac_apply',
+          apply_status: 'applied',
+          merge_state: 'merged',
+          pr_number: 45,
+          event_key: 'iac-apply-45-3c1d',
+          apply_attempt_id: 'att-45-1',
+          created_at: '2026-07-27T10:00:00Z',
+        });
+        const frozen = decision({
+          decision_id: 'rf2',
+          action: 'iac_apply',
+          apply_status: terminalStatus,
+          merge_state: 'merged',
+          pr_number: 45,
+          event_key: 'iac-apply-45-3c1d',
+          apply_attempt_id: 'att-45-1',
+          created_at: '2026-07-27T10:06:00Z',
+        });
+        const rows = ledgerRows([applied, frozen], 4, { now: NOW, origin: ORIGIN });
+        expect(rows).toHaveLength(2);
+        expect(rows.some((r) => r.decision.apply_status === terminalStatus)).toBe(true);
+      },
+    );
+
+    // Two genuinely separate applies of one PR generation. Distinct attempt ids
+    // are distinct facts and must each keep a row, even though every other
+    // field matches.
+    it('never folds two applies that carry different attempt ids', () => {
+      const first = decision({
+        decision_id: 'rd1',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 46,
+        event_key: 'iac-apply-46-77aa',
+        apply_attempt_id: 'att-46-1',
+        created_at: '2026-07-20T10:00:00Z',
+      });
+      const second = decision({
+        decision_id: 'rd2',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        merge_state: 'merged',
+        pr_number: 46,
+        event_key: 'iac-apply-46-77aa',
+        apply_attempt_id: 'att-46-2',
+        created_at: '2026-07-27T10:00:00Z',
+      });
+      const rows = ledgerRows([first, second], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+    });
+
+    // Absent or empty attempt id is UNKNOWN identity, not SHARED identity —
+    // the same rule event_key already follows. Pre-attempt-id docs must not all
+    // collapse into one row.
+    it.each([undefined, ''])(
+      'never folds on an attempt id of %p',
+      (attemptId) => {
+        const first = decision({
+          decision_id: 'rn1',
+          action: 'iac_apply',
+          apply_status: 'applied',
+          merge_state: 'merged',
+          pr_number: 47,
+          event_key: 'iac-apply-47-11bb',
+          apply_attempt_id: attemptId,
+          created_at: '2026-07-20T10:00:00Z',
+        });
+        const second = decision({
+          decision_id: 'rn2',
+          action: 'iac_apply',
+          apply_status: 'applied',
+          merge_state: 'merged',
+          pr_number: 47,
+          event_key: 'iac-apply-47-11bb',
+          apply_attempt_id: attemptId,
+          created_at: '2026-07-27T10:00:00Z',
+        });
+        const rows = ledgerRows([first, second], 4, { now: NOW, origin: ORIGIN });
+        expect(rows).toHaveLength(2);
+      },
+    );
+
+    // The rollback/eventarc key namespace identifies {trigger, service,
+    // contract, live_env} — NOT one approval attempt — and an expired approval
+    // is deliberately replaced under the same key (agent/main.py:1155, :2486).
+    // Folding there would hide a FAILED rollback behind a newer benign row.
+    it('never folds non-iac lanes, so a failed rollback survives a newer retry', () => {
+      const failed = decision({
+        decision_id: 'rb1',
+        action: 'rollback',
+        approval: { approval_url: '/approvals/rb1', status: 'used', phase: 'failed' },
+        event_key: 'eventarc-payment-demo-ae4170632c79c599',
+        created_at: '2026-07-29T05:28:40Z',
+      });
+      const retry = decision({
+        decision_id: 'rb2',
+        action: 'rollback',
+        approval: { approval_url: '/approvals/rb2', status: 'pending', expires_at: '2026-07-31T23:00:00Z' },
+        event_key: 'eventarc-payment-demo-ae4170632c79c599',
+        created_at: '2026-07-31T02:18:12Z',
+      });
+      const rows = ledgerRows([failed, retry], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+      expect(rows.find((r) => r.decision.decision_id === 'rb1')?.state).toBe('failed');
+    });
+
+    // An absent event_key is UNKNOWN identity, not SHARED identity — folding
+    // those together would merge unrelated decisions into one row.
+    it('never collapses rows that carry no event_key', () => {
+      const a = decision({ decision_id: 'k1', created_at: '2026-07-28T09:00:00Z' });
+      const b = decision({ decision_id: 'k2', created_at: '2026-07-28T08:00:00Z' });
+      const rows = ledgerRows([a, b], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+    });
+
+    // The cap must count EVENTS, not documents: dedup runs before the slice, so
+    // one chatty event can no longer crowd out three unrelated ones.
+    it('applies the row cap after dedup, not before', () => {
+      const noisy = [1, 2, 3, 4, 5].map((n) =>
+        decision({
+          decision_id: `noise${n}`,
+          action: 'iac_apply',
+          apply_status: 'waiting_for_rebake',
+          pr_number: 500,
+          event_key: 'iac-apply-500-onegeneration',
+          created_at: `2026-07-28T0${n}:00:00Z`,
+        }),
+      );
+      const other = decision({ decision_id: 'other', created_at: '2026-07-28T06:00:00Z' });
+      const rows = ledgerRows([...noisy, other], 4, { now: NOW, origin: ORIGIN });
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.decision.decision_id)).toContain('other');
     });
   });
 
