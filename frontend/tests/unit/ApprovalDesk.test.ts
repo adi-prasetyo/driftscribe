@@ -56,12 +56,20 @@ function rollbackDecision(overrides: Partial<Decision> = {}): Decision {
 }
 
 function iacDecision(overrides: Partial<Decision> = {}): Decision {
+  const pr = overrides.pr_number ?? 42;
   return {
     decision_id: 'iac-1',
     action: 'iac_apply',
     created_at: '2026-07-28T11:00:00Z',
-    pr_number: 42,
+    pr_number: pr,
     apply_status: 'waiting_for_rebake',
+    // Every iac_apply doc the backend writes carries one — agent/main.py:7280,
+    // :7331, :7461, :7503 all pass it — and it hashes `head_sha` (:6406), so it
+    // names the GENERATION, not the PR. A fixture without one exercises a
+    // document shape that does not occur, and used to let a PR-wide join look
+    // safe. Default it per PR so same-PR rows are one generation, and set it
+    // explicitly wherever a test needs two generations of the same PR.
+    event_key: `iac-apply-${pr}-gen1`,
     ...overrides,
   };
 }
@@ -739,6 +747,79 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(queryByTestId('approval-desk-reject')).toBeNull();
     expect(queryByTestId('approval-desk-apply')).toBeNull();
     expect(queryByTestId('approval-desk-continue')).toBeNull();
+  });
+
+  // The witness proves the PR MERGED; it does not prove the other rows under
+  // that pr_number are the same generation. An apply that fails never merges, so
+  // the PR stays open, the operator pushes a fix, and generation B merges beside
+  // generation A's terminal failure. Joining PR-wide let A outrank B: the card
+  // said "View failure details" while the approval page resolved B, kept its
+  // form, and the rail said "Apply this change" — a missed live control AND the
+  // card/rail drift the shared discriminator exists to prevent.
+  it('a failure from an OLDER generation cannot speak for the merged one', () => {
+    const approval = pendingIac({ title: undefined });
+    const failedGenerationA = iacDecision({
+      decision_id: 'iac-gen-a',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-gen0', // different head_sha => different generation
+      apply_status: 'failed_state_suspect',
+      merge_state: 'n/a', // it failed BEFORE the merge, which is why B exists
+      created_at: '2026-07-28T11:00:00Z',
+    });
+    const mergedGenerationB = iacDecision({
+      decision_id: 'iac-gen-b',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-gen1',
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      created_at: '2026-07-28T11:20:00Z',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [mergedGenerationB, failedGenerationA],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-apply')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view-failure')).toBeNull();
+  });
+
+  // The witness is the only thing that licenses reading sibling rows, so a
+  // witness with no generation identity licenses nothing. Fail toward the gate,
+  // exactly as the no-witness branch does — the page keeps a live form for
+  // waiting_for_rebake (agent/main.py:6127), so the control still works.
+  it('a witness with no event_key cannot license a PR-wide join', () => {
+    const approval = pendingIac({ title: undefined });
+    const frozen = iacDecision({
+      decision_id: 'iac-frozen',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: 'iac-apply-7-gen0',
+      apply_status: 'failed_state_suspect',
+      merge_state: 'merged',
+    });
+    const keylessWitness = iacDecision({
+      decision_id: 'iac-witness',
+      pr_number: 7,
+      pr_title: undefined,
+      event_key: undefined,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+    });
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [keylessWitness, frozen],
+        pendingApprovals: [approval],
+        onShowEstate: vi.fn(),
+      },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view-failure')).toBeNull();
   });
 
   // The gate-safety twin of the two view-only tests above. Both of those supply

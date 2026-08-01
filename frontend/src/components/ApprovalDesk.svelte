@@ -308,16 +308,32 @@
     );
     // The one misattribution-proof witness. Without it the listing may be
     // pointing at a live generation, and only the full approval path is safe.
-    const mergeProven = prDecisions.some(
+    const witness = prDecisions.find(
       (d) => d.apply_status === 'waiting_for_rebake' && d.merge_state === 'merged',
     );
-    if (!mergeProven) return { kind: 'approve' };
+    if (!witness) return { kind: 'approve' };
 
-    // Merge proven, so the listing is stale and every decision below describes
-    // THIS settled PR. Now the page's own suppressions decide: terminal failure
-    // and explicit supersession both render a banner with no form
-    // (agent/main.py:6183, :6165), so a CTA there would point at nothing.
-    const states = prDecisions.map((d) => iacApprovalCtaState(d, supersededIds));
+    // A merged witness proves the PR settled — it does NOT prove the other rows
+    // under this `pr_number` describe the same GENERATION. An apply that fails
+    // before the merge leaves the PR open, so the operator pushes a fix and the
+    // PR accumulates generation A's terminal failure beside generation B's
+    // merge. Joining PR-wide would let A's failure outrank B's live apply: the
+    // card would say "View failure details" while the approval page resolves the
+    // latest artifact (B), keeps its form, and the rail says "Apply this change".
+    //
+    // `event_key` hashes `head_sha` (agent/main.py:6406), so it is the
+    // generation. Scope the join to the witness's own key; without one there is
+    // no proof of generation and the full approval path is the safe answer.
+    const generation = witness.event_key;
+    if (typeof generation !== 'string' || generation === '') return { kind: 'approve' };
+    const genDecisions = prDecisions.filter((d) => d.event_key === generation);
+
+    // Same generation as the merge, so the page's own suppressions decide:
+    // terminal failure and explicit supersession both render a banner with no
+    // form (agent/main.py:6183, :6165), so a CTA there would point at nothing.
+    // A failure appended AFTER the witness (the resume-apply at :7452) shares
+    // its key and still wins here — a frozen apply must not read as live.
+    const states = genDecisions.map((d) => iacApprovalCtaState(d, supersededIds));
     return (
       states.find((state) => state.kind === 'failure') ??
       states.find(
