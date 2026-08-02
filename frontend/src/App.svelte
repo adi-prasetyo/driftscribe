@@ -2316,6 +2316,7 @@
     graph={$overview.graph}
     pendingApprovals={reconcileApprovals($overview.pendingApprovals, $overview.decisions)}
     approvalsStale={$overview.approvalsStale}
+    graphStale={$overview.graphStale}
     adoptDisabled={chatDisabled}
     onAdoptPrefill={handleAdopt}
     onNavigate={tourNavigate}

@@ -913,11 +913,21 @@ class TestInfraGraphTokenGuard:
 #
 # These are the wiring tests. `build_graph`'s own comparison logic is pinned in
 # tests/unit/test_infra_graph.py; what can only be verified HERE is that the
-# route actually passes its local hash in. There are FOUR `build_graph` call
-# sites in `get_infra_graph` — live fetch, L1 hit, L2 hit, and the worker-error
-# path — and each is its own line that a wiring change could miss, so each gets
-# its own test. (An earlier draft of this block claimed both cache layers and
-# exercised only L1; removing the argument from the L2 read reddened nothing.)
+# route actually passes its local hash in. `get_infra_graph` has FOUR
+# `build_graph` call sites, and THREE of them are separately testable: live
+# fetch, L1 hit, L2 hit. Each is its own line a wiring change could miss, so
+# each gets its own test.
+#
+# The fourth — the worker-error path — is deliberately NOT covered here, and
+# saying so is the point. `_degraded` returns before consulting either hash
+# (driftscribe_lib/infra_graph.py), so the argument on that line is
+# unobservable: a test for it would be green with or without it. An earlier
+# draft had exactly that test, plus a header claiming all four. Its keys are
+# pinned where they are real, by
+# `test_a_degraded_response_still_carries_the_freshness_keys` above.
+#
+# (That draft also claimed both cache layers while exercising only L1;
+# removing the argument from the L2 read reddened nothing.)
 # --------------------------------------------------------------------------- #
 
 _TREE_A = "a" * 64
@@ -1061,12 +1071,3 @@ def test_an_l2_doc_written_before_the_field_existed_reads_as_unverified(monkeypa
     assert body["iac_snapshot_reason"] == "worker_hash_unavailable"
     assert body["degraded"] is False  # the cached estate is still served
 
-
-def test_the_worker_error_path_still_reports_its_local_hash_state(monkeypatch):
-    """The fourth call site. Degraded, so freshness is unknowable — but the keys
-    must be present and must not claim fresh."""
-    _mock_call(monkeypatch, raises=worker_client.WorkerClientError(503, "down", "infra_reader"))
-    _set_local_hash(monkeypatch, _TREE_A)
-    body = TestClient(app).get("/infra/graph").json()
-    assert body["iac_snapshot_stale"] is None
-    assert body["iac_snapshot_reason"] is None

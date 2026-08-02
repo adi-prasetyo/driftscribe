@@ -117,6 +117,13 @@ export const tour = {
     // unreliable pending-approvals fetch makes every "no PR here" judgement
     // unsupported — suggesting one would steer the operator at a duplicate
     // adoption (Codex review #258).
+    // ds-1vn (Codex r3). Mirror of the estate's suppression: the tour must not
+    // recommend adopting a resource whose "not declared" status came from an
+    // iac/ snapshot this deployment cannot vouch for.
+    'tour.adopt.snapshotUnverified':
+      'The resource list was read from an iac/ snapshot this deployment cannot ' +
+      'confirm, so which resources are undeclared may be out of date. Adoption ' +
+      'suggestions are paused until the two agree.',
     'tour.adopt.approvalsUnknown':
       "We can't reach the list of open adoption requests right now, so we " +
       "can't tell which resources already have one in review. Rather than " +
@@ -257,6 +264,9 @@ export const tour = {
       'IaC 管理に取り込むと、リソースの現在の状態がそのまま IaC に反映されます。この' +
       '変更を伴わない取り込みも、他の変更と同じレビューと承認のプロセスを経ます。 ' +
       '{hint}',
+    'tour.adopt.snapshotUnverified':
+      'リソース一覧は、稼働中のデプロイでは確認できない iac/ スナップショットから読み取られています。' +
+      'どのリソースが未定義かの判定が最新でない可能性があるため、取り込みの提案を一時停止しています。',
     'tour.adopt.approvalsUnknown':
       'レビュー待ちの取り込み申請の一覧を取得できないため、どのリソースがすでに' +
       '申請済みかを判断できません。対応済みのものをご案内してしまう可能性がある' +

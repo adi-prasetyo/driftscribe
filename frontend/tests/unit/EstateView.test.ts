@@ -40,6 +40,11 @@ function graph(over: Partial<InfraGraph> = {}): InfraGraph {
     generated_at: '2026-07-28T06:00:00Z',
     project: 'demo-proj',
     caveat: '',
+    // ds-1vn: a healthy deployment's snapshot matches. Set EXPLICITLY, because
+    // omitting it now means "unverified", which suppresses adoption — every
+    // unrelated adopt test would then be exercising the suppressed path and
+    // proving nothing about the one it is named for.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 10, managed: 5, drift: 5 },
@@ -564,8 +569,12 @@ describe('EstateView — IaC snapshot freshness disclosure (ds-1vn)', () => {
   it('treats a graph with no freshness field at all as unverified, not as fresh', () => {
     // A build serving a payload from before these fields existed. Absent must
     // not read as false — that is the same conflation as `phase: null` meaning
-    // "applied" (ds-2mc).
-    const { getByTestId } = render(EstateView, { props: baseProps({ graph: graph() }) });
+    // "applied" (ds-2mc). Written by DELETING the key, not by passing
+    // undefined: the fixture now defaults to a healthy `false`, so a test for
+    // the absent case has to actually produce absence.
+    const g = graph();
+    delete (g as Partial<InfraGraph>).iac_snapshot_stale;
+    const { getByTestId } = render(EstateView, { props: baseProps({ graph: g }) });
     expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
   });
 
@@ -637,17 +646,29 @@ describe('EstateView — a stale snapshot suppresses adoption (ds-1vn r2)', () =
     expect(container.querySelector('[data-tour="adopt-target"]')).toBeNull();
   });
 
-  // NOT suppressed on unverified, deliberately. That is absence of evidence,
-  // and it is the state every build before this one shipped in — disabling
-  // adoption there would let a check that cannot see its subject remove a
-  // working control on every request until a worker redeploy.
-  it('keeps Adopt on an UNVERIFIED snapshot, and still says currency is unconfirmed', () => {
-    const { getAllByTestId, getByTestId, queryByTestId } = render(EstateView, {
+  // Suppressed on UNVERIFIED too (Codex r3). An earlier cut spared it, arguing
+  // absence of evidence is not evidence of a mismatch. The counterexample is
+  // the very rollout that produces `unverified`: deploy the coordinator ahead
+  // of the worker, and the old worker has no hash AND is genuinely missing the
+  // new declaration — the ds-1vn incident exactly, wearing "unknown" instead
+  // of "mismatch". Only `fresh` may drive an adoption.
+  it('suppresses Adopt on an UNVERIFIED snapshot too, and says currency is unconfirmed', () => {
+    const { queryByTestId, getByTestId } = render(EstateView, {
       props: baseProps({ graph: graph({ iac_snapshot_stale: null }) }),
     });
-    expect(getAllByTestId('estate-adopt-btn').length).toBeGreaterThan(0);
-    expect(queryByTestId('estate-adopt-stale')).toBeNull();
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    expect(getByTestId('estate-adopt-stale')).toBeTruthy();
     expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+  });
+
+  it('suppresses Adopt when a failed refresh retired the freshness claim', () => {
+    // graphStale degrades a retained `false` to unverified — and the action
+    // derived from that assurance must go with it. Leaving Adopt armed while
+    // retiring the assurance is the exact split Codex r3 called out.
+    const { queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: false }), graphStale: true }),
+    });
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
   });
 
   it('keeps Adopt when the snapshot matches', () => {

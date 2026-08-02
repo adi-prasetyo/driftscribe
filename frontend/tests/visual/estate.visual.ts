@@ -391,10 +391,13 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         // adopt button than drift rows — this is the assertion that pins the
         // "one action per row, and a PR'd row is not adoptable" rule.
         await expect(page.getByTestId('estate-pr-chip')).toHaveCount(1);
-        if (fx.snapshotStale === true) {
-          // ds-1vn r2: a stale snapshot suppresses adoption — "not declared"
-          // is read off a tree we just proved is not this deployment's, and an
-          // unsupported absence must not drive an action. The rows stay.
+        // ds-1vn r3: adoption needs a snapshot this deployment can vouch for.
+        // BOTH non-fresh states suppress it — `stale` proves the basis is
+        // wrong, `unverified` means nobody can say it is right, and the
+        // rollout that produces `unverified` (coordinator ahead of worker) is
+        // the one that produces real staleness. The rows themselves stay: a
+        // warning must not hide its own subject.
+        if (fx.snapshotStale !== undefined && fx.snapshotStale !== false) {
           await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(0);
           await expect(page.getByTestId('estate-adopt-stale')).toHaveCount(2);
         } else {

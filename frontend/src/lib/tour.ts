@@ -14,12 +14,14 @@
 import {
   adoptGroupRank,
   adoptPrefill,
+  adoptionTrusted,
   findPendingPr,
   infraTypeLabel,
   normalizeForPrompt,
   prefillLocation,
   resourceCards,
   scopeTotals,
+  snapshotFreshness,
   type InfraGraph,
   type PendingApproval,
 } from './infra_graph';
@@ -193,12 +195,25 @@ export function adoptStepState(
    *  suggestion built on it would steer the operator at a duplicate adoption.
    *  Optional so existing callers keep their behavior (Codex review #258). */
   approvalsStale?: boolean,
+  /** The last `/infra/graph` fetch failed, so `graph` is a retained snapshot —
+   *  see OverviewState.graphStale. Only needed here because it is a STORE fact,
+   *  not something readable off the graph itself. */
+  graphStale?: boolean,
 ): AdoptStepState {
   if (approvalsStale) {
     return { kind: 'none', line: t('tour.adopt.approvalsUnknown') };
   }
   if (graph === null || graph.degraded) {
     return { kind: 'unavailable', line: t('tour.adopt.unavailable') };
+  }
+  // ds-1vn (Codex r3). The estate suppresses its Adopt buttons on a snapshot
+  // it cannot vouch for; without this the tour went right on recommending
+  // "adopt X" beside them, with a live prefill button — one surface disowning
+  // the claim while its sibling still acted on it, which is the shape that
+  // cost four rounds on the ledger. Same predicate as EstateView, imported
+  // rather than restated, so the two cannot drift apart.
+  if (!adoptionTrusted(snapshotFreshness(graph, graphStale))) {
+    return { kind: 'none', line: t('tour.adopt.snapshotUnverified') };
   }
   const candidates = graph.groups
     .filter((g) => !g.sensitive && g.adoptable === true)

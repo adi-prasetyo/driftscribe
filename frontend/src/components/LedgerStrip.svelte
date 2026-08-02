@@ -180,10 +180,19 @@
    *  mislabelled `match` is therefore filterable here.
    *
    *  That is survivable because of what this string IS. The subtitle is
-   *  best-effort identity, never a verdict, and `target_revision` is enforced
-   *  for every rollback (`validator.py:219` raises without it), so the worst
-   *  case is a row that names the revision instead of the variable — less
-   *  specific, still not the blank subject that caused the misread. Do NOT
+   *  best-effort identity, never a verdict, and the `target_revision` fallback
+   *  is always there — but by TWO guards, not one, and an earlier draft of this
+   *  comment named only the first (Codex r3):
+   *
+   *    - autonomous path: `validate()` runs at `agent/main.py:2519`, before the
+   *      only call to `_do_rollback` at `:2693`, and `validator.py:219` raises
+   *      without a `target_revision`;
+   *    - chat path: `adk_tools.py:488` rejects anything `_REVISION_NAME`
+   *      does not fullmatch (including empty), then writes the decision
+   *      DIRECTLY at `:613` — `validator.py` never runs on this path at all.
+   *
+   *  So the worst case is a row naming the revision instead of the variable —
+   *  less specific, still not the blank subject that caused the misread. Do NOT
    *  grow this into anything that asserts a policy outcome; for that, the
    *  status would first have to be derived server-side from ground truth.
    *

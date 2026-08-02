@@ -12,6 +12,7 @@ import {
   adoptStepState,
 } from '../../src/lib/tour';
 import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
+import { adoptionTrusted, snapshotFreshness } from '../../src/lib/infra_graph';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
 // The raw catalog, not the translator: the off-view guard at the bottom of this
 // file walks EVERY string a step can render, including the branches no fixture
@@ -116,6 +117,10 @@ function makeGraph(over: Partial<InfraGraph> = {}): InfraGraph {
     generated_at: null,
     project: 'driftscribe-hack-2026',
     caveat: 'CAI may lag recent changes.',
+    // ds-1vn: a healthy deployment's snapshot matches. Explicit, not omitted —
+    // absent now means "unverified", which pauses the adopt suggestion, and
+    // every unrelated ranking test would then exercise the paused path.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 12, managed: 9, drift: 3 },
@@ -831,4 +836,81 @@ describe('step copy never points off the step\'s own view', () => {
       });
     }
   }
+});
+
+// ds-1vn r3 (Codex review). Nulling EstateView's `adoptTarget` removed the
+// SPOTLIGHT and nothing else: TourCard derives its own adopt target through
+// `adoptStepState` and renders its own prefill button, so the stale estate
+// could show zero Adopt buttons while the tour beside it said "adopt X" with a
+// live control. One surface disowning the claim while its sibling acted on it
+// — the shape that cost four review rounds on the ledger.
+//
+// The fix is the SHARED predicate (`adoptionTrusted` / `snapshotFreshness` in
+// lib/infra_graph), imported by both, so they cannot drift apart again.
+describe('adoptStepState — an unvouched-for snapshot pauses the suggestion (ds-1vn)', () => {
+  // Local copy: the sibling block's helper is scoped inside its own describe.
+  function adoptableGraph(): InfraGraph {
+    return makeGraph({
+      groups: [
+        makeGroup({
+          adopt_rank: 1,
+          adopt_hint: 'Buckets are the simplest first adoption.',
+          nodes: [makeNode({ id: 'g1n0', label: 'demo-bucket' })],
+        }),
+      ],
+    });
+  }
+
+  it('suggests normally when the snapshot matches this deployment', () => {
+    expect(adoptStepState(t, adoptableGraph()).kind).toBe('target');
+  });
+
+  it('pauses on a STALE snapshot', () => {
+    const g = adoptableGraph();
+    g.iac_snapshot_stale = true;
+    const s = adoptStepState(t, g);
+    expect(s.kind).toBe('none');
+    expect(s.line).toBe(t('tour.adopt.snapshotUnverified'));
+  });
+
+  it('pauses on an UNVERIFIED snapshot', () => {
+    const g = adoptableGraph();
+    g.iac_snapshot_stale = null;
+    expect(adoptStepState(t, g).kind).toBe('none');
+  });
+
+  it('pauses when the field is absent entirely', () => {
+    const g = adoptableGraph();
+    delete (g as Partial<InfraGraph>).iac_snapshot_stale;
+    expect(adoptStepState(t, g).kind).toBe('none');
+  });
+
+  it('pauses when the last graph fetch failed, even though the retained graph says fresh', () => {
+    expect(adoptStepState(t, adoptableGraph(), [], false, true).kind).toBe('none');
+  });
+
+  // Ordering: an unreliable approvals lane is still reported as such. Both are
+  // "none", but the operator is told the right reason.
+  it('reports the approvals reason first when both lanes are unreliable', () => {
+    const g = adoptableGraph();
+    g.iac_snapshot_stale = true;
+    const s = adoptStepState(t, g, [], true);
+    expect(s.line).toBe(t('tour.adopt.approvalsUnknown'));
+  });
+
+  // The invariant that makes the shared predicate worth having: whatever the
+  // estate refuses to offer, the tour refuses to suggest.
+  it('agrees with adoptionTrusted for every freshness state', () => {
+    for (const [value, trusted] of [
+      [false, true],
+      [true, false],
+      [null, false],
+    ] as const) {
+      const g = adoptableGraph();
+      g.iac_snapshot_stale = value;
+      const suggests = adoptStepState(t, g).kind === 'target';
+      expect(suggests).toBe(adoptionTrusted(snapshotFreshness(g)));
+      expect(suggests).toBe(trusted);
+    }
+  });
 });

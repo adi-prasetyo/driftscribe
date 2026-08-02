@@ -104,6 +104,52 @@ the *action*.
    existed. Verified by injection: dropping the local hash from the L2 read alone now
    reddens four tests, where before it reddened none.
 
+### Codex review round 3 (same thread) — four more, including one I argued against and lost
+
+1. **High — the guided tour still offered adoption from a snapshot the estate had
+   disowned.** Nulling `adoptTarget` removed the row SPOTLIGHT and nothing else:
+   `TourCard` derives its own target through `adoptStepState` and renders its own
+   prefill button, so a stale estate could show zero Adopt buttons while the tour
+   beside it said "adopt X" with a live control. One surface disowning the claim while
+   its sibling acted on it — the shape that cost four rounds on the ledger, reproduced
+   inside the fix for it.
+
+   Fixed with a SHARED predicate rather than a second copy of the rule:
+   `snapshotFreshness()` + `adoptionTrusted()` in `lib/infra_graph.ts`, imported by
+   both `EstateView` and `tour.ts`. That is what makes them unable to drift again.
+
+2. **Medium — I was wrong to spare `unverified`, and the counterexample is the rollout
+   I used as justification.** Deploy the coordinator ahead of the worker: the old
+   worker has no hash *and* is genuinely missing the new declaration, so the estate
+   reports `worker_hash_unavailable` and keeps Adopt armed on an already-declared
+   resource. That is the ds-1vn incident wearing "unknown" instead of "mismatch".
+   Prior releases shipping without the check establish compatibility, not safety.
+   The rule is now simply **only `fresh` may drive an adoption**, which is also one
+   fewer special case to defend.
+
+3. **Low — the "every rollback passes `validator.py`" note was false.** The chat path
+   guards with a regex at `adk_tools.py:488` and writes directly at `:613`;
+   `validator.py` never runs on it. The invariant holds, but by two guards, and the
+   comment now names both.
+
+4. **Low — the worker-error wiring test was vacuous.** `_degraded` returns before
+   consulting either hash, so that call site's argument is unobservable and the test
+   was green with or without it. Deleted, and the header's "four call sites" claim
+   corrected to three-plus-a-stated-exception.
+
+**Three wiring gaps found by injection, not by review.** `graphStale` is threaded by
+hand App → EstateView and App → TourCard, and dropping either reddened NOTHING across
+1866 tests — component tests pass the prop themselves, so they cannot see App failing
+to. Added a two-cycle App test (succeed, then fail the refresh) that catches both the
+dropped prop and a store that stops computing the flag, plus a TourCard test for its
+own threading.
+
+**And a process note worth keeping:** during this round I ran `git checkout` on
+`TourCard.svelte` to undo an injected defect, on a file holding uncommitted work, and
+destroyed the round-3 changes in it. Recovered by rewriting them. Every other injection
+in this branch used a scratchpad copy — [[no-rm-move-aside]] applies to `git checkout`
+just as much as to `rm`.
+
 ### What the work found that the plan did not anticipate
 
 - **A `$derived` guard that caught nothing.** The `graph.degraded` arm of

@@ -169,6 +169,69 @@ export interface InfraGraph {
   unmatched_declarations?: UnmatchedDeclarations;
 }
 
+/**
+ * How current is the `iac/` tree an estate view was read from? (ds-1vn)
+ *
+ * ONE derivation, exported, because more than one surface acts on the answer:
+ * EstateView's Adopt chips and the guided tour's adopt suggestion. The first
+ * cut put this logic in EstateView alone and the tour went on recommending an
+ * adoption from a snapshot the estate had just disowned (Codex r3) — the same
+ * "fix one surface, leave its siblings making the retired claim" shape that
+ * cost four review rounds on the ledger. Sharing the function is what makes
+ * the two unable to disagree.
+ *
+ *  - `'stale'`      — the snapshot is a DIFFERENT `iac/` tree than the running
+ *                     deployment holds, so a resource declared since then can
+ *                     still be listed as undeclared.
+ *  - `'unverified'` — nobody could check: one side reported no hash, or the
+ *                     last graph fetch failed and this graph is retained.
+ *  - `'fresh'`      — the two trees are byte-identical.
+ *
+ * Explicit `=== true` / `=== false`, never truthiness: `undefined` (a payload
+ * predating the field) and `null` (a check that could not run) are BOTH
+ * unverified, and only a literal `false` earns silence. A `??`-style coercion
+ * would promote `undefined` into the silent branch, which is the conflation
+ * the field exists to prevent — and which appeared in this feature's own test
+ * fixture before it appeared anywhere else.
+ *
+ * `graphStale` is checked AFTER `=== true`: a mismatch already observed does
+ * not stop being true because a later refresh failed, and softening it would
+ * retire a warning on no evidence.
+ */
+export type SnapshotFreshness = 'stale' | 'unverified' | 'fresh';
+
+export function snapshotFreshness(
+  graph: InfraGraph | null,
+  graphStale: boolean = false,
+): SnapshotFreshness {
+  if (graph === null) return 'unverified';
+  if (graph.iac_snapshot_stale === true) return 'stale';
+  if (graph.iac_snapshot_stale === false) return graphStale ? 'unverified' : 'fresh';
+  return 'unverified';
+}
+
+/**
+ * May this snapshot drive an ADOPTION? Only when fresh.
+ *
+ * Adopt is an ABSENCE claim — "this resource is not declared in IaC" — read
+ * off the worker's baked `iac/`. Both non-fresh states make that absence
+ * unsupported, and the difference between them does not help the operator:
+ * `stale` proves the basis is wrong, `unverified` means nobody can say it is
+ * right. The rollout that produces `unverified` is precisely the one that
+ * produces real staleness — a coordinator deployed ahead of the worker, which
+ * is the ds-1vn incident exactly, wearing "unknown" instead of "mismatch"
+ * (Codex r3). Prior releases having shipped without the check establishes
+ * compatibility, not that the action was safe.
+ *
+ * The backend preflight still refuses a PR for an already-declared identity
+ * (`agent/adk_tools.py`), so what this prevents is a FALSE RECOMMENDATION
+ * rather than a bad apply. On a surface whose whole purpose is not claiming
+ * more than it can prove, that is reason enough.
+ */
+export function adoptionTrusted(freshness: SnapshotFreshness): boolean {
+  return freshness === 'fresh';
+}
+
 // ---------------------------------------------------------------------------
 // Plan-overlay (ghost-node) DTO — mirrors driftscribe_lib.infra_graph.plan_overlay.
 // The /infra/graph/preview route returns this for a pending IaC PR; the client

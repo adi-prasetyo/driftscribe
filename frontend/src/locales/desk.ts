@@ -258,7 +258,7 @@ export const desk = {
     // different facts, and rendering them the same way is the defect ds-1vn
     // exists to remove.
     'desk.estate.snapshotUnverified':
-      'The age of this list’s iac/ snapshot could not be verified.',
+      'This deployment could not confirm which iac/ snapshot the list below was read from, so what it calls declared may be out of date. Adoption is paused until it can.',
     'desk.estate.driftGroup': 'Drift — not declared in IaC ({n})',
     // The drift group's mirror image: declared in IaC, no live resource. The
     // heading carries the TRUE server-side count, which can exceed the rows
@@ -407,7 +407,8 @@ export const desk = {
     'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
     'desk.estate.snapshotStale':
       'この一覧は、稼働中のデプロイとは異なる iac/ スナップショットから読み取られています。定義済みかどうかの判定が最新でない可能性があるため、該当の行では取り込みを一時停止しています。',
-    'desk.estate.snapshotUnverified': 'この一覧の iac/ スナップショットの鮮度は確認できませんでした。',
+    'desk.estate.snapshotUnverified':
+      'この一覧がどの iac/ スナップショットから読み取られたかを、稼働中のデプロイでは確認できませんでした。定義済みかどうかの判定が最新でない可能性があるため、取り込みを一時停止しています。',
     'desk.estate.driftGroup': 'ドリフト — IaC に未定義 {n} 件',
     'desk.estate.unmatchedGroup': 'IaC に定義済み・実環境で未検出 {n} 件',
     'desk.estate.managedGroup': 'IaC に定義済み — {n} 件',

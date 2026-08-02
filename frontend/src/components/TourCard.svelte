@@ -25,6 +25,7 @@
     graph = null,
     pendingApprovals = [],
     approvalsStale = false,
+    graphStale = false,
     adoptDisabled = false,
     onAdoptPrefill,
     onNavigate,
@@ -42,6 +43,11 @@
     /** See OverviewState.approvalsStale — suppresses the adopt suggestion,
      *  which is an absence claim over `pendingApprovals`. */
     approvalsStale?: boolean;
+    /** See OverviewState.graphStale — the last `/infra/graph` fetch failed, so
+     *  `graph` is retained. Threaded through for the SAME reason
+     *  `approvalsStale` is: the adopt suggestion is an absence claim, and a
+     *  retained snapshot cannot vouch for it (ds-1vn, Codex r3). */
+    graphStale?: boolean;
     /** Same condition that disables ChatForm/Adopt (a busy chat). */
     adoptDisabled?: boolean;
     /** Routes through App.handleAdopt — prefills the composer, never sends. */
@@ -56,7 +62,9 @@
 
   let stepIndex = $state(0);
   const step = $derived(TOUR_STEPS[stepIndex]);
-  const adoptState = $derived(adoptStepState($t, graph, pendingApprovals, approvalsStale));
+  const adoptState = $derived(
+    adoptStepState($t, graph, pendingApprovals, approvalsStale, graphStale),
+  );
 
   // Spotlight the current step's target: toggle .tour-spotlight on the
   // matching [data-tour] element and scroll it into view. Some targets only
