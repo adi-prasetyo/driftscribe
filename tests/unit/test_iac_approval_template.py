@@ -378,7 +378,11 @@ def test_adopt_only_plan_renders_adopt_note_not_generic_green_note():
     assert 'data-testid="adopt-note"' in html
     assert "Nothing in your infrastructure will be modified" in text
     assert "this only puts 1 resource under management" in text
-    assert "count it as managed once the change merges" in text
+    # ds-403 (Codex review): the map and the meter count DECLARATIONS. The old
+    # assertion pinned the exact overstatement the estate rename retired, and a
+    # test pinning a retired claim is how the claim survives the sweep.
+    assert "count it as declared once the change merges" in text
+    assert "managed once the change merges" not in text
     # The generic green no-destroy note must NOT also render (the banner is the
     # adopt-only branch, not the else branch).
     assert 'data-testid="no-destroy-note"' not in html

@@ -2301,6 +2301,7 @@
     pendingApprovals={$overview.pendingApprovals}
     settled={$overview.settled}
     approvalsStale={$overview.approvalsStale}
+    graphStale={$overview.graphStale}
     adoptDisabled={chatDisabled}
     onAdopt={handleAdopt}
     onInvestigate={handleAdopt}

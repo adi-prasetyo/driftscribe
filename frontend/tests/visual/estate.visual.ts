@@ -391,7 +391,16 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         // adopt button than drift rows — this is the assertion that pins the
         // "one action per row, and a PR'd row is not adoptable" rule.
         await expect(page.getByTestId('estate-pr-chip')).toHaveCount(1);
-        await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(2);
+        if (fx.snapshotStale === true) {
+          // ds-1vn r2: a stale snapshot suppresses adoption — "not declared"
+          // is read off a tree we just proved is not this deployment's, and an
+          // unsupported absence must not drive an action. The rows stay.
+          await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(0);
+          await expect(page.getByTestId('estate-adopt-stale')).toHaveCount(2);
+        } else {
+          await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(2);
+          await expect(page.getByTestId('estate-adopt-stale')).toHaveCount(0);
+        }
         await expect(page.getByTestId('estate-system-fold')).toBeVisible();
         // The merge's density concession: the untracked group folds shut, so
         // its COUNT is what the section spends space on. Assert it is closed —

@@ -172,6 +172,21 @@
    *  PAYMENT_MODE rollback ships FEATURE_NEW_CHECKOUT at `match` alongside it —
    *  context on the diff card, never the subject.
    *
+   *  ⚠️ These values are MODEL-AUTHORED and the rollback gate does not trust
+   *  them. `agent/validator.py:324` derives the real verdict from the contract
+   *  and the live value, counts violations among the diffs the proposal
+   *  REPORTED, and never rewrites the proposal — so `agent/main.py:1988`
+   *  persists whatever the LLM wrote (Codex review). A genuine violation
+   *  mislabelled `match` is therefore filterable here.
+   *
+   *  That is survivable because of what this string IS. The subtitle is
+   *  best-effort identity, never a verdict, and `target_revision` is enforced
+   *  for every rollback (`validator.py:219` raises without it), so the worst
+   *  case is a row that names the revision instead of the variable — less
+   *  specific, still not the blank subject that caused the misread. Do NOT
+   *  grow this into anything that asserts a policy outcome; for that, the
+   *  status would first have to be derived server-side from ground truth.
+   *
    *  A positive exclusion set, deliberately, not `!isViolation`: an
    *  unrecognised status must fall THROUGH to being named. Rule (i) — on an
    *  audit surface unknown fails toward retention, and here retention means

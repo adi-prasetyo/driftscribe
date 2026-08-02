@@ -58,6 +58,52 @@ cached inventory and forcing the fleet onto the ~30s CAI path (#244's v3→v4 le
 `estate.test.ts:148` already pins that `managed` rows are never adoptable, so the
 `infra_graph.ts:772-797` hazard v2 flagged is structurally out of reach.
 
+### Codex review round 2 (thread `019fc3a1`) — six findings, all verified, all acted on
+
+Two were **High**, and both were the same mistake: I fixed the *sentence* and left
+the *action*.
+
+1. **A stale snapshot still armed the Adopt button.** The notice rendered while
+   `model.drift` stayed fully actionable — so the estate disclosed that its declared
+   set came from a different tree, then invited the operator to act on it anyway.
+   That is the ds-1vn incident verbatim. Adoption is now suppressed with its own
+   reason chip when `stale`. Deliberately **not** on `unverified`: that is absence of
+   evidence, and it is the state every build before this one shipped in — disabling a
+   working control there would let a check that cannot see its subject remove the
+   thing it cannot evaluate. The tour's adopt spotlight is nulled alongside it, or it
+   would point at a control that is no longer there.
+
+2. **A failed refresh kept vouching for freshness.** `runCycle` retains the previous
+   graph when `/infra/graph` fails — right for the numbers, wrong for
+   `iac_snapshot_stale`, because that field is an *assurance*. A retained `false`
+   reports "checked, current" about a check that did not run. Added `graphStale` to
+   the store (sibling of the existing `approvalsStale`) and degraded a retained
+   `fresh` to `unverified`. Ordered AFTER the `true` test: a mismatch already observed
+   does not stop being true because a later fetch failed.
+
+3. **`contract_status` is model-authored and the rollback gate does not trust it**
+   (`validator.py:324` derives the real verdict and never rewrites the proposal;
+   `main.py:1988` persists the LLM's value). So a genuine violation mislabelled
+   `match` is filterable by the ledger. Survivable, and now documented at the call
+   site: the subtitle is identity, not a verdict, and `target_revision` is enforced
+   for every rollback (`validator.py:219`), so the worst case is a row naming the
+   revision instead of the variable — never the blank subject that caused the misread.
+
+4. **"Older" was not derivable from the evidence.** Hash inequality is symmetric, the
+   prescribed deploy order (worker first) makes worker-newer routine, and
+   `iac/.terraform.lock.hcl` is inside the hashed tree, so a provider bump alone flips
+   it. Copy now says "a different iac/ snapshot", which is what the check proves.
+
+5. **The approval page still carried the retired claim.** `iac_approval.html` promised
+   the map and meter "count it as managed once the change merges" — wrong twice over,
+   since those surfaces count declarations and the worker's snapshot does not move on
+   merge. Fixed EN+JA, along with the test that had **pinned the obsolete wording**.
+
+6. **The cache tests over-claimed.** The header said both layers; only L1 was
+   exercised. Added real L2 coverage, including a v4 doc written before the field
+   existed. Verified by injection: dropping the local hash from the L2 read alone now
+   reddens four tests, where before it reddened none.
+
 ### What the work found that the plan did not anticipate
 
 - **A `$derived` guard that caught nothing.** The `graph.degraded` arm of

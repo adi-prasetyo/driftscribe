@@ -38,6 +38,7 @@
     pendingApprovals,
     settled = true,
     approvalsStale = false,
+    graphStale = false,
     adoptDisabled = false,
     onAdopt,
     onInvestigate,
@@ -52,6 +53,13 @@
      *  OverviewState.approvalsStale. Suppresses ABSENCE-derived affordances
      *  only; positively observed PR chips still render. */
     approvalsStale?: boolean;
+    /** The LAST `/infra/graph` fetch failed, so `graph` is a RETAINED snapshot
+     *  (OverviewState.graphStale). Its numbers are still worth showing, but its
+     *  `iac_snapshot_stale` is an assurance and must not survive as one: a
+     *  retained `false` would report "checked, current" about a check that did
+     *  not run this cycle. Degrades freshness to `unverified`, never to
+     *  `stale` — a failed fetch is no evidence of a mismatch either. */
+    graphStale?: boolean;
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
@@ -76,10 +84,53 @@
   // merge deleted both the button and that predicate, so the step's fallback is
   // now the estate section itself (TourCard resolves `fallback: 'estate'`), which
   // is unconditionally present on the desk.
+  /** How current is the `iac/` tree this estate was read from? (ds-1vn)
+   *
+   *  Three outcomes, and `'fresh'` is the ONLY one that renders nothing:
+   *
+   *   - `'stale'`      — the snapshot is a different `iac/` tree than the
+   *                      running deployment holds, so a resource declared
+   *                      since then can still be listed as undeclared.
+   *   - `'unverified'` — one side reported no hash. This is prod's state until
+   *                      infra-reader is redeployed, and the easy mistake is
+   *                      to let it render as silence.
+   *   - `'fresh'`      — the two trees are byte-identical.
+   *
+   *  Written as an explicit `=== true` / `=== false`, not `?? true`-style
+   *  coercion: `undefined` (a coordinator predating the field) and `null` (a
+   *  check that could not run) are BOTH unverified, and only a literal `false`
+   *  earns silence. A truthiness test would quietly promote `undefined` into
+   *  the silent branch — the exact conflation the field exists to prevent.
+   *
+   *  NO `graph.degraded` term here, on purpose, and the same reasoning the
+   *  `unmatched` derived above records: the notices render only inside the
+   *  loaded branch, so a degraded graph never reads this. A `degraded` arm
+   *  would sit un-exercised — deleting it reddens nothing, verified by
+   *  injection. The degraded BEHAVIOUR is pinned where it is real, by a test
+   *  asserting no notice renders on a degraded graph. The `graph === null`
+   *  term stays: that one is the type system's, not a second arm. */
+  const snapshotFreshness = $derived.by((): 'stale' | 'unverified' | 'fresh' => {
+    if (graph === null) return 'fresh';
+    if (graph.iac_snapshot_stale === true) return 'stale';
+    // A RETAINED graph's `false` is not this cycle's answer. `graphStale` is
+    // checked AFTER `true` on purpose: a positive mismatch already observed
+    // does not stop being true because a later refresh failed, and softening
+    // it to "unverified" would retire a warning on no evidence.
+    if (graph.iac_snapshot_stale === false) return graphStale ? 'unverified' : 'fresh';
+    return 'unverified';
+  });
+
   // No adopt target while the approvals lane is unreliable — the target is
   // chosen from rows whose `pendingPr === null`, which is precisely the
   // unsupported absence. Nulling it here also clears the tour's spotlight.
-  const adoptTarget = $derived(approvalsStale ? null : firstAdoptableRow(model));
+  //
+  // Nulled on a STALE snapshot too (ds-1vn, Codex review): the target is chosen
+  // from `row.adoptable`, whose Adopt button that state replaces with a mute
+  // chip — so without this the tour would spotlight a row and point at a
+  // control that is no longer there.
+  const adoptTarget = $derived(
+    approvalsStale || snapshotFreshness === 'stale' ? null : firstAdoptableRow(model),
+  );
 
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
@@ -109,38 +160,6 @@
   // second arm.
   const unmatched = $derived(graph === null ? null : (graph.unmatched_declarations ?? null));
   const unmatchedEntries = $derived(unmatched?.entries ?? []);
-
-  /** How current is the `iac/` tree this estate was read from? (ds-1vn)
-   *
-   *  Three outcomes, and `'fresh'` is the ONLY one that renders nothing:
-   *
-   *   - `'stale'`      — the snapshot is a different `iac/` tree than the
-   *                      running deployment holds, so a resource declared
-   *                      since then can still be listed as undeclared.
-   *   - `'unverified'` — one side reported no hash. This is prod's state until
-   *                      infra-reader is redeployed, and the easy mistake is
-   *                      to let it render as silence.
-   *   - `'fresh'`      — the two trees are byte-identical.
-   *
-   *  Written as an explicit `=== true` / `=== false`, not `?? true`-style
-   *  coercion: `undefined` (a coordinator predating the field) and `null` (a
-   *  check that could not run) are BOTH unverified, and only a literal `false`
-   *  earns silence. A truthiness test would quietly promote `undefined` into
-   *  the silent branch — the exact conflation the field exists to prevent.
-   *
-   *  NO `graph.degraded` term here, on purpose, and the same reasoning the
-   *  `unmatched` derived above records: the notices render only inside the
-   *  loaded branch, so a degraded graph never reads this. A `degraded` arm
-   *  would sit un-exercised — deleting it reddens nothing, verified by
-   *  injection. The degraded BEHAVIOUR is pinned where it is real, by a test
-   *  asserting no notice renders on a degraded graph. The `graph === null`
-   *  term stays: that one is the type system's, not a second arm. */
-  const snapshotFreshness = $derived.by((): 'stale' | 'unverified' | 'fresh' => {
-    if (graph === null) return 'fresh';
-    if (graph.iac_snapshot_stale === true) return 'stale';
-    if (graph.iac_snapshot_stale === false) return 'fresh';
-    return 'unverified';
-  });
 
   function clickInvestigate(d: UnmatchedDeclaration): void {
     // `graph` is non-null wherever a row can be clicked (the rows only render
@@ -204,6 +223,25 @@
             {#if row.pendingPr !== null}
               <span class="estate-view__chip estate-view__chip--q" data-testid="estate-pr-chip">
                 {$t('desk.estate.prPending', { pr: row.pendingPr })}
+              </span>
+            {:else if row.adoptable && snapshotFreshness === 'stale'}
+              <!-- ds-1vn, Codex review. The SECOND absence claim on this row,
+                   and the one that caused the incident: "not declared in IaC"
+                   is read off a snapshot we have just proved is a different
+                   `iac/` tree than this deployment holds. adopt-probe-topic was
+                   declared and merged on 07-31 and still showed an Adopt button,
+                   because the worker was baked on 07-29. Same reasoning as the
+                   approvalsStale arm below — an unsupported absence must not
+                   drive an ACTION — so the button goes and the reason stays.
+
+                   NOT suppressed on `unverified`. That is absence of evidence,
+                   not evidence of a mismatch, and it is the state every build
+                   before this one shipped in: disabling adoption there would
+                   let a check that cannot see its subject remove a working
+                   control, on every request, until a worker redeploy. The
+                   notice above already says currency is unconfirmed. -->
+              <span class="estate-view__chip estate-view__chip--mute" data-testid="estate-adopt-stale">
+                {$t('desk.estate.adoptSnapshotStale')}
               </span>
             {:else if row.adoptable && approvalsStale}
               <!-- The Adopt button is an ABSENCE claim: it appears exactly when

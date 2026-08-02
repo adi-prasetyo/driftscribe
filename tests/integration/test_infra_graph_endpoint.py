@@ -16,6 +16,8 @@ mapping without standing up the infra_reader HTTP stub.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -911,8 +913,11 @@ class TestInfraGraphTokenGuard:
 #
 # These are the wiring tests. `build_graph`'s own comparison logic is pinned in
 # tests/unit/test_infra_graph.py; what can only be verified HERE is that the
-# route actually passes its local hash in — on every path, including both cache
-# layers, which each call `build_graph` separately and could each be missed.
+# route actually passes its local hash in. There are FOUR `build_graph` call
+# sites in `get_infra_graph` — live fetch, L1 hit, L2 hit, and the worker-error
+# path — and each is its own line that a wiring change could miss, so each gets
+# its own test. (An earlier draft of this block claimed both cache layers and
+# exercised only L1; removing the argument from the L2 read reddened nothing.)
 # --------------------------------------------------------------------------- #
 
 _TREE_A = "a" * 64
@@ -1010,3 +1015,58 @@ def test_an_unhashable_iac_tree_degrades_to_unknown_instead_of_raising(monkeypat
         assert body["iac_snapshot_reason"] == "local_hash_unavailable"
     finally:
         m._reset_local_iac_tree_hash_for_tests()
+
+
+def test_the_l2_cache_path_still_checks_freshness(monkeypatch):
+    """The L2 read is a SEPARATE `build_graph` call from the L1 one, and it is
+    the one that serves a freshly-recycled instance — precisely the request a
+    cold-started coordinator answers after a deploy changed its `iac/`. Dropping
+    `local_iac_tree_hash` from that line alone would silence the disclosure for
+    every cold start and pass every other test in this file."""
+    _mock_call(monkeypatch, returns={**_inventory(), "iac_tree_hash": _TREE_A})
+    _set_local_hash(monkeypatch, _TREE_B)
+    _set_ttl(monkeypatch, "0")  # L1 disabled, so the second request must use L2
+    _set_l2_ttl(monkeypatch, "900")
+    _inject_l2()
+    client = TestClient(app)
+    client.get("/infra/graph")
+    second = client.get("/infra/graph")
+    assert second.headers.get("x-infra-graph-cache") == "hit-l2"
+    assert second.json()["iac_snapshot_stale"] is True
+    assert second.json()["iac_snapshot_reason"] == "tree_hash_mismatch"
+
+
+def test_an_l2_doc_written_before_the_field_existed_reads_as_unverified(monkeypatch):
+    """The whole basis for NOT bumping `_INFRA_GRAPH_L2_FORMAT_VERSION`. A v4
+    doc cached by a pre-change worker carries no `iac_tree_hash`; it must reach
+    the operator as unverified rather than silently fresh, and it must do so
+    WITHOUT invalidating every cached inventory and forcing the fleet onto the
+    ~30s CAI path (#244's v3->v4 lesson)."""
+    _set_ttl(monkeypatch, "0")
+    _set_l2_ttl(monkeypatch, "900")
+    store = _inject_l2()
+    store.set(
+        {
+            "format_version": _INFRA_GRAPH_L2_FORMAT_VERSION,
+            "written_at": time.time(),
+            "payload": _inventory(),  # no iac_tree_hash — the pre-change shape
+        }
+    )
+    _set_local_hash(monkeypatch, _TREE_A)
+    # No worker mock: a live fetch would raise, proving the answer came from L2.
+    resp = TestClient(app).get("/infra/graph")
+    assert resp.headers.get("x-infra-graph-cache") == "hit-l2"
+    body = resp.json()
+    assert body["iac_snapshot_stale"] is None
+    assert body["iac_snapshot_reason"] == "worker_hash_unavailable"
+    assert body["degraded"] is False  # the cached estate is still served
+
+
+def test_the_worker_error_path_still_reports_its_local_hash_state(monkeypatch):
+    """The fourth call site. Degraded, so freshness is unknowable — but the keys
+    must be present and must not claim fresh."""
+    _mock_call(monkeypatch, raises=worker_client.WorkerClientError(503, "down", "infra_reader"))
+    _set_local_hash(monkeypatch, _TREE_A)
+    body = TestClient(app).get("/infra/graph").json()
+    assert body["iac_snapshot_stale"] is None
+    assert body["iac_snapshot_reason"] is None

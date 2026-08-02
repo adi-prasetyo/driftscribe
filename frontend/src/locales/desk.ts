@@ -253,7 +253,7 @@ export const desk = {
     // coordinator's. If both were equally behind main it would report a match,
     // so claiming currency against main would overstate the evidence.
     'desk.estate.snapshotStale':
-      'This list was read from an older iac/ snapshot than the running deployment. A resource declared since then may still appear below as not declared.',
+      'This list was read from a different iac/ snapshot than the running deployment, so what it calls declared may be out of date. Adoption is paused on these rows until the two agree.',
     // Deliberately not silence. "We could not check" and "it is current" are
     // different facts, and rendering them the same way is the defect ds-1vn
     // exists to remove.
@@ -273,6 +273,10 @@ export const desk = {
     // unreliable this cycle. Offering Adopt there would claim no adoption PR
     // exists, which is exactly what we failed to establish (Codex review #258).
     'desk.estate.adoptUnavailable': 'adoption status unknown',
+    // ds-1vn. Distinct from adoptUnavailable above: that one means "we could
+    // not ask GitHub whether a PR exists"; this one means "the declared set
+    // this row's drift status came from is not this deployment's".
+    'desk.estate.adoptSnapshotStale': 'paused · snapshot out of step',
     'desk.estate.prPending': 'PR #{pr} awaiting review',
     'desk.estate.driftMore': '…{n} more drift',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
@@ -402,7 +406,7 @@ export const desk = {
     'desk.estate.loading': 'インフラ情報を読み込み中…',
     'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
     'desk.estate.snapshotStale':
-      'この一覧は、稼働中のデプロイより古い iac/ スナップショットから読み取られています。その後に宣言されたリソースが、未宣言として表示される場合があります。',
+      'この一覧は、稼働中のデプロイとは異なる iac/ スナップショットから読み取られています。定義済みかどうかの判定が最新でない可能性があるため、該当の行では取り込みを一時停止しています。',
     'desk.estate.snapshotUnverified': 'この一覧の iac/ スナップショットの鮮度は確認できませんでした。',
     'desk.estate.driftGroup': 'ドリフト — IaC に未定義 {n} 件',
     'desk.estate.unmatchedGroup': 'IaC に定義済み・実環境で未検出 {n} 件',
@@ -410,6 +414,7 @@ export const desk = {
     'desk.estate.untrackedGroup': '未定義（取り込み対象外） {n} 件',
     'desk.estate.adoptButton': '取り込み PR を作成',
     'desk.estate.adoptUnavailable': '取り込み状況を確認できません',
+    'desk.estate.adoptSnapshotStale': '一時停止 ・ スナップショット不一致',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',
