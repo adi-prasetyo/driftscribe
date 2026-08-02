@@ -22,7 +22,7 @@ export const desk = {
     // ("nine") is meaningless without what it counts, so each stat button's
     // accessible name pairs the figure with its meaning explicitly rather
     // than relying on visible-text concatenation order.
-    'desk.band.managedLabel': 'Managed by IaC',
+    'desk.band.managedLabel': 'Declared in IaC',
     'desk.band.driftLabel': 'Drift detected',
     // "decision", not "approval" (ds-22k). `awaitingCount` unions two lanes: an
     // unspent rollback approval, AND an iac row whose remaining operator step is
@@ -46,7 +46,7 @@ export const desk = {
     // estate view. The 2026-07-31 merge left one page and one variant; the
     // keys keep their names because renaming them across every locale buys
     // nothing an operator can see.
-    'desk.band.managedAriaDesk': '{n} managed by IaC — view infrastructure map',
+    'desk.band.managedAriaDesk': '{n} declared in IaC — view infrastructure map',
     'desk.band.driftAriaDesk': '{n} drift detected — view infrastructure map',
     // The VISIBLE hover/focus hint on an interactive numeral (plan Task 3). The
     // numerals read as figures, so nothing said a click went anywhere. Keyed by
@@ -62,7 +62,7 @@ export const desk = {
     // (the map is where you go to find out), so their accessible name carries
     // the destination as well.
     'desk.band.managedUnknownAriaDesk':
-      'Managed by IaC: not yet known — view infrastructure map',
+      'Declared in IaC: not yet known — view infrastructure map',
     'desk.band.driftUnknownAriaDesk': 'Drift detected: not yet known — view infrastructure map',
     // LedgerStrip (Task 3.4) — the "Recent record" strip beneath the desk
     // hero. `openTitle`/`appliedTitle` cover the two states this module
@@ -259,15 +259,15 @@ export const desk = {
     // exists to remove.
     'desk.estate.snapshotUnverified':
       'The age of this list’s iac/ snapshot could not be verified.',
-    'desk.estate.driftGroup': 'Drift — not managed by IaC ({n})',
+    'desk.estate.driftGroup': 'Drift — not declared in IaC ({n})',
     // The drift group's mirror image: declared in IaC, no live resource. The
     // heading carries the TRUE server-side count, which can exceed the rows
     // shown (the trailer below reports the difference). Its lead line and
     // Investigate button reuse the `infra.unmatched.*` copy this group was
     // built from in InfraDiagram — same words, new home (ds-zld).
     'desk.estate.unmatchedGroup': 'Declared in IaC, not found live ({n})',
-    'desk.estate.managedGroup': 'Managed by IaC ({n})',
-    'desk.estate.untrackedGroup': 'Not managed, not adoptable ({n})',
+    'desk.estate.managedGroup': 'Declared in IaC ({n})',
+    'desk.estate.untrackedGroup': 'Not declared, not adoptable ({n})',
     'desk.estate.adoptButton': 'Open an adoption PR',
     // Shown in the Adopt button's place when the pending-approvals lane was
     // unreliable this cycle. Offering Adopt there would claim no adoption PR
@@ -284,8 +284,8 @@ export const desk = {
     'desk.estate.otherResources.one': "{other} more resources in 1 type DriftScribe doesn't manage",
     'desk.estate.otherResources.other':
       "{other} more resources across {types} types DriftScribe doesn't manage",
-    'desk.estate.legendManaged': 'Managed by IaC',
-    'desk.estate.legendDrift': 'Not managed by IaC · drift',
+    'desk.estate.legendManaged': 'Declared in IaC',
+    'desk.estate.legendDrift': 'Not declared in IaC · drift',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -294,9 +294,9 @@ export const desk = {
     'desk.seal.ariaLabel': '承認済み',
     // Visible labels straight from the mockup (docs/plans/2026-07-28-
     // composite-mockup.html "instrument band"). Aria variants prefix the
-    // count so a screen reader announces "9件、IaC管理下" rather than a bare
+    // count so a screen reader announces "9件、IaC に定義済み" rather than a bare
     // label with no number.
-    'desk.band.managedLabel': 'IaC 管理下',
+    'desk.band.managedLabel': 'IaC に定義済み',
     'desk.band.driftLabel': 'ドリフト検出',
     // 「承認」ではなく「判断」（ds-22k）。awaitingCount はロールバックの未使用承認と、
     // マージ後の適用を待つ IaC 行の両方を数える。後者に必要なのは承認ではなく適用で、
@@ -307,11 +307,11 @@ export const desk = {
     'desk.band.awaitingAria': '{n}件、あなたの判断待ち',
     // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
     // `Desk` サフィックスは名残：2026-07-31 の統合前は文脈を表していた。
-    'desk.band.managedAriaDesk': '{n}件、IaC 管理下 — インフラを見る',
+    'desk.band.managedAriaDesk': '{n}件、IaC に定義済み — インフラを見る',
     'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
     'desk.band.statHintEstate': 'インフラを見る →',
     'desk.band.awaitingUnknownAria': 'あなたの判断待ち：未取得',
-    'desk.band.managedUnknownAriaDesk': 'IaC 管理下：未取得 — インフラを見る',
+    'desk.band.managedUnknownAriaDesk': 'IaC に定義済み：未取得 — インフラを見る',
     'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',
     'desk.ledger.heading': '最近の記録',
     // 記録欄は体言止め（「ロールバック」「エスカレーション」と同じ調子）。
@@ -404,10 +404,10 @@ export const desk = {
     'desk.estate.snapshotStale':
       'この一覧は、稼働中のデプロイより古い iac/ スナップショットから読み取られています。その後に宣言されたリソースが、未宣言として表示される場合があります。',
     'desk.estate.snapshotUnverified': 'この一覧の iac/ スナップショットの鮮度は確認できませんでした。',
-    'desk.estate.driftGroup': 'ドリフト — IaC 未管理 {n} 件',
+    'desk.estate.driftGroup': 'ドリフト — IaC に未定義 {n} 件',
     'desk.estate.unmatchedGroup': 'IaC に定義済み・実環境で未検出 {n} 件',
-    'desk.estate.managedGroup': '管理下 — {n} 件',
-    'desk.estate.untrackedGroup': '未管理（取り込み対象外） {n} 件',
+    'desk.estate.managedGroup': 'IaC に定義済み — {n} 件',
+    'desk.estate.untrackedGroup': '未定義（取り込み対象外） {n} 件',
     'desk.estate.adoptButton': '取り込み PR を作成',
     'desk.estate.adoptUnavailable': '取り込み状況を確認できません',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
@@ -418,7 +418,7 @@ export const desk = {
     'desk.estate.otherResources.one': '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
     'desk.estate.otherResources.other':
       '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
-    'desk.estate.legendManaged': 'IaC 管理下',
-    'desk.estate.legendDrift': 'IaC 未管理 ・ ドリフト',
+    'desk.estate.legendManaged': 'IaC に定義済み',
+    'desk.estate.legendDrift': 'IaC に未定義 ・ ドリフト',
   },
 };

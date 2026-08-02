@@ -54,22 +54,22 @@ export const tour = {
     'tour.estate.zeroWithOther':
       '{total} resources indexed, none are in resource types DriftScribe ' +
       'supports. They are types like Cloud Run revisions and container images ' +
-      'it does not manage. The Managed by IaC figure at the top of this page ' +
+      'it does not manage. The Declared in IaC figure at the top of this page ' +
       'tracks your migration.',
     'tour.estate.zeroAlone':
       '{total} resources indexed, none are in resource types DriftScribe ' +
-      'supports yet. The Managed by IaC figure at the top of this page tracks ' +
+      'supports yet. The Declared in IaC figure at the top of this page tracks ' +
       'your migration.',
     'tour.estate.inScope':
       '{total} resources indexed. In the resource types DriftScribe ' +
-      'supports, {managed} of {resources} are under IaC management ({pct}%), ' +
-      '{drift} not yet. The Managed by IaC figure at the top of this page ' +
+      'supports, {managed} of {resources} are declared in IaC ({pct}%), ' +
+      '{drift} not yet. The Declared in IaC figure at the top of this page ' +
       'tracks your migration.',
     'tour.estate.inScopeWithOther':
       '{total} resources indexed. In the resource types DriftScribe ' +
-      'supports, {managed} of {resources} are under IaC management ({pct}%), ' +
+      'supports, {managed} of {resources} are declared in IaC ({pct}%), ' +
       '{drift} not yet. The other {other} are types it does not manage, like ' +
-      'Cloud Run revisions and container images. The Managed by IaC figure at ' +
+      'Cloud Run revisions and container images. The Declared in IaC figure at ' +
       'the top of this page tracks your migration.',
 
     // Step 3 — controls (controlsLine). Honesty T2: the always-gated claim is
@@ -123,14 +123,14 @@ export const tour = {
       'point you at something that may be handled already, come back to this ' +
       'step in a moment.',
     'tour.adopt.allManaged':
-      'Everything in your estate is already under IaC management, so ' +
+      'Everything in your estate is already declared in IaC, so ' +
       'there is nothing left to adopt. You are ahead of this tour.',
     'tour.adopt.allPending':
       'Everything the tour could suggest adopting next already has an ' +
       'adoption PR open and waiting for review. Open the existing PR rather ' +
       'than starting a second adoption of the same resource.',
     'tour.adopt.systemManagedOnly':
-      'The unmanaged resources the agent could otherwise adopt are ' +
+      'The undeclared resources the agent could otherwise adopt are ' +
       'system-managed infrastructure: DriftScribe control-plane services ' +
       'and IaC state/artifact buckets, or resources a Google service ' +
       'auto-creates, like Cloud Build buckets and Eventarc trigger ' +
@@ -138,11 +138,11 @@ export const tour = {
       'changing these, adoption included. This section shows everything that ' +
       'is there.',
     'tour.adopt.noNamedTarget':
-      'There are unmanaged resources the agent could adopt, but none ' +
+      'There are undeclared resources the agent could adopt, but none ' +
       'has a named adopt target the tour can prefill. This section shows ' +
       'what the live graph can show.',
     'tour.adopt.notAdoptableTypes':
-      'Your remaining unmanaged resources are not adoptable types. ' +
+      'Your remaining undeclared resources are not adoptable types. ' +
       'This section shows what is there, and you can ask about any of them ' +
       'in chat.',
 
@@ -197,7 +197,7 @@ export const tour = {
     // ハイライトするステップなので、同じページにないものを指し示さないこと。
     // 「下のインフラパネル」はチャットの InfraDiagram、「下の IaC 管理率メーター」は
     // その中の CoverageMeter を指していた。デスク側で同じ数値を担うのは
-    // インストゥルメントバンドの「IaC 管理下」で、算出元も同一（scopeTotals）。
+    // インストゥルメントバンドの「IaC に定義済み」で、算出元も同一（scopeTotals）。
     'tour.estate.loading':
       '保有リソースの情報を読み込んでいます。ハイライトされているセクションに' +
       'まもなく表示されます。',
@@ -208,23 +208,23 @@ export const tour = {
     'tour.estate.zeroWithOther':
       '{total}件のリソースがインデックスされていますが、いずれも DriftScribe が' +
       '対応するリソースタイプではありません。Cloud Run のリビジョンやコンテナ' +
-      'イメージなど、管理対象外の種類です。ページ上部の「IaC 管理下」の数値が' +
+      'イメージなど、管理対象外の種類です。ページ上部の「IaC に定義済み」の数値が' +
       '移行の進み具合を示します。',
     'tour.estate.zeroAlone':
       '{total}件のリソースがインデックスされていますが、DriftScribe が対応する' +
-      'リソースタイプはまだありません。ページ上部の「IaC 管理下」の数値が移行の' +
+      'リソースタイプはまだありません。ページ上部の「IaC に定義済み」の数値が移行の' +
       '進み具合を示します。',
     'tour.estate.inScope':
       '{total}件のリソースがインデックスされています。DriftScribe が対応する' +
-      'リソースタイプのうち、{resources}件中{managed}件が IaC 管理下にあり' +
-      '（{pct}%）、残り{drift}件は IaC 未管理です。ページ上部の「IaC 管理下」の' +
+      'リソースタイプのうち、{resources}件中{managed}件が IaC に定義済みで' +
+      '（{pct}%）、残り{drift}件は未定義です。ページ上部の「IaC に定義済み」の' +
       '数値が移行の進み具合を示します。',
     'tour.estate.inScopeWithOther':
       '{total}件のリソースがインデックスされています。DriftScribe が対応する' +
-      'リソースタイプのうち、{resources}件中{managed}件が IaC 管理下にあり' +
-      '（{pct}%）、残り{drift}件は IaC 未管理です。残り {other}件は、Cloud Run の' +
+      'リソースタイプのうち、{resources}件中{managed}件が IaC に定義済みで' +
+      '（{pct}%）、残り{drift}件は未定義です。残り {other}件は、Cloud Run の' +
       'リビジョンやコンテナイメージなど、管理対象外の種類です。ページ上部の' +
-      '「IaC 管理下」の数値が移行の進み具合を示します。',
+      '「IaC に定義済み」の数値が移行の進み具合を示します。',
 
     'tour.controls.body':
       '画面上部の自律動作レベルが、変化を検知したときに Anchor が自律的に' +
@@ -262,25 +262,25 @@ export const tour = {
       '申請済みかを判断できません。対応済みのものをご案内してしまう可能性がある' +
       'ため、少し時間をおいてからこのステップにお戻りください。',
     'tour.adopt.allManaged':
-      '保有リソースはすべてすでに IaC 管理下にあるため、これ以上取り込むものは' +
+      '保有リソースはすべてすでに IaC に定義済みのため、これ以上取り込むものは' +
       'ありません。このツアーで案内する作業はすでに完了しています。',
     'tour.adopt.allPending':
       'ツアーが次に提案できる IaC 管理への取り込み候補は、すべてすでにレビュー待ちの取り込み ' +
       'PR が開かれています。同じリソースを二重に取り込むのではなく、すでに開いて' +
       'いる PR をご確認ください。',
     'tour.adopt.systemManagedOnly':
-      'エージェントが本来取り込めるはずの IaC 未管理リソースは、システムが管理する' +
+      'エージェントが本来取り込めるはずの IaC 未定義リソースは、システムが管理する' +
       'インフラです。DriftScribe 自身のコントロールプレーンのサービスや IaC の' +
       '状態・成果物用バケット、あるいは Cloud Build 用バケットや Eventarc トリガー' +
       'の転送経路のように Google のサービスが自動作成するリソースが該当します。' +
       '常時有効な拒否リストが、これらの変更を IaC 管理への取り込みも含めて禁止して' +
       'います。このセクションには、そこにあるものがすべて表示されます。',
     'tour.adopt.noNamedTarget':
-      'エージェントが取り込める IaC 未管理リソースはありますが、ツアーが事前入力' +
+      'エージェントが取り込める IaC 未定義リソースはありますが、ツアーが事前入力' +
       'できる名前付きの IaC 管理への取り込み対象がありません。このセクションには、' +
       '実環境のグラフで確認できる範囲が表示されます。',
     'tour.adopt.notAdoptableTypes':
-      '残りの IaC 未管理リソースは、IaC 管理に取り込めるリソースタイプではありません。' +
+      '残りの IaC 未定義リソースは、IaC 管理に取り込めるリソースタイプではありません。' +
       'このセクションにはそこにあるものが表示されており、チャットでいつでも質問' +
       'できます。',
 

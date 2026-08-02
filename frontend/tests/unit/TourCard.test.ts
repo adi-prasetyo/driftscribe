@@ -125,7 +125,7 @@ describe('TourCard — adopt step (T4: prefill, never send)', () => {
     const { getByTestId, queryByTestId } = render(TourCard, { props: { graph: g } });
     await advanceTo(getByTestId, 3);
     expect(queryByTestId('tour-adopt-btn')).toBeNull();
-    expect(getByTestId('tour-body').textContent).toContain('already under IaC management');
+    expect(getByTestId('tour-body').textContent).toContain('already declared in IaC');
   });
 
   it('stays honest when the graph never loaded (T3)', async () => {

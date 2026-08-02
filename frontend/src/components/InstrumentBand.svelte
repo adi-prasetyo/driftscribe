@@ -201,7 +201,7 @@
     <!-- `<button>` when the stat leads somewhere, `<span role="img">` when it is
          a figure. role="img" (not "group") because it reproduces the button's
          own behaviour: the aria-label REPLACES the descendant text, so a screen
-         reader hears "9 managed by IaC" rather than the numeral and its label
+         reader hears "9 declared in IaC" rather than the numeral and its label
          read twice — and, for an unknown figure, hears the "not yet known"
          wording instead of an em dash that announces as nothing at all. -->
     {#each stats as { spec, value: n } (spec.key)}

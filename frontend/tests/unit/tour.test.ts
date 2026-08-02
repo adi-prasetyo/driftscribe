@@ -240,7 +240,7 @@ describe('step copy', () => {
     expect(line).toContain('2 of 3'); // scope managed / scope resources
     expect(line).toContain('(67%)');
     expect(line).toContain('10'); // out-of-scope count
-    expect(line).toContain('The Managed by IaC figure at the top of this page tracks your migration.');
+    expect(line).toContain('The Declared in IaC figure at the top of this page tracks your migration.');
     expect(line).not.toContain('9 of 13');
     expect(line).not.toContain('2 of 13');
   });
@@ -277,7 +277,7 @@ describe('step copy', () => {
     expect(line).toContain('10 resources indexed');
     expect(line).toContain('none are in resource types DriftScribe supports');
     expect(line).not.toContain('The other');
-    expect(line).toContain('The Managed by IaC figure at the top of this page tracks your migration.');
+    expect(line).toContain('The Declared in IaC figure at the top of this page tracks your migration.');
   });
 
   it('estateLine is honest while loading and when degraded (T3)', () => {
@@ -403,7 +403,7 @@ describe('adoptStepState', () => {
       }),
     );
     expect(allManaged.kind).toBe('none');
-    expect(allManaged.line).toContain('already under IaC management');
+    expect(allManaged.line).toContain('already declared in IaC');
 
     const leftovers = adoptStepState(
       t,
@@ -411,7 +411,7 @@ describe('adoptStepState', () => {
     );
     expect(leftovers.kind).toBe('none');
     expect(leftovers.line).toContain('not adoptable types.');
-    expect(leftovers.line).not.toContain('already under IaC management');
+    expect(leftovers.line).not.toContain('already declared in IaC');
   });
 
   it('skips control-plane nodes — the live papercut: rank-1 must not be our own bucket', () => {
