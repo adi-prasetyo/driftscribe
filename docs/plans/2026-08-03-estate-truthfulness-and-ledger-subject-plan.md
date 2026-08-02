@@ -12,6 +12,70 @@
 
 ---
 
+## Implementation record (2026-08-03, branch `fix/estate-truthfulness-ledger-subject`)
+
+Tasks 1, 3a and 2 are **built and green**. Tasks 4 and 5 remain as filed beads.
+
+| Commit | Task |
+|---|---|
+| `203c329` | Task 1 — `ds-bch`, the ledger row names its subject |
+| `fc85094` | Task 3a backend — `ds-1vn`, `build_graph` reports snapshot freshness |
+| `1354f7b` | Task 3a frontend — `ds-1vn`, the estate discloses it |
+| `3a500bf` | Task 2 — `ds-403`, "declared in IaC" |
+
+### Four deviations from v2, and why
+
+**1. The freshness comparison is worker-tree vs COORDINATOR-tree, not vs `main`.**
+v2 said "compare against main's current `iac/` tree hash" without saying how the
+serve path would obtain it. It cannot cheaply: `Dockerfile.agent` does not bundle
+`iac/`, `.gcloudignore` excludes `.git`, and reading `main` at request time puts a
+GitHub call (and its rate limits, latency and outage mode) on the landing page.
+
+So both sides hash their own baked `iac/` with the canonical `iac_tree_hash()`, and
+`Dockerfile.agent` gains `COPY iac/`. What that proves is narrower than "current with
+main", and the copy says so: *"than the running deployment"*. Since the coordinator
+ships from `main` HEAD on every merge and the worker ships rarely, a mismatch means
+the worker is behind in practice — but two equally-behind sides report a match, and
+overstating that would be the same class of error this whole plan is about.
+
+Hashing a tree the process physically holds also beats a build-time stamp, which can
+drift from the content it claims to describe.
+
+**2. No global `provisional` flag.** v2's Task 3 test asserted `g["provisional"] is
+True` whenever freshness was unverifiable. Unverifiable is prod's *normal* state until
+infra-reader is redeployed, so that flag would hedge every number on the page
+indefinitely — and a permanent hedge stops being read. The substance of the
+`rollback_deploy_config_pr259` lesson is that "could not check" must not render as
+"checked and fine"; that is satisfied by a distinct, visible, tested `unverified`
+notice. Shipped that instead.
+
+**3. No L2 cache format bump.** The L2 doc caches the WORKER's inventory and
+`build_graph` re-runs on read, so a pre-change cached doc simply lacks
+`iac_tree_hash` and reports unverified — correct, and without invalidating every
+cached inventory and forcing the fleet onto the ~30s CAI path (#244's v3→v4 lesson).
+
+**4. Task 2 changed no logic at all.** The diff is locale catalogs plus one comment.
+`estate.test.ts:148` already pins that `managed` rows are never adoptable, so the
+`infra_graph.ts:772-797` hazard v2 flagged is structurally out of reach.
+
+### What the work found that the plan did not anticipate
+
+- **A `$derived` guard that caught nothing.** The `graph.degraded` arm of
+  `snapshotFreshness` reddened no test when deleted — the template already gates it.
+  Removed, following the convention `EstateView`'s `unmatched` derived already
+  records for the identical situation. The degraded *behaviour* stays pinned by a
+  test, where it is real.
+- **The bug appeared in the fixture helper first.** The visual rig's `graphBody`
+  wrote `opts.snapshotStale ?? false`, and `??` treats `null` as nullish — collapsing
+  a deliberate "could not verify" into "verified fresh". Exactly the conflation
+  `ds-1vn` exists to stop, one layer below the code it was written to test.
+- **Live data confirmed both of Task 1's arms.** Prod `/decisions` holds seven
+  rollbacks: the applied one carries `FEATURE_NEW_CHECKOUT` at `match` beside
+  `PAYMENT_MODE` (so the filter is exercised), and a 2026-07-29 doc has a
+  `target_revision` and no diffs at all (so the fallback is too).
+
+---
+
 ## Background: the incident
 
 On 2026-08-02 an operator read the live desk ledger and concluded PR #168 had been applied. It had not.
