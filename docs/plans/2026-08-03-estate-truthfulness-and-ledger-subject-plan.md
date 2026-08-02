@@ -1,0 +1,257 @@
+# Estate Truthfulness + Ledger Subject Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** Stop three surfaces from making claims they cannot support — a ledger row that says "applied" without naming what, an estate that calls a resource "IaC-managed" when it has only proved "declared", and a snapshot that goes stale in silence.
+
+**Architecture:** Task 1 is a self-contained frontend fix. Tasks 2–3 change what `/infra/graph` may assert. The central decision, arrived at after review: **do not try to prove apply-completion. Weaken the claim to what the evidence supports.** That is cheaper, safer, and it dissolves the dependency the first draft of this plan was built around.
+
+**Tech Stack:** Svelte 5 runes + vitest/jsdom, Python 3.12 + pytest, Playwright, OpenTofu, Cloud Run.
+
+> **Revision history.** v1 of this plan proposed deriving "not applied" from decision docs and reclassifying resources per-resource via a GitHub source join. Codex review (thread `019fc377`) refuted both, with citations that verified. v2 is a materially different plan. The rejected approaches are recorded in "Approaches rejected" at the bottom — they look reasonable, and the next person will otherwise re-propose them.
+
+---
+
+## Background: the incident
+
+On 2026-08-02 an operator read the live desk ledger and concluded PR #168 had been applied. It had not.
+
+```
+00:31  ◍  Approved · awaiting apply
+          Adopt Pub/Sub topic adopt-probe-topic into IaC management (zero-change import)
+11:18  ✓  Approved · applied
+          (no subject)
+```
+
+The 11:18 row is a **rollback** of `PAYMENT_MODE` — a different decision. It renders with no subject, so the eye carries the subject down from the row above.
+
+| Fact | Value | Source |
+|---|---|---|
+| PR #168 merged | `2026-07-31T15:31:05Z` | `gh pr view 168` |
+| `.tf` on main | `3de3123`, `iac/adopt_topic_adopt_probe_topic.tf` | `git log` |
+| Decision status | `waiting_for_rebake` + `merged` | `GET /decisions` |
+| **Tofu state last written** | **`2026-07-08T08:58:01Z`** | `gsutil ls -l gs://…-tofu-state/prod/` |
+| infra-reader snapshot | `IAC_SNAPSHOT_SHA=f72ef298…` (07-29) | `gcloud run services describe` |
+
+Beads: `ds-bch`, `ds-403`, `ds-k46`.
+
+---
+
+## The decision that shapes this plan
+
+The estate labels resources **"IaC 管理下" / "IaC-managed"**. It computes that from HCL declarations only (`driftscribe_lib/infra_inventory.py:1-6`, via `iac_hcl.DeclaredIdentity`); it never reads tofu state.
+
+**Proving actual state membership is not available cheaply, and decision docs cannot substitute for it.** A resource can be in state with no `applied` decision:
+
+- The apply worker finishes `tofu apply` (`workers/tofu_apply/main.py:691-694`), writes its audit afterward non-transactionally (`:744-757`), and the coordinator writes the `applied` decision later still (`agent/main.py:7586-7591`). A failed Firestore write leaves state changed and the newest decision reading `waiting_for_rebake`.
+- The recovery runbook documents this outright. `docs/runbooks/iac-apply-failure-recovery.md` line ~317: *"exists | exists | likely a **complete-but-unrecorded apply**"*. It also documents state-only applies (`:145-152`) and manual `tofu import` (`:313-318`) as supported operator procedures.
+- `failed_state_suspect` and `ambiguous` explicitly mean membership is *uncertain* (`workers/tofu_apply/main.py:713-737`).
+
+So decision docs support **"last recorded as awaiting apply."** They cannot support **"definitely not in state,"** and — this is the part the first draft missed — they cannot make the *remaining* resources "definitely managed" either.
+
+**Therefore: fix the label, not the inference.** The estate says "declared in IaC"; that is exactly what it proves. State-derived membership stays available as a later, larger piece of work (see Task 5).
+
+This dissolves the `ds-403` → `ds-k46` block. Once the label is honest, refreshing the snapshot makes a *true* claim more current instead of making a *false* claim more confident.
+
+---
+
+## Task 1: `ds-bch` — a rollback row must name its subject
+
+**Files:**
+- Modify: `frontend/src/components/LedgerStrip.svelte:173-178`
+- Test: `frontend/tests/unit/LedgerStrip.test.ts` (fixture factory at `:19`)
+
+`subtitleFor()` only reads `pr_title`/`pr_number`. A rollback carries neither — but it does carry `diffs`, each with `name` + `contract_status`, plus `target_revision`.
+
+**⚠️ Naming every diff would be a new lie.** The live payload carries `FEATURE_NEW_CHECKOUT` at `contract_status: "match"` — context, not drift. Only `PAYMENT_MODE` (`present_disallow_manual`) is the subject.
+
+**Rule:** exclude the two known non-violations (`match`, `present_allow_manual`); name everything else *including an unrecognised status*. Positive exclusion set, never `!isViolation` — unknown must fail toward naming (rule (i), `desk_awaiting_rebake_and_ledger_dedup.md`).
+
+Review corrections folded in:
+- **Gate to rollback rows.** Do not derive a subject from `diffs` on arbitrary actions.
+- **Deduplicate names.** Identical duplicate diffs are permitted by `agent/validator.py:275-286`.
+- **Clamp for overflow.** A long variable name must not break the strip.
+- **The subtitle means "this decision concerns X", not "X was proven to violate policy."** That is what makes naming an unknown status safe.
+
+**Step 1: Write the failing tests**
+
+```ts
+it('names the drifted variable on an applied rollback row', () => { /* expect 'PAYMENT_MODE' */ });
+it('does NOT name a diff whose contract_status is match', () => { /* expect not 'FEATURE_NEW_CHECKOUT' */ });
+it('names a diff with an unrecognised contract_status', () => { /* rule (i) */ });
+it('deduplicates repeated diff names', () => { /* two identical diffs -> one name */ });
+it('falls back to target_revision when a rollback has no violating diffs', () => {});
+it('does not derive a diff subject for a non-rollback action', () => {});
+
+// The honest invariant. NOT "never undefined" — a decision with no identity
+// at all must still render no <small>, because a placeholder would be worse.
+it('renders a subject whenever the decision carries identity', () => {
+  for (const d of [rollbackWithDiffs(), rollbackNoDiffsWithRevision(), iacApplied()]) {
+    expect(subtitleOf(d)).toBeTruthy();
+  }
+});
+it('renders no <small> at all when no identity exists', () => {
+  expect(rowFor(bareDecision()).querySelector('.ledger-strip__title small')).toBeNull();
+});
+```
+
+> v1 of this plan asserted "never renders a terminal applied row with no subject" while the implementation could still return `undefined`. The test and the code disagreed. The pair above is what is actually achievable and true.
+
+**Step 2:** `cd frontend && npx vitest run tests/unit/LedgerStrip.test.ts` → FAIL.
+
+**Step 3: Implement**
+
+```ts
+/** contract_status values that are NOT a violation. A positive exclusion set,
+ *  not `!isViolation`: an unrecognised status must fall through to being NAMED.
+ *  The subtitle asserts "this decision concerns X", never "X violated policy",
+ *  which is what makes naming an unknown safe. */
+const NON_VIOLATION_STATUS: ReadonlySet<string> = new Set(['match', 'present_allow_manual']);
+
+function rollbackSubject(d: Decision): string | undefined {
+  if (d.action !== 'rollback' || !Array.isArray(d.diffs)) return undefined;
+  const seen = new Set<string>();
+  for (const raw of d.diffs as unknown[]) {
+    if (!raw || typeof raw !== 'object') continue;
+    const o = raw as Partial<EnvDiff>;
+    if (typeof o.name !== 'string' || o.name === '') continue;
+    const status = typeof o.contract_status === 'string' ? o.contract_status : '';
+    if (NON_VIOLATION_STATUS.has(status)) continue;
+    seen.add(o.name);
+  }
+  return seen.size > 0 ? clamp([...seen].join(', ')) : undefined;
+}
+```
+
+Then in `subtitleFor`, after the PR fields: `rollbackSubject(d)`, then `d.target_revision`, then `undefined`.
+
+**Do NOT reuse `diffRows()`** (`lib/diff.ts`) — it clamps names for a table and formats values through `displayDiffValue`. Different filter, different truncation contract.
+
+**Step 4:** tests green, then **delete the `NON_VIOLATION_STATUS.has(status)` line** — the `match` test must redden, and only it. Restore from a scratchpad copy (never `git checkout` a file holding uncommitted work).
+
+**Step 5: Commit**
+
+```bash
+git add frontend/src/components/LedgerStrip.svelte frontend/tests/unit/LedgerStrip.test.ts
+git commit -m "fix(ui): an applied ledger row now names what it applied (ds-bch)"
+```
+
+*(No locale change: the subtitle is data, not copy. v1 listed `locales/desk.ts` and added no strings.)*
+
+---
+
+## Task 2: `ds-403` — say "declared", because that is what we proved
+
+**Files:**
+- Modify: `frontend/src/locales/infra.ts` + `desk.ts` (EN **and** JA — parity enforced by `locales.test.ts`)
+- Modify: `frontend/src/components/EstateView.svelte`, `InfraDiagram.svelte` (group headings, legend)
+- Test: `frontend/tests/unit/`, `frontend/tests/smoke/`
+
+Rename the operator-facing claim from "IaC-managed" to "declared in IaC" across the instrument band, estate group headings, legend, and card copy. The internal `managed` boolean can keep its name; this is a copy change, not a data-model change.
+
+**⚠️ Do NOT flip `managed` to `false` for anything.** `frontend/src/lib/infra_graph.ts:772-797` routes any non-`managed`, non-`control_plane` node into an **adoptable** row with an Adopt button. Demoting a declared resource would invite the operator to open a *second* adopt PR for something already declared. This is the single most dangerous thing in the vicinity of this work.
+
+**Grep the vocabulary, not the identifier** (rule (iii)). "managed", "管理下", "under IaC management" appear across locales, the legend, the tour, and the card.
+
+**Step 5: Commit**
+
+```bash
+git commit -m "fix(infra): the estate says 'declared in IaC', which is what it proves (ds-403)"
+```
+
+---
+
+## Task 3: `ds-k46` — disclose a stale snapshot, using the right identity
+
+**⚠️ Two corrections from review, both load-bearing.**
+
+**3a — Compare the `iac/` TREE HASH, not the commit SHA.** A docs-only commit moves main HEAD without touching `iac/`; comparing commit SHAs would report "stale" forever, and an `iac/`-path deploy trigger could never clear it. The canonical machinery already exists: `driftscribe_lib/iac_tree.py:94 iac_tree_hash()`, and the apply worker uses the same concept at `workers/tofu_apply/main.py:442-451`. Stamp an infra-reader IaC tree hash; compare against main's current `iac/` tree hash.
+
+**3b — The caveat channel will not show this.** `InfraDiagram.svelte:887-889` renders `graph.caveat` only `{#if graph && !degraded}`, and `EstateView.svelte:138-140` replaces the entire estate with a generic degraded message. So reusing `degraded`/`caveat` either hides the disclosure or hides the whole estate. **Staleness needs its own visible state** — the estate still renders, with a specific "this is a snapshot from X, main has moved" line. Add a tested staleness reason, not just a JSON field.
+
+**Step 1: Failing tests**
+
+```python
+def test_graph_discloses_a_stale_iac_snapshot():
+    g = build_graph({**INV, "iac_tree_hash": "a" * 64}, main_tree_hash="b" * 64)
+    assert g["iac_snapshot_stale"] is True
+    assert g["iac_snapshot_reason"]           # a shown reason, not a silent flag
+
+def test_not_stale_when_tree_hashes_match():
+    g = build_graph({**INV, "iac_tree_hash": "a" * 64}, main_tree_hash="a" * 64)
+    assert g["iac_snapshot_stale"] is False
+
+def test_docs_only_commit_does_not_read_as_stale():
+    """main HEAD moved; iac/ did not. The whole reason for a tree hash."""
+
+def test_unknown_main_hash_does_not_claim_freshness():
+    g = build_graph({**INV, "iac_tree_hash": "a" * 64}, main_tree_hash=None)
+    assert g["iac_snapshot_stale"] is None
+    assert g["provisional"] is True           # cannot verify => must not render confident numbers
+```
+
+That last assertion is the point: a check that cannot see its subject must fail, not abstain into a green claim (`rollback_deploy_config_pr259`). v1 asserted only `is None`, which would still have let the UI paint confident totals.
+
+*(Note the widths: a tree hash is 64 hex chars. v1's fixtures used `"old" * 13` — 39 characters, not even a valid commit SHA.)*
+
+**Step 5: Commit**
+
+```bash
+git commit -m "fix(infra): the estate says so when its IaC snapshot is behind main (ds-k46)"
+```
+
+---
+
+## Task 4 (follow-up bead): decision-derived pending overlay — ADVISORY ONLY
+
+Once the label is honest, a *provisional* advisory is still worth having: "1 declaration merged, apply not confirmed." Estate-level, never a per-resource reclassification.
+
+If built, it **must** treat `failed_state_suspect` and `ambiguous` as unconfirmed too, not only `waiting_for_rebake` — those states mean membership is uncertain, and folding them into "fine" is a confident false positive in the dangerous direction. Scope by newest-per-`event_key` (`event_key` hashes `head_sha`, so it names the generation — `agent/main.py:6406`); decision docs accumulate and a stale witness sits there forever (`ds-0rm`, four separate times).
+
+## Task 5 (separate design bead): real state membership + automated refresh
+
+Two pieces, each needing its own design:
+
+1. **State-derived membership.** Expose a narrow, redacted manifest from `tofu-apply`, which already holds the KMS/state permissions — only `(asset_type, canonical_identity)` plus state lineage, serial, and read time; degrade on failure. Do **not** grant `infra-reader-sa@` decrypt access.
+2. **Automated snapshot refresh.** `infra/cloudbuild.infra-reader.yaml:1-29` is operator-run with no trigger, and the GitHub WIF plan-builder identity is write-only to the artifact bucket and explicitly *not* a deploy identity (`infra/scripts/setup_iac_backend.sh:300-308,:413-417`). This needs a narrowly scoped automation identity, IAM, bootstrap changes, concurrency behaviour, failure visibility, and a deployment test. "Add a workflow trigger" is not a design.
+
+---
+
+## Order
+
+1. **Task 1** — independent, ship anytime.
+2. **Task 3a** — detection + disclosure. Suppresses a known-bad surface; do this before anything makes the snapshot fresher.
+3. **Task 2** — the rename. After this, the estate's claim is true.
+4. **Task 4** — advisory overlay, optional.
+5. **Task 5** — the real fix, separate design.
+
+`ds-k46` is currently blocked by `ds-403` in beads. That block was correct for v1's plan; under v2 the two are independent once the rename lands, and `ds-k46` should be split into 3a (detect) and 3b (refresh), with only 3b sequenced after the rename.
+
+## Gates before PR
+
+```bash
+cd frontend && npm run check && npx vitest run && npm run build
+npm run test:smoke      # ⚠️ requires `npm run build` FIRST — serves gitignored agent/static/
+npx playwright test tests/visual
+uv run ruff check .     # local pre-commit SKIPS ruff; CI's lint-test does not
+uv run pytest
+```
+
+`ui-smoke` is a **required** CI job.
+
+## After merge
+
+Deploy is operator-facing. `driftscribe_lib` is baked into both images, so a change there ships worker **and** coordinator (`unmatched_iac_declarations_pr244`). Follow the `driftscribe-deploy` skill.
+
+**Verify on prod** that `adopt-probe-topic` reads as *declared*, carries no second Adopt button, and that the estate discloses its snapshot age.
+
+## Approaches rejected (do not re-propose without reading this)
+
+- **Teach `infra-reader` to read tofu state.** State is KMS-encrypted; this means permanent decrypt access for a read-only worker rendering a landing page. Use a manifest from `tofu-apply` instead (Task 5).
+- **Derive "not applied" from decision docs and reclassify per resource.** Decision docs cannot prove state membership — see "The decision that shapes this plan". Complete-but-unrecorded applies are documented and supported.
+- **Join an unapplied PR to its declared identities via the GitHub source view.** `driftscribe_lib/github.py:940-964` returns only added/modified files (not removed/renamed), caps at 25 files / 768 KiB, and may return `content=None`; parsing the whole post-change file over-attributes every unchanged block in it; and cross-file variable defaults (`iac_hcl.py:132-142`) mean changed files alone are not sufficient to resolve identities. If precise attribution is ever needed, persist the verified plan's affected identities on the decision at `waiting_for_rebake` write time — the coordinator already holds the verified view at `agent/main.py:7351-7367`.
+- **`build_graph(inventory, unapplied: set[str])`.** Exact matching happens before aggregation (`infra_inventory.py:153-190`), only ten samples per type retain names (`:202-235`), and full unmatched identities are stripped before L1/L2 persistence (`agent/main.py:4240-4251`) — the DTO cannot repair counts afterward. A bare string set is also the wrong key; identity is at least `(asset_type, canonical_identity)`.
+
+## Not in scope
+
+Resuming the #168 apply — an operator action against live infrastructure.
