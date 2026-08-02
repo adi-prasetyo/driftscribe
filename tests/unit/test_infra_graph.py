@@ -1236,3 +1236,125 @@ class TestControlPlaneNodeFlag:
         inv["by_type"][BUCKET_TYPE]["not_in_iac"] = 0
         g = build_graph(inv)
         assert g["groups"][0]["nodes"][0]["control_plane"] is True
+
+
+# --------------------------------------------------------------------------- #
+# ds-1vn — the estate must say so when its IaC snapshot is not the one this
+# deployment was built from.
+#
+# The incident: infra-reader was baked at f72ef29 (2026-07-29); PR #168 added
+# iac/adopt_topic_adopt_probe_topic.tf on 07-31. The worker therefore parsed an
+# iac/ tree that did not contain the declaration, reported the topic as
+# not-declared, and the estate offered an Adopt button for a resource already
+# declared and merged. Nothing on the page said the view was from an older
+# snapshot.
+#
+# THE IDENTITY IS THE iac/ TREE CONTENT, NOT A COMMIT SHA. `iac_snapshot_sha`
+# already exists and is a commit SHA — useless as a freshness key, because a
+# docs-only commit moves it while iac/ is untouched. Comparing commit SHAs would
+# report "stale" forever and no iac/-scoped deploy could ever clear it. Both
+# sides hash their own baked iac/ with driftscribe_lib.iac_tree.iac_tree_hash,
+# so the comparison is content-to-content.
+# --------------------------------------------------------------------------- #
+
+HASH_A = "a" * 64
+HASH_B = "b" * 64
+
+
+class TestIacSnapshotStaleness:
+    def test_stale_when_tree_hashes_differ(self):
+        g = build_graph(
+            _inventory(iac_tree_hash=HASH_A), local_iac_tree_hash=HASH_B
+        )
+        assert g["iac_snapshot_stale"] is True
+        # A shown REASON, not a silent boolean. The caveat channel cannot carry
+        # this (InfraDiagram renders caveat only when not degraded), so the UI
+        # needs something it can branch on and translate.
+        assert g["iac_snapshot_reason"] == "tree_hash_mismatch"
+
+    def test_not_stale_when_tree_hashes_match(self):
+        g = build_graph(
+            _inventory(iac_tree_hash=HASH_A), local_iac_tree_hash=HASH_A
+        )
+        assert g["iac_snapshot_stale"] is False
+        assert g["iac_snapshot_reason"] is None
+
+    def test_a_docs_only_commit_does_not_read_as_stale(self):
+        """The whole reason the key is a tree hash and not a commit SHA.
+
+        main HEAD moved (iac_snapshot_sha differs on each side) but iac/ did
+        not, so the hashes agree and the estate stays quiet. Under a
+        commit-SHA comparison this case would be a permanent false "stale".
+        """
+        g = build_graph(
+            _inventory(iac_snapshot_sha="oldcommit", iac_tree_hash=HASH_A),
+            local_iac_tree_hash=HASH_A,
+        )
+        assert g["iac_snapshot_stale"] is False
+
+    # A check that cannot see its subject must not answer "fine". Three ways it
+    # can be blind, each with its own reason string so an operator reading the
+    # payload knows WHICH side is missing.
+    def test_unknown_when_the_worker_reports_no_tree_hash(self):
+        """The normal state until infra-reader is redeployed. Must read as
+        unverified, never as fresh — silence here is exactly the failure this
+        change exists to remove."""
+        g = build_graph(_inventory(), local_iac_tree_hash=HASH_A)
+        assert g["iac_snapshot_stale"] is None
+        assert g["iac_snapshot_reason"] == "worker_hash_unavailable"
+
+    def test_unknown_when_this_deployment_cannot_hash_its_own_tree(self):
+        g = build_graph(_inventory(iac_tree_hash=HASH_A), local_iac_tree_hash=None)
+        assert g["iac_snapshot_stale"] is None
+        assert g["iac_snapshot_reason"] == "local_hash_unavailable"
+
+    def test_unknown_when_neither_side_has_a_hash(self):
+        g = build_graph(_inventory(), local_iac_tree_hash=None)
+        assert g["iac_snapshot_stale"] is None
+        assert g["iac_snapshot_reason"] == "local_hash_unavailable"
+
+    def test_a_blank_or_non_string_hash_is_not_a_hash(self):
+        """Empty strings and junk must degrade to unknown, never compare equal
+        to each other and read as fresh. Two blanks matching would be the
+        worst outcome available: a confident false negative."""
+        for bad in ("", "   ", None, 0, [], {}):
+            g = build_graph(_inventory(iac_tree_hash=bad), local_iac_tree_hash=bad)
+            assert g["iac_snapshot_stale"] is None, bad
+            assert g["iac_snapshot_reason"] in (
+                "worker_hash_unavailable",
+                "local_hash_unavailable",
+            ), bad
+
+    def test_the_caller_may_omit_the_local_hash_entirely(self):
+        """Keyword-only with a None default, so every existing call site keeps
+        working and simply reports unverified."""
+        g = build_graph(_inventory(iac_tree_hash=HASH_A))
+        assert g["iac_snapshot_stale"] is None
+
+    def test_the_fields_are_always_present_on_a_healthy_graph(self):
+        """Unlike unmatched_declarations (omitted when empty), these are always
+        emitted: a client that cannot distinguish "not stale" from "this build
+        does not compute staleness" would render silence for both."""
+        g = build_graph(_inventory())
+        assert "iac_snapshot_stale" in g
+        assert "iac_snapshot_reason" in g
+
+    def test_a_degraded_graph_also_carries_the_fields(self):
+        """The degraded DTO is built by a different function and returns early.
+        A client reading g.iac_snapshot_stale must not get a KeyError there."""
+        g = build_graph({"error": "infra_reader_unavailable"})
+        assert g["degraded"] is True
+        assert g["iac_snapshot_stale"] is None
+        assert g["iac_snapshot_reason"] is None
+
+    def test_staleness_does_not_degrade_the_graph(self):
+        """A stale snapshot is still a usable estate — the resources are real,
+        the declared/not-declared split is what may be wrong. Degrading would
+        replace the whole panel (EstateView) and hide the very thing the
+        operator is being warned about."""
+        g = build_graph(
+            _inventory(iac_tree_hash=HASH_A), local_iac_tree_hash=HASH_B
+        )
+        assert g["degraded"] is False
+        assert g["totals"]["resources"] == 4
+        assert len(g["groups"]) == 3

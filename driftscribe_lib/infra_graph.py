@@ -387,6 +387,11 @@ def _degraded(reason: str, *, project: object = None, detail: object = None) -> 
         "project": project if isinstance(project, str) else None,
         "caveat": _DEFAULT_CAVEAT,
         "iac_snapshot_sha": None,
+        # Always present, even here: a client that reads ``iac_snapshot_stale``
+        # must never KeyError on the degraded path, and "we could not check"
+        # is the truthful answer when there is no inventory to check against.
+        "iac_snapshot_stale": None,
+        "iac_snapshot_reason": None,
         "degraded": True,
         "degraded_reason": str(reason),
         "detail": (str(detail)[:_DETAIL_CAP] if detail else None),
@@ -397,12 +402,66 @@ def _degraded(reason: str, *, project: object = None, detail: object = None) -> 
     }
 
 
-def build_graph(inventory: dict) -> dict:
+def _clean_tree_hash(value: object) -> str | None:
+    """A usable ``iac/`` tree hash, or None. Blank, whitespace-only and
+    non-string values are NOT hashes.
+
+    The blank case matters more than it looks: if two empty strings were
+    allowed to compare equal, a worker and a coordinator that both failed to
+    hash would report ``stale=False`` — a confident false negative, which is
+    the one answer worse than silence."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    return v or None
+
+
+def _iac_snapshot_freshness(
+    worker_hash: object, local_hash: object
+) -> tuple[bool | None, str | None]:
+    """Is the inventory's ``iac/`` snapshot the same tree this deployment holds?
+
+    Returns ``(stale, reason)``:
+
+    - ``(False, None)`` — the two trees are byte-identical.
+    - ``(True, "tree_hash_mismatch")`` — they differ; the estate's
+      declared-vs-not split was computed from other config than this build has.
+    - ``(None, "<side>_hash_unavailable")`` — unverifiable. Distinct from
+      "fresh" on purpose: a check that cannot see its subject must not answer
+      the question (`rollback_deploy_config_pr259`).
+
+    THE COMPARISON KEY IS TREE CONTENT, NOT A COMMIT SHA. ``iac_snapshot_sha``
+    is a commit SHA and is the wrong identity for this: a docs-only commit
+    moves it while ``iac/`` is untouched, so a SHA comparison would read
+    "stale" forever and no ``iac/``-scoped deploy could clear it.
+
+    What this proves, exactly: the infra-reader's baked ``iac/`` and this
+    coordinator's baked ``iac/`` are the same tree. Both come from the repo at
+    their respective build times, and the coordinator ships from ``main`` HEAD
+    on every deploy while the worker is deployed rarely, so in practice a
+    mismatch means the WORKER is behind. It does not prove either side matches
+    ``main`` right now — if both are equally behind, this reports no mismatch.
+    That limit is why the operator-facing copy says "differs from this
+    deployment", not "behind main". Proving currency against ``main`` needs a
+    live git read on the serve path; see the plan's Task 5."""
+    worker = _clean_tree_hash(worker_hash)
+    local = _clean_tree_hash(local_hash)
+    if local is None:
+        return None, "local_hash_unavailable"
+    if worker is None:
+        return None, "worker_hash_unavailable"
+    if worker == local:
+        return False, None
+    return True, "tree_hash_mismatch"
+
+
+def build_graph(inventory: dict, *, local_iac_tree_hash: str | None = None) -> dict:
     """Reshape an infra-reader inventory dict into the resource-map graph DTO.
 
     Returns a dict with::
 
         { generated_at, project, caveat, iac_snapshot_sha,
+          iac_snapshot_stale: bool|None, iac_snapshot_reason: str|None,
           degraded: bool, degraded_reason: str|None, detail?: str|None,
           totals: {resources, managed, drift},
           groups: [ { asset_type, label, count, managed, drift, drift_adoptable, sensitive,
@@ -544,11 +603,24 @@ def build_graph(inventory: dict) -> dict:
         ),
     }
 
+    # ds-1vn. Always emitted, never omitted-when-clean: a client that could not
+    # tell "not stale" from "this build does not compute staleness" would render
+    # silence for both, which is the state this whole change removes.
+    stale, stale_reason = _iac_snapshot_freshness(
+        inventory.get("iac_tree_hash"), local_iac_tree_hash
+    )
+
     out = {
         "generated_at": inventory.get("generated_at"),
         "project": inventory.get("project"),
         "caveat": inventory.get("freshness_caveat") or _DEFAULT_CAVEAT,
         "iac_snapshot_sha": inventory.get("iac_snapshot_sha"),
+        # NOT degraded when stale: the resources are real and the estate is
+        # still worth reading — it is the declared/not-declared split that may
+        # be wrong. Degrading would replace the whole panel (EstateView) and
+        # hide the very thing the operator is being warned about.
+        "iac_snapshot_stale": stale,
+        "iac_snapshot_reason": stale_reason,
         "degraded": False,
         "degraded_reason": None,
         "totals": totals,

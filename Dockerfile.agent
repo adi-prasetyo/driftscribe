@@ -24,6 +24,21 @@ COPY agent/ ./agent/
 COPY --from=frontend /build/agent/static ./agent/static
 COPY checker/ ./checker/
 COPY driftscribe_lib/ ./driftscribe_lib/
+# The IaC source, baked in for ONE purpose: hashing it (ds-1vn). The estate's
+# declared-vs-not split is computed by the infra-reader worker from ITS baked
+# copy, and the two are deployed independently — the worker is shipped rarely,
+# the coordinator on every merge — so the worker's copy silently falls behind.
+# Holding the tree here lets `local_iac_tree_hash()` compare content against
+# content and say so on the page when they disagree. ~80K of .tf text.
+#
+# A build-time stamp would have avoided the COPY, but a stamp can drift from
+# the content it claims to describe; a hash of a tree the process physically
+# holds cannot. The coordinator never READS these files as config, never runs
+# tofu, and never writes to them.
+#
+# `iac/.terraform/` (the ~119M provider cache) is excluded from the build
+# context by .gcloudignore, and `iac_tree_hash` prunes it regardless.
+COPY iac/ ./iac/
 RUN uv pip install --system -e .
 # Preserve the contract-relative path so DOCS_ROOT=/contract resolves
 # `demo/docs/runbook.md` to `/contract/demo/docs/runbook.md`.

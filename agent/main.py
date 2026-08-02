@@ -139,6 +139,7 @@ from driftscribe_lib.cf_access import (
 )
 from driftscribe_lib.github import PrMergeBlockedError, PrNotEligibleError
 from driftscribe_lib.iac_plan_summary import BLAST_CANNOT_TOUCH_NOTE, blast_radius_phrase
+from driftscribe_lib.iac_tree import iac_tree_hash
 from driftscribe_lib.infra_graph import (
     ADOPTABLE_ASSET_TYPES,
     build_graph,
@@ -3433,6 +3434,56 @@ _INFRA_GRAPH_L2_FORMAT_VERSION = 4  # v4: invalidate v3 docs cached before the
 # hand-edited doc) and treated as a miss rather than served stale forever.
 _INFRA_GRAPH_L2_CLOCK_SKEW_TOLERANCE_S = 60.0
 
+# ds-1vn — this deployment's own ``iac/`` tree hash, the reference the estate's
+# snapshot is checked against.
+#
+# NOT bumped into _INFRA_GRAPH_L2_FORMAT_VERSION on purpose. The L2 doc caches
+# the WORKER'S inventory, and ``build_graph`` re-runs on every read, so a v4 doc
+# written by a worker that predates ``iac_tree_hash`` simply lacks the key and
+# reports "unverified" — the correct answer, reached without invalidating every
+# cached inventory and forcing the whole fleet onto the ~30s CAI path (the
+# lesson from #244's v3→v4 bump).
+#
+# ``iac/`` is baked into the coordinator image alongside the worker's copy, so
+# both sides hash a tree they physically hold rather than trusting a build-time
+# stamp that could drift from the content it claims to describe.
+_IAC_DIR = Path(os.environ.get("IAC_DIR", str(Path(__file__).resolve().parents[1] / "iac")))
+# Sentinel-guarded, so a genuine None (unhashable tree) is cached too and we do
+# not re-walk the tree on every request just to fail again.
+_LOCAL_IAC_TREE_HASH: str | None = None
+_LOCAL_IAC_TREE_HASH_COMPUTED = False
+
+
+def local_iac_tree_hash() -> str | None:
+    """Content hash of the ``iac/`` tree baked into THIS image, or None.
+
+    Computed once and memoised: it is deploy-time-constant (nothing in the
+    coordinator writes to ``iac/``), and walking the tree on every ``/infra/graph``
+    request to re-derive a constant would be pure waste.
+
+    Never raises. ``iac_tree_hash`` fails closed on a missing dir or a symlink,
+    which is right for the C6 apply gate but wrong here — an unhashable tree
+    must make the freshness ANSWER unknown, not take down the estate."""
+    global _LOCAL_IAC_TREE_HASH, _LOCAL_IAC_TREE_HASH_COMPUTED
+    if not _LOCAL_IAC_TREE_HASH_COMPUTED:
+        try:
+            _LOCAL_IAC_TREE_HASH = iac_tree_hash(_IAC_DIR)
+        except Exception as e:  # noqa: BLE001 — freshness metadata is never load-bearing
+            log.warning(
+                "local_iac_tree_hash_failed",
+                extra={"error": type(e).__name__, "iac_dir": str(_IAC_DIR)},
+            )
+            _LOCAL_IAC_TREE_HASH = None
+        _LOCAL_IAC_TREE_HASH_COMPUTED = True
+    return _LOCAL_IAC_TREE_HASH
+
+
+def _reset_local_iac_tree_hash_for_tests() -> None:
+    """Drop the memoised hash so a test can point ``_IAC_DIR`` elsewhere."""
+    global _LOCAL_IAC_TREE_HASH, _LOCAL_IAC_TREE_HASH_COMPUTED
+    _LOCAL_IAC_TREE_HASH = None
+    _LOCAL_IAC_TREE_HASH_COMPUTED = False
+
 
 def get_infra_graph_cache_store() -> InfraGraphCacheStore:
     """Return the process-wide L2 cache store singleton — Firestore when a
@@ -4321,7 +4372,9 @@ def get_infra_graph(
                 # build_graph is a pure read over the inventory, so re-running it
                 # on the cached dict each request keeps the DTO shaped by current
                 # code without mutating what we cached.
-                return build_graph(cached_inventory)
+                return build_graph(
+                    cached_inventory, local_iac_tree_hash=local_iac_tree_hash()
+                )
 
     # L2 — Firestore, shared/persistent, wall clock. Survives the cold start that
     # L1 can't: a freshly-recycled instance reads the doc and serves a warm map.
@@ -4338,7 +4391,7 @@ def get_infra_graph(
                 _INFRA_INVENTORY_CACHE = (time.monotonic(), l2_inventory)
             response.headers["X-Infra-Graph-Cache"] = "hit-l2"
             response.headers["X-Infra-Graph-Cache-Age-S"] = f"{l2_age:.1f}"
-            return build_graph(l2_inventory)
+            return build_graph(l2_inventory, local_iac_tree_hash=local_iac_tree_hash())
 
     # Neither layer served. Distinguish a genuine miss (some caching is enabled)
     # from caching being fully disabled, for an operator inspecting headers.
@@ -4361,7 +4414,8 @@ def get_infra_graph(
             {
                 "error": "infra_reader_unavailable",
                 "detail": f"{e.status_code}: {e.body}",
-            }
+            },
+            local_iac_tree_hash=local_iac_tree_hash(),
         )
     # The worker soft-fails a CAI permission/availability failure to a 200 with
     # an ``error`` key (not a non-2xx, so it doesn't raise above). Log it at
@@ -4377,7 +4431,7 @@ def get_infra_graph(
         # Success only: cache in both layers (never an error/degraded payload,
         # never a non-dict) so a healthy map is reused but an outage isn't pinned.
         _persist_infra_inventory(inventory, l1_ttl=l1_ttl, l2_ttl=l2_ttl)
-    return build_graph(inventory)
+    return build_graph(inventory, local_iac_tree_hash=local_iac_tree_hash())
 
 
 @app.post("/internal/infra-graph/refresh")

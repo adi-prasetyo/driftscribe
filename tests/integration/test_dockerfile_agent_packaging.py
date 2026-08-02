@@ -98,3 +98,22 @@ def test_workload_manifests_exist_in_source():
             f"workloads/{name}/workload.yaml is missing — Dockerfile "
             "would package an empty workload dir."
         )
+
+
+def test_dockerfile_agent_copies_iac_for_the_freshness_hash():
+    """ds-1vn — same bug class as the workloads/ escape above, one layer subtler.
+
+    `agent/main.py:local_iac_tree_hash()` hashes `/app/iac` so the estate can
+    say when the infra-reader's snapshot is a different `iac/` tree than this
+    deployment holds. Without this COPY the hash is None, every comparison
+    degrades to "local_hash_unavailable", and the page goes back to saying
+    nothing — with every test still green, because the unit tests inject the
+    hash. The failure mode is SILENCE, which is precisely the defect ds-1vn
+    exists to remove, so the packaging contract gets a test of its own.
+    """
+    content = DOCKERFILE.read_text()
+    assert "COPY iac/" in content, (
+        "Dockerfile.agent must `COPY iac/ ./iac/` — local_iac_tree_hash() "
+        "hashes it to detect a stale infra-reader snapshot. Removing the COPY "
+        "does not break anything loudly; it makes the estate stop disclosing."
+    )

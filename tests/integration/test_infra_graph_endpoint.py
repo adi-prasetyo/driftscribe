@@ -903,3 +903,110 @@ class TestInfraGraphTokenGuard:
         client = TestClient(app)
         resp = client.get("/infra/graph", headers={"X-DriftScribe-Token": "tok-123"})
         assert resp.status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# ds-1vn — the endpoint reports whether the estate's IaC snapshot is the same
+# tree this deployment holds.
+#
+# These are the wiring tests. `build_graph`'s own comparison logic is pinned in
+# tests/unit/test_infra_graph.py; what can only be verified HERE is that the
+# route actually passes its local hash in — on every path, including both cache
+# layers, which each call `build_graph` separately and could each be missed.
+# --------------------------------------------------------------------------- #
+
+_TREE_A = "a" * 64
+_TREE_B = "b" * 64
+
+
+def _set_local_hash(monkeypatch, value):
+    monkeypatch.setattr("agent.main.local_iac_tree_hash", lambda: value)
+
+
+def test_endpoint_reports_a_stale_snapshot(monkeypatch):
+    _mock_call(monkeypatch, returns={**_inventory(), "iac_tree_hash": _TREE_A})
+    _set_local_hash(monkeypatch, _TREE_B)
+    body = TestClient(app).get("/infra/graph").json()
+    assert body["iac_snapshot_stale"] is True
+    assert body["iac_snapshot_reason"] == "tree_hash_mismatch"
+    # Still a usable estate — a stale snapshot must not blank the panel.
+    assert body["degraded"] is False
+    assert body["totals"]["resources"] == 2
+
+
+def test_endpoint_is_quiet_when_the_snapshot_matches(monkeypatch):
+    _mock_call(monkeypatch, returns={**_inventory(), "iac_tree_hash": _TREE_A})
+    _set_local_hash(monkeypatch, _TREE_A)
+    body = TestClient(app).get("/infra/graph").json()
+    assert body["iac_snapshot_stale"] is False
+    assert body["iac_snapshot_reason"] is None
+
+
+def test_endpoint_reports_unverified_for_a_worker_that_sends_no_hash(monkeypatch):
+    """The state of prod until infra-reader is redeployed. Must be visibly
+    unverified, not silently fresh."""
+    _mock_call(monkeypatch, returns=_inventory())
+    _set_local_hash(monkeypatch, _TREE_A)
+    body = TestClient(app).get("/infra/graph").json()
+    assert body["iac_snapshot_stale"] is None
+    assert body["iac_snapshot_reason"] == "worker_hash_unavailable"
+
+
+def test_the_l1_cache_path_still_checks_freshness(monkeypatch):
+    """Both cache layers call build_graph on their own line. A wiring that
+    covered only the live-fetch path would report staleness on the first
+    request of an instance's life and stay silent for the next 60 seconds."""
+    _mock_call(monkeypatch, returns={**_inventory(), "iac_tree_hash": _TREE_A})
+    _set_local_hash(monkeypatch, _TREE_B)
+    client = TestClient(app)
+    first = client.get("/infra/graph")
+    assert first.headers.get("X-Infra-Graph-Cache") == "miss"
+    second = client.get("/infra/graph")
+    assert second.headers.get("X-Infra-Graph-Cache") == "hit"
+    assert second.json()["iac_snapshot_stale"] is True
+
+
+def test_a_degraded_response_still_carries_the_freshness_keys(monkeypatch):
+    """A client reading `iac_snapshot_stale` must not KeyError when the worker
+    is down."""
+    _mock_call(monkeypatch, raises=worker_client.WorkerClientError(503, "down", "infra_reader"))
+    body = TestClient(app).get("/infra/graph").json()
+    assert body["degraded"] is True
+    assert body["iac_snapshot_stale"] is None
+    assert body["iac_snapshot_reason"] is None
+
+
+def test_this_deployment_can_actually_hash_its_own_iac_tree():
+    """The load-bearing one, and the reason `COPY iac/` is in Dockerfile.agent.
+
+    Everything above mocks `local_iac_tree_hash`. If the real function cannot
+    find a tree, every comparison degrades to "local_hash_unavailable" and the
+    feature is dead on arrival while every test still passes — the failure mode
+    is silence, which is exactly what ds-1vn exists to remove. So assert the
+    real thing returns a real hash.
+    """
+    from agent.main import local_iac_tree_hash, _reset_local_iac_tree_hash_for_tests
+
+    _reset_local_iac_tree_hash_for_tests()
+    h = local_iac_tree_hash()
+    assert isinstance(h, str) and len(h) == 64, (
+        "the coordinator cannot hash its own iac/ tree — check that "
+        "Dockerfile.agent still has `COPY iac/ ./iac/` and that IAC_DIR resolves"
+    )
+
+
+def test_an_unhashable_iac_tree_degrades_to_unknown_instead_of_raising(monkeypatch, tmp_path):
+    """Fail-closed inside `iac_tree_hash` (missing dir) must become
+    fail-to-unknown here, never a 500 on the landing page."""
+    import agent.main as m
+
+    monkeypatch.setattr(m, "_IAC_DIR", tmp_path / "does-not-exist")
+    m._reset_local_iac_tree_hash_for_tests()
+    try:
+        assert m.local_iac_tree_hash() is None
+        _mock_call(monkeypatch, returns={**_inventory(), "iac_tree_hash": _TREE_A})
+        body = TestClient(app).get("/infra/graph").json()
+        assert body["iac_snapshot_stale"] is None
+        assert body["iac_snapshot_reason"] == "local_hash_unavailable"
+    finally:
+        m._reset_local_iac_tree_hash_for_tests()
