@@ -845,3 +845,58 @@ def test_describe_listassets_supplement_soft_fails_keeps_inventory(client, monke
     body = r.json()
     assert body["total_resources"] == 1
     assert body["by_type"][_RUN_SERVICE]["count"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# ds-1vn — the inventory carries a content hash of the iac/ tree it parsed.
+#
+# `iac_snapshot_sha` (tested above) is a COMMIT sha and cannot answer "is this
+# snapshot current": a docs-only commit moves it while iac/ is untouched. The
+# estate compares tree CONTENT instead, so the worker must publish the hash of
+# the tree it actually read.
+# --------------------------------------------------------------------------- #
+
+
+def test_describe_publishes_the_iac_tree_hash(client, monkeypatch):
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient", _make_fake_client([])
+    )
+    h = client.post("/describe", json={}).json()["iac_tree_hash"]
+    assert isinstance(h, str) and len(h) == 64
+    # It is the hash of the tree this worker was pointed at, not a constant.
+    from driftscribe_lib.iac_tree import iac_tree_hash
+
+    assert h == iac_tree_hash(infra_main.IAC_DIR)
+
+
+def test_the_tree_hash_moves_when_iac_content_changes(client, monkeypatch, tmp_path):
+    """The property the whole check rests on. A hash that did not respond to an
+    added declaration would report "fresh" through exactly the incident this
+    fixes — PR #168 adding iac/adopt_topic_adopt_probe_topic.tf."""
+    from driftscribe_lib.iac_tree import iac_tree_hash
+
+    tree = tmp_path / "iac"
+    tree.mkdir()
+    (tree / "cloudrun.tf").write_text('resource "x" "y" {}\n', encoding="utf-8")
+    before = iac_tree_hash(tree)
+    (tree / "adopt_topic_adopt_probe_topic.tf").write_text(
+        'resource "google_pubsub_topic" "t" { name = "adopt-probe-topic" }\n',
+        encoding="utf-8",
+    )
+    assert iac_tree_hash(tree) != before
+
+
+def test_an_unreadable_iac_dir_yields_a_null_hash_not_a_broken_inventory(
+    client, monkeypatch, tmp_path
+):
+    """`iac_tree_hash` fails CLOSED (raises) on a missing dir — correct for the
+    C6 apply gate, wrong here. Freshness metadata must never take down the
+    inventory this worker exists to produce; the answer degrades to unknown."""
+    monkeypatch.setattr(
+        infra_main.asset_v1, "AssetServiceClient", _make_fake_client([])
+    )
+    monkeypatch.setattr(infra_main, "IAC_DIR", tmp_path / "nope")
+    body = client.post("/describe", json={}).json()
+    assert body["iac_tree_hash"] is None
+    assert body["total_resources"] == 0  # the inventory is still whole
+    assert "error" not in body

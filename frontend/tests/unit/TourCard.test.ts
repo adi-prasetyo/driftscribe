@@ -18,6 +18,9 @@ function graphWithTarget(): InfraGraph {
     generated_at: null,
     project: 'driftscribe-hack-2026',
     caveat: '',
+    // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+    // omitted — absent means "unverified", which pauses adoption.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 12, managed: 9, drift: 3 },
@@ -125,7 +128,30 @@ describe('TourCard — adopt step (T4: prefill, never send)', () => {
     const { getByTestId, queryByTestId } = render(TourCard, { props: { graph: g } });
     await advanceTo(getByTestId, 3);
     expect(queryByTestId('tour-adopt-btn')).toBeNull();
-    expect(getByTestId('tour-body').textContent).toContain('already under IaC management');
+    expect(getByTestId('tour-body').textContent).toContain('already declared in IaC');
+  });
+
+  // ds-1vn r3. `graphStale` is a STORE fact — it is not readable off the graph
+  // — so it has to be threaded App → TourCard → adoptStepState by hand, and a
+  // hand-threaded prop is exactly what a later refactor drops. Dropping it
+  // reddened NOTHING before this test existed, verified by injection: the
+  // tour would go on recommending an adoption from a snapshot whose freshness
+  // claim the estate had already retired.
+  it('pauses the suggestion when the last graph fetch failed (graphStale threaded)', async () => {
+    const { getByTestId, queryByTestId } = render(TourCard, {
+      props: { graph: graphWithTarget(), graphStale: true },
+    });
+    await advanceTo(getByTestId, 3);
+    expect(queryByTestId('tour-adopt-btn')).toBeNull();
+    expect(getByTestId('tour-body').textContent).toContain('paused');
+  });
+
+  it('offers the suggestion normally when the graph fetch succeeded', async () => {
+    const { getByTestId } = render(TourCard, {
+      props: { graph: graphWithTarget(), graphStale: false },
+    });
+    await advanceTo(getByTestId, 3);
+    expect(getByTestId('tour-adopt-btn')).toBeTruthy();
   });
 
   it('stays honest when the graph never loaded (T3)', async () => {

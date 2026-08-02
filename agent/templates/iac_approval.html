@@ -152,12 +152,19 @@
               {# replace the generic green no-destroy note with calm adoption    #}
               {# framing. NEVER reachable when destructive (that branch is first).#}
               <p class="ds-ok" data-testid="adopt-note">
+                {# ds-403: the map and the meter count DECLARATIONS, not state    #}
+                {# membership, so "managed" was the same overstatement the estate   #}
+                {# itself just retired. And they read a snapshot of iac/ baked into #}
+                {# the infra-reader worker, so the merge alone does not move them   #}
+                {# — this promised an update at a moment it cannot deliver one.     #}
+                {# The first sentence stands: an import genuinely does bring the    #}
+                {# resource under management.                                       #}
                 {% if lang == 'ja' %}インフラは一切変更されません。この操作は {{ s.n_import }}件のリソースを
-                IaC 管理下に置くだけです。変更がマージされると（適用が完了する直前に）、
-                リソースマップと IaC 管理率のメーターに管理済みとして反映されます。{% else %}Nothing in your infrastructure will be modified — this only puts
+                IaC 管理下に置くだけです。リソースマップと IaC 定義率のメーターには、変更がマージされ、
+                インフラ一覧の iac/ スナップショットに反映された時点で「定義済み」として表示されます。{% else %}Nothing in your infrastructure will be modified — this only puts
                 {{ s.n_import }} resource{{ '' if s.n_import == 1 else 's' }} under
-                management. The resource map and coverage meter count it as managed
-                once the change merges (moments before the apply completes).{% endif %}
+                management. The resource map and coverage meter count it as declared
+                once the change merges and the estate's iac/ snapshot picks it up.{% endif %}
               </p>
             {% elif not s.all_accounted_safe %}
               <div class="ds-note">

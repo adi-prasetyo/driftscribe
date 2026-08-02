@@ -58,3 +58,17 @@ def test_dockerfile_declares_infra_deps():
     install_line = _dockerfile_install_line()
     assert "google-cloud-asset" in install_line, install_line
     assert "python-hcl2" in install_line, install_line
+
+
+def test_worker_imports_the_canonical_iac_tree_hash():
+    """ds-1vn — the worker stamps its inventory with the content hash of the
+    `iac/` tree it actually parsed, using the SAME `iac_tree_hash` the C6
+    head-config gate uses. One definition of "the iac/ tree", not two that can
+    drift apart. `driftscribe_lib/` is already COPY'd, so no Dockerfile change
+    is needed here; this pins the import so a refactor cannot quietly swap in a
+    bespoke hash."""
+    from driftscribe_lib.iac_tree import iac_tree_hash as canonical
+    from workers._testenv import import_worker_main
+
+    infra_main = import_worker_main("workers.infra_reader.main")
+    assert infra_main.iac_tree_hash is canonical

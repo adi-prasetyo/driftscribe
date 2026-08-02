@@ -565,3 +565,49 @@ describe('createOverviewStore — approvalsStale (ds-eh6)', () => {
     s.destroy();
   });
 });
+
+// ds-1vn r2 (Codex review). Sibling of approvalsStale above, one lane over.
+// A failed graph fetch preserves the previous graph — right for the numbers,
+// wrong for `iac_snapshot_stale`, which is an ASSURANCE: retaining a `false`
+// reports "checked, current" about a check that did not run this cycle.
+describe('createOverviewStore — graphStale (ds-1vn)', () => {
+  it('is set when the graph fetch fails', async () => {
+    const { fn } = makeCall({ graph: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).graphStale).toBe(true);
+    s.destroy();
+  });
+
+  it('is NOT set when only pending or decisions failed', async () => {
+    // Same distinction that earns approvalsStale its existence: a decisions
+    // outage says nothing about the currency of the graph.
+    const { fn } = makeCall({ pending: () => res({}, 500), decisions: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).degraded).toBe(true);
+    expect(get(s).graphStale).toBe(false);
+    s.destroy();
+  });
+
+  it('is NOT set on a clean cycle', async () => {
+    const { fn } = makeCall();
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).graphStale).toBe(false);
+    s.destroy();
+  });
+
+  it('clears on the next successful cycle, while the retained graph is replaced', async () => {
+    let fail = true;
+    const { fn } = makeCall({ graph: () => (fail ? res({}, 500) : res(GRAPH)) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).graphStale).toBe(true);
+    fail = false;
+    await s.refresh();
+    await flush();
+    expect(get(s).graphStale).toBe(false);
+    s.destroy();
+  });
+});

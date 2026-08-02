@@ -84,7 +84,7 @@ describe('InfraDiagram — coverage treatment', () => {
       props: { call: callWith(graphWith({ resources: 50, managed: 13, drift: 37 }), paths) },
     });
     await waitFor(() => {
-      expect(getByTestId('infra-coverage-count').textContent).toBe('13/50 managed · 26%');
+      expect(getByTestId('infra-coverage-count').textContent).toBe('13/50 declared · 26%');
     });
     expect(paths).toContain('/infra/graph');
     expect(getByTestId('coverage-meter')).toBeTruthy();
@@ -96,7 +96,7 @@ describe('InfraDiagram — coverage treatment', () => {
       props: { call: callWith(graphWith({ resources: 0, managed: 0, drift: 0 })) },
     });
     await waitFor(() => {
-      expect(getByTestId('infra-coverage-count').textContent).toBe('0/0 managed');
+      expect(getByTestId('infra-coverage-count').textContent).toBe('0/0 declared');
     });
     expect(queryByTestId('coverage-meter')).toBeNull();
   });
@@ -679,7 +679,7 @@ describe('InfraDiagram — resource cards', () => {
     const trailers = getAllByTestId('card-trailer');
     // Exactly ONE trailer (group A), and it reads "+3 more".
     expect(trailers).toHaveLength(1);
-    expect(trailers[0].textContent).toContain('+3 more unmanaged Storage bucket');
+    expect(trailers[0].textContent).toContain('+3 more undeclared Storage bucket');
     expect(trailers[0].textContent).toContain('not shown');
   });
 });
@@ -871,7 +871,7 @@ describe('InfraDiagram — refresh coalescing + last-applied-wins (livelock regr
     // The pending fetch still applies — no livelock.
     pending[0](graphWith({ resources: 5, managed: 2, drift: 3 }));
     await waitFor(() => {
-      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('2/5 managed · 40%');
+      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('2/5 declared · 40%');
     });
   });
 
@@ -883,7 +883,7 @@ describe('InfraDiagram — refresh coalescing + last-applied-wins (livelock regr
     // Let fetch #1 complete first.
     pending[0](graphWith({ resources: 5, managed: 2, drift: 3 }));
     await waitFor(() => {
-      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('2/5 managed · 40%');
+      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('2/5 declared · 40%');
     });
     // Now fire a new trigger — with no fetch in flight it should start a new one.
     const details = utils.container.querySelector('details')!;
@@ -893,7 +893,7 @@ describe('InfraDiagram — refresh coalescing + last-applied-wins (livelock regr
     // The second response supersedes (last-applied-wins).
     pending[1](graphWith({ resources: 6, managed: 3, drift: 3 }));
     await waitFor(() => {
-      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('3/6 managed · 50%');
+      expect(utils.getByTestId('infra-coverage-count').textContent).toBe('3/6 declared · 50%');
     });
   });
 });
@@ -1029,7 +1029,7 @@ describe('InfraDiagram — scope split (adoptable vs. other)', () => {
       props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
     });
     // scope: 2 managed of 3 in-scope resources (67%), 1 drift — NOT 2/23 or 21 drift.
-    await waitFor(() => expect(getByTestId('infra-coverage-count').textContent).toBe('2/3 managed · 67%'));
+    await waitFor(() => expect(getByTestId('infra-coverage-count').textContent).toBe('2/3 declared · 67%'));
     expect(getByTestId('infra-drift-badge').textContent).toBe('1 drift');
     expect(getByTestId('coverage-pct').textContent).toBe('67%');
   });
@@ -1122,7 +1122,7 @@ describe('InfraDiagram — scope split (adoptable vs. other)', () => {
     const { getByTestId } = render(InfraDiagram, { props: { call: callWith(allManagedGraph()) } });
     await waitFor(() => expect(getByTestId('coverage-meter')).toBeTruthy());
     const txt = getByTestId('coverage-meter').textContent ?? '';
-    expect(txt).toContain('of your infrastructure is under IaC management');
+    expect(txt).toContain('of your infrastructure is declared in IaC');
     expect(txt).not.toContain('supported infrastructure');
   });
 
@@ -1481,7 +1481,7 @@ describe('InfraDiagram — system-managed collapse (design 2026-07-03)', () => {
     // No misleading "not individually listed" summary when the card has content.
     expect(queryByTestId('card-summary')).toBeNull();
     // The hidden-actionable trailer still surfaces the 2 un-sampled adoptable services.
-    expect(norm(getByTestId('card-trailer').textContent)).toContain('2 more unmanaged');
+    expect(norm(getByTestId('card-trailer').textContent)).toContain('2 more undeclared');
   });
 
   it('shows the disclosure from inferred totals even when no control-plane node was sampled', async () => {
@@ -1557,7 +1557,7 @@ describe('InfraDiagram — legend help (zone 2)', () => {
     expect(queryByTestId('legend-help-panel')).toBeNull();
     await fireEvent.click(getByTestId('legend-help'));
     const panel = getByTestId('legend-help-panel');
-    expect(panel.textContent).toContain('managed in IaC');
+    expect(panel.textContent).toContain('declared in IaC');
     expect(panel.textContent).toContain('drift');
     expect(panel.textContent).toContain('counts-only');
     // The system-managed-tag reasoning relocated here from the per-row note.

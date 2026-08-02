@@ -40,6 +40,11 @@ function graph(over: Partial<InfraGraph> = {}): InfraGraph {
     generated_at: '2026-07-28T06:00:00Z',
     project: 'demo-proj',
     caveat: '',
+    // ds-1vn: a healthy deployment's snapshot matches. Set EXPLICITLY, because
+    // omitting it now means "unverified", which suppresses adoption — every
+    // unrelated adopt test would then be exercising the suppressed path and
+    // proving nothing about the one it is named for.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 10, managed: 5, drift: 5 },
@@ -473,9 +478,16 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
     expect(getByTestId('estate-adopt-unknown').textContent).toContain('adoption status unknown');
   });
 
-  it('still renders a POSITIVELY observed PR chip', () => {
+  it('still renders a POSITIVELY observed PR chip — but does not vouch for its status', () => {
     // Only the absence claim is unsupported. A PR we actually saw is still a
     // fact, and hiding it would be its own information loss.
+    //
+    // ds-1vn r5: that reasoning is right about the PR's IDENTITY and was wrong
+    // about its STATE. This test used to assert only that the chip existed,
+    // which blessed a chip reading "PR #268 awaiting review" — present tense —
+    // built from a list the failed fetch did not refresh. A PR closed, merged
+    // or rejected elsewhere would carry that label indefinitely. The number
+    // survives the retention; the verdict must not.
     const { getByTestId, queryByTestId } = render(EstateView, {
       props: baseProps({
         pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
@@ -483,7 +495,10 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
         approvalsStale: true,
       }),
     });
-    expect(getByTestId('estate-pr-chip')).toBeTruthy();
+    const chip = getByTestId('estate-pr-chip').textContent ?? '';
+    expect(chip).toContain('268');
+    expect(chip).toContain('not refreshed');
+    expect(chip).not.toContain('awaiting review');
     expect(queryByTestId('estate-adopt-unknown')).toBeNull();
   });
 
@@ -503,3 +518,277 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
   });
 });
 
+
+// --------------------------------------------------------------------------- //
+// ds-1vn — the estate discloses when its IaC snapshot is not this deployment's.
+//
+// The incident: infra-reader was baked at f72ef29 (07-29); PR #168 added
+// iac/adopt_topic_adopt_probe_topic.tf on 07-31. The worker parsed an iac/ tree
+// without the declaration, so the topic listed as undeclared and offered an
+// Adopt button for a resource already declared and merged. The page said
+// nothing about the snapshot's age.
+//
+// ⚠️ Why this cannot ride the existing channels, both of which were the obvious
+// first choice and both of which fail:
+//
+//   * `graph.caveat` — InfraDiagram renders it only `{#if graph && !degraded}`,
+//     so the disclosure disappears exactly when things are worst.
+//   * `graph.degraded` — EstateView (above) replaces the ENTIRE estate with a
+//     generic unavailable line. That hides the resources the warning is about,
+//     which is worse than the bug.
+//
+// So it gets its own visible state, tested here rather than assumed.
+// --------------------------------------------------------------------------- //
+
+describe('EstateView — IaC snapshot freshness disclosure (ds-1vn)', () => {
+  it('shows a specific notice when the snapshot is stale', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    const el = getByTestId('estate-snapshot-stale');
+    expect(el.textContent?.trim()).toBeTruthy();
+  });
+
+  it('still renders the estate itself when stale — the warning must not hide its subject', () => {
+    const { getByTestId, getAllByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    expect(getByTestId('estate-snapshot-stale')).toBeTruthy();
+    expect(getAllByTestId('estate-row').length).toBeGreaterThan(0);
+    expect(queryByTestId('estate-degraded')).toBeNull();
+  });
+
+  it('says nothing when the snapshot matches this deployment', () => {
+    const { queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: false }) }),
+    });
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+    expect(queryByTestId('estate-snapshot-unverified')).toBeNull();
+  });
+
+  // The state prod is in until infra-reader is redeployed, and the one most
+  // easily rendered as silence. "Could not check" is not "fine".
+  it('shows a DISTINCT, quieter notice when freshness could not be verified', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: null }) }),
+    });
+    expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+  });
+
+  it('treats a graph with no freshness field at all as unverified, not as fresh', () => {
+    // A build serving a payload from before these fields existed. Absent must
+    // not read as false — that is the same conflation as `phase: null` meaning
+    // "applied" (ds-2mc). Written by DELETING the key, not by passing
+    // undefined: the fixture now defaults to a healthy `false`, so a test for
+    // the absent case has to actually produce absence.
+    const g = graph();
+    delete (g as Partial<InfraGraph>).iac_snapshot_stale;
+    const { getByTestId } = render(EstateView, { props: baseProps({ graph: g }) });
+    expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+  });
+
+  it('renders no freshness notice at all on a degraded graph', () => {
+    // Degraded already replaces the estate with its own line. Stacking a
+    // freshness note onto a panel that is showing nothing would be noise about
+    // the currency of data that is not on screen.
+    const { queryByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ degraded: true, iac_snapshot_stale: null }) }),
+    });
+    expect(getByTestId('estate-degraded')).toBeTruthy();
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+    expect(queryByTestId('estate-snapshot-unverified')).toBeNull();
+  });
+
+  it('renders no freshness notice while the graph is still loading', () => {
+    const { queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: null, settled: false }),
+    });
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+    expect(queryByTestId('estate-snapshot-unverified')).toBeNull();
+  });
+
+  // The notice sits ABOVE the rows it qualifies. An operator who has already
+  // scrolled to an Adopt button and clicked it was never warned.
+  it('places the notice before the first estate row', () => {
+    const { getByTestId, getAllByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    const notice = getByTestId('estate-snapshot-stale');
+    const firstRow = getAllByTestId('estate-row')[0];
+    expect(notice.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// ds-1vn, round 2 (Codex review). Two holes in the first cut, both of the same
+// shape the whole bead is about: an unsupported claim surviving into an ACTION.
+// --------------------------------------------------------------------------- //
+
+describe('EstateView — a stale snapshot suppresses adoption (ds-1vn r2)', () => {
+  // The incident, exactly. `adopt-probe-topic` was declared and merged on
+  // 07-31; infra-reader was baked 07-29; the estate listed it as drift and
+  // offered an Adopt button for a resource already declared. Disclosing that in
+  // prose while leaving the button armed fixes the sentence, not the defect —
+  // "not declared" is read off a snapshot we have just proved is a different
+  // tree, and unlike a wrong figure that absence drives an action.
+  it('replaces the Adopt button with a reason when the snapshot is stale', () => {
+    const { queryByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    expect(getByTestId('estate-adopt-stale').textContent?.trim()).toBeTruthy();
+  });
+
+  it('a suppressed row is still LISTED — the estate never hides its subject', () => {
+    const { getAllByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    expect(getAllByTestId('estate-row').length).toBeGreaterThan(0);
+  });
+
+  it('drops the tour spotlight while adoption is suppressed', () => {
+    // firstAdoptableRow picks the row whose button this state just removed, so
+    // an un-nulled target would spotlight a row and point at nothing.
+    const { container } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    expect(container.querySelector('[data-tour="adopt-target"]')).toBeNull();
+  });
+
+  // Suppressed on UNVERIFIED too (Codex r3). An earlier cut spared it, arguing
+  // absence of evidence is not evidence of a mismatch. The counterexample is
+  // the very rollout that produces `unverified`: deploy the coordinator ahead
+  // of the worker, and the old worker has no hash AND is genuinely missing the
+  // new declaration — the ds-1vn incident exactly, wearing "unknown" instead
+  // of "mismatch". Only `fresh` may drive an adoption.
+  it('suppresses Adopt on an UNVERIFIED snapshot too, and says currency is unconfirmed', () => {
+    const { queryByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: null }) }),
+    });
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    expect(getByTestId('estate-adopt-unverified')).toBeTruthy();
+    expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+  });
+
+  // Codex r4: the first cut of the widened rule reused the STALE chip for both
+  // states, so an unverified row said "out of step" — asserting a mismatch that
+  // was never established, while the notice above it said only "could not
+  // confirm". The earlier test checked the chip EXISTED and not what it
+  // claimed, which is how it passed. Widening a suppression is not licence to
+  // widen its claim.
+  it('an unverified row does not claim a mismatch was found', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: null }) }),
+    });
+    expect(queryByTestId('estate-adopt-stale')).toBeNull();
+    const chip = getByTestId('estate-adopt-unverified').textContent ?? '';
+    expect(chip).toContain('not verified');
+    expect(chip).not.toMatch(/out of step|mismatch/i);
+  });
+
+  it('a stale row DOES claim the mismatch, because that one was established', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    expect(queryByTestId('estate-adopt-unverified')).toBeNull();
+    expect(getByTestId('estate-adopt-stale').textContent).toContain('out of step');
+  });
+
+  it('suppresses Adopt when a failed refresh retired the freshness claim', () => {
+    // graphStale degrades a retained `false` to unverified — and the action
+    // derived from that assurance must go with it. Leaving Adopt armed while
+    // retiring the assurance is the exact split Codex r3 called out.
+    const { queryByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: false }), graphStale: true }),
+    });
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    // ...and says "not verified", not "out of step": a failed refresh is no
+    // evidence of a mismatch.
+    expect(getByTestId('estate-adopt-unverified')).toBeTruthy();
+  });
+
+  it('keeps Adopt when the snapshot matches', () => {
+    const { getAllByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: false }) }),
+    });
+    expect(getAllByTestId('estate-adopt-btn').length).toBeGreaterThan(0);
+    expect(queryByTestId('estate-adopt-stale')).toBeNull();
+  });
+
+  // The two suppressions have DIFFERENT reasons and must not be conflated: one
+  // means "we could not ask GitHub whether a PR is open", the other "the
+  // declared set this row's status came from is not this deployment's".
+  it('a PR chip says "awaiting review" only when the approvals lane is current', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({
+        pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
+        settled: true,
+      }),
+    });
+    expect(getByTestId('estate-pr-chip').textContent).toContain('awaiting review');
+  });
+
+  // The narrower case Codex confirmed is right: SNAPSHOT staleness must not
+  // suppress or hedge a freshly verified PR. The two lanes are independent —
+  // the PR comes from the GitHub listing, not from the iac/ tree — so a stale
+  // snapshot leaves this chip alone.
+  it('a stale snapshot does not hedge a freshly verified PR', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({
+        graph: graph({ iac_snapshot_stale: true }),
+        pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
+        settled: true,
+      }),
+    });
+    expect(getByTestId('estate-pr-chip').textContent).toContain('awaiting review');
+  });
+
+  it('a stale snapshot and an unreliable approvals lane give different reasons', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }), approvalsStale: true }),
+    });
+    expect(getByTestId('estate-adopt-stale')).toBeTruthy();
+    expect(queryByTestId('estate-adopt-unknown')).toBeNull();
+  });
+});
+
+describe('EstateView — a retained graph does not keep vouching for itself (ds-1vn r2)', () => {
+  // `runCycle` preserves the previous graph when /infra/graph fails
+  // (overviewStore.ts). Right for the NUMBERS — a stale count beats a blank
+  // panel — but `iac_snapshot_stale: false` is an ASSURANCE, and retaining it
+  // reports "checked, current" about a check that did not run this cycle.
+  // A coordinator deploy can change iac/ while the refresh is failing.
+  it('degrades a retained "fresh" to unverified when the last graph fetch failed', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: false }), graphStale: true }),
+    });
+    expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+  });
+
+  it('does NOT invent staleness from a failed fetch', () => {
+    // A failed refresh is no evidence of a MISMATCH either. Unverified, not stale.
+    const { queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: false }), graphStale: true }),
+    });
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+  });
+
+  it('a failed refresh does not retire a mismatch already observed', () => {
+    // Order matters: `true` is checked before `graphStale`. Softening a
+    // positive mismatch to "unverified" because a LATER fetch failed would
+    // retire a warning on no evidence — and re-arm the Adopt buttons.
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }), graphStale: true }),
+    });
+    expect(getByTestId('estate-snapshot-stale')).toBeTruthy();
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+  });
+
+  it('graphStale is irrelevant when the graph never claimed freshness', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: null }), graphStale: true }),
+    });
+    expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+  });
+});

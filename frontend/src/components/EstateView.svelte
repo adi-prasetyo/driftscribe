@@ -28,7 +28,12 @@
   import { t } from '../lib/i18n';
   import Icon from './Icon.svelte';
   import type { InfraGraph, PendingApproval, UnmatchedDeclaration } from '../lib/infra_graph';
-  import { infraTypeLabel, investigateUnmatchedPrefill } from '../lib/infra_graph';
+  import {
+    adoptionTrusted,
+    infraTypeLabel,
+    investigateUnmatchedPrefill,
+    snapshotFreshness,
+  } from '../lib/infra_graph';
   import { estateModel, firstAdoptableRow } from '../lib/estate';
   import type { Decision } from '../lib/types';
 
@@ -38,6 +43,7 @@
     pendingApprovals,
     settled = true,
     approvalsStale = false,
+    graphStale = false,
     adoptDisabled = false,
     onAdopt,
     onInvestigate,
@@ -52,6 +58,13 @@
      *  OverviewState.approvalsStale. Suppresses ABSENCE-derived affordances
      *  only; positively observed PR chips still render. */
     approvalsStale?: boolean;
+    /** The LAST `/infra/graph` fetch failed, so `graph` is a RETAINED snapshot
+     *  (OverviewState.graphStale). Its numbers are still worth showing, but its
+     *  `iac_snapshot_stale` is an assurance and must not survive as one: a
+     *  retained `false` would report "checked, current" about a check that did
+     *  not run this cycle. Degrades freshness to `unverified`, never to
+     *  `stale` — a failed fetch is no evidence of a mismatch either. */
+    graphStale?: boolean;
     adoptDisabled?: boolean;
     /** Adopt chip click → App prefills the chat with this string (NOT auto-sent). */
     onAdopt?: (prefill: string) => void;
@@ -76,10 +89,22 @@
   // merge deleted both the button and that predicate, so the step's fallback is
   // now the estate section itself (TourCard resolves `fallback: 'estate'`), which
   // is unconditionally present on the desk.
+  // ds-1vn. The ONE derivation, shared with the guided tour via lib/infra_graph
+  // (Codex r3). EstateView had its own copy and the tour went on recommending
+  // an adoption from a snapshot this section had just disowned; a shared
+  // function is what makes the two unable to disagree again.
+  const freshness = $derived(snapshotFreshness(graph, graphStale));
+  const canAdopt = $derived(adoptionTrusted(freshness));
+
   // No adopt target while the approvals lane is unreliable — the target is
   // chosen from rows whose `pendingPr === null`, which is precisely the
   // unsupported absence. Nulling it here also clears the tour's spotlight.
-  const adoptTarget = $derived(approvalsStale ? null : firstAdoptableRow(model));
+  //
+  // Nulled on a STALE snapshot too (ds-1vn, Codex review): the target is chosen
+  // from `row.adoptable`, whose Adopt button that state replaces with a mute
+  // chip — so without this the tour would spotlight a row and point at a
+  // control that is no longer there.
+  const adoptTarget = $derived(approvalsStale || !canAdopt ? null : firstAdoptableRow(model));
 
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
@@ -138,6 +163,23 @@
   {:else if graph === null || graph.degraded}
     <p class="estate-view__status" data-testid="estate-degraded">{$t('desk.estate.degraded')}</p>
   {:else}
+    <!-- ds-1vn — how old is the iac/ tree this estate was read from?
+         First thing in the branch, deliberately: it qualifies every row below
+         it, including the Adopt buttons, and a notice an operator reaches
+         AFTER clicking Adopt has not warned anybody.
+         Neither `caveat` nor `degraded` could carry this — InfraDiagram hides
+         the caveat when degraded, and degraded replaces the whole estate with
+         a generic line, hiding the very rows being qualified. -->
+    {#if freshness === 'stale'}
+      <p class="estate-view__snapshot estate-view__snapshot--stale" data-testid="estate-snapshot-stale">
+        {$t('desk.estate.snapshotStale')}
+      </p>
+    {:else if freshness === 'unverified'}
+      <p class="estate-view__snapshot" data-testid="estate-snapshot-unverified">
+        {$t('desk.estate.snapshotUnverified')}
+      </p>
+    {/if}
+
     {#if model.drift.length > 0}
       <h2 class="estate-view__group" data-testid="estate-group-drift">
         {$t('desk.estate.driftGroup', { n: model.drift.length })}
@@ -153,8 +195,50 @@
             <span class="estate-view__name">{row.label}</span>
             <span class="estate-view__type">{row.typeLabel}</span>
             {#if row.pendingPr !== null}
+              <!-- The PR chip stays FIRST and stays on a stale/unverified
+                   snapshot: unlike everything below it, this is a positively
+                   observed fact from the GitHub listing rather than an absence
+                   read off the iac/ tree, and it drives no action.
+                   But its WORDING follows the approvals lane (ds-1vn r5). On a
+                   pending-approvals failure the store retains the previous
+                   list, so "awaiting review" — present tense — outlives the
+                   fetch that established it, and a PR closed or merged
+                   elsewhere would sit here labelled awaiting review forever.
+                   Identity survives a retained value; a verdict does not. Same
+                   split already made for the graph's freshness assurance. -->
               <span class="estate-view__chip estate-view__chip--q" data-testid="estate-pr-chip">
-                {$t('desk.estate.prPending', { pr: row.pendingPr })}
+                {approvalsStale
+                  ? $t('desk.estate.prPendingUnrefreshed', { pr: row.pendingPr })
+                  : $t('desk.estate.prPending', { pr: row.pendingPr })}
+              </span>
+            {:else if row.adoptable && !canAdopt}
+              <!-- ds-1vn. The SECOND absence claim on this row, and the one
+                   that caused the incident: "not declared in IaC" is read off
+                   the worker's baked `iac/`. adopt-probe-topic was declared and
+                   merged on 07-31 and still showed an Adopt button, because the
+                   worker was baked on 07-29. Same reasoning as the
+                   approvalsStale arm below — an unsupported absence must not
+                   drive an ACTION.
+
+                   Suppressed on BOTH non-fresh states (Codex r3). An earlier
+                   cut spared `unverified`, arguing it was only absence of
+                   evidence and the state every prior build shipped in. The
+                   counterexample is the very rollout that produces it: deploy
+                   the coordinator ahead of the worker, and the old worker has
+                   no hash AND is genuinely missing the new declaration — the
+                   incident exactly, wearing "unknown" instead of "mismatch".
+                   Prior releases shipping without the check establish
+                   compatibility, not safety. `adoptionTrusted` holds the rule
+                   so the tour cannot disagree with this row. -->
+              <span
+                class="estate-view__chip estate-view__chip--mute"
+                data-testid={freshness === 'stale'
+                  ? 'estate-adopt-stale'
+                  : 'estate-adopt-unverified'}
+              >
+                {freshness === 'stale'
+                  ? $t('desk.estate.adoptSnapshotStale')
+                  : $t('desk.estate.adoptSnapshotUnverified')}
               </span>
             {:else if row.adoptable && approvalsStale}
               <!-- The Adopt button is an ABSENCE claim: it appears exactly when
@@ -347,6 +431,27 @@
     font-family: var(--ds-font-mono);
     font-size: 12.5px;
     color: var(--ds-fg-soft);
+  }
+
+  /* ds-1vn. Prose, not mono like __status: this is something to READ before
+     acting on the rows under it, not a machine state. The unverified variant
+     stays at __status's soft grey — it reports an absence of information, and
+     dressing that as an alert would spend the operator's attention on the
+     quieter of the two facts. The stale variant earns the warn surface. */
+  .estate-view__snapshot {
+    margin: 0;
+    padding: 14px 40px 0;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--ds-fg-soft);
+  }
+  .estate-view__snapshot--stale {
+    margin: 16px 40px 0;
+    padding: 10px 14px;
+    border: 1px solid var(--ds-warn-border);
+    border-radius: var(--ds-radius-sm);
+    background: var(--ds-warn-surface);
+    color: var(--ds-warn-ink);
   }
 
   .estate-view__group {

@@ -132,6 +132,26 @@ export interface InfraGraph {
   project: string | null;
   caveat: string;
   iac_snapshot_sha?: string | null;
+  /**
+   * Is the estate's `iac/` snapshot a DIFFERENT tree than the running
+   * deployment holds? (ds-1vn)
+   *
+   * Tri-state, and `null` is a real answer, not a placeholder: `true` the two
+   * trees differ, `false` they are byte-identical, `null` it could not be
+   * checked (one side reported no hash). ABSENT — a payload from a coordinator
+   * that predates the field — must be read as `null` too. Absent-means-fresh is
+   * the same conflation as `approval.phase: null` meaning "applied" (ds-2mc),
+   * and here it would restore exactly the silence this field exists to break.
+   *
+   * NOT derivable from `iac_snapshot_sha`: that is a commit SHA, which a
+   * docs-only commit moves while `iac/` is untouched.
+   */
+  iac_snapshot_stale?: boolean | null;
+  /** Machine-readable why: `tree_hash_mismatch` | `worker_hash_unavailable` |
+   *  `local_hash_unavailable`, or null when not stale. The UI branches on
+   *  `iac_snapshot_stale` for copy; this is for logs and for an operator
+   *  reading the raw payload. */
+  iac_snapshot_reason?: string | null;
   degraded: boolean;
   degraded_reason: string | null;
   detail?: string | null;
@@ -147,6 +167,69 @@ export interface InfraGraph {
    * coordinator simply omits the field.
    */
   unmatched_declarations?: UnmatchedDeclarations;
+}
+
+/**
+ * How current is the `iac/` tree an estate view was read from? (ds-1vn)
+ *
+ * ONE derivation, exported, because more than one surface acts on the answer:
+ * EstateView's Adopt chips and the guided tour's adopt suggestion. The first
+ * cut put this logic in EstateView alone and the tour went on recommending an
+ * adoption from a snapshot the estate had just disowned (Codex r3) — the same
+ * "fix one surface, leave its siblings making the retired claim" shape that
+ * cost four review rounds on the ledger. Sharing the function is what makes
+ * the two unable to disagree.
+ *
+ *  - `'stale'`      — the snapshot is a DIFFERENT `iac/` tree than the running
+ *                     deployment holds, so a resource declared since then can
+ *                     still be listed as undeclared.
+ *  - `'unverified'` — nobody could check: one side reported no hash, or the
+ *                     last graph fetch failed and this graph is retained.
+ *  - `'fresh'`      — the two trees are byte-identical.
+ *
+ * Explicit `=== true` / `=== false`, never truthiness: `undefined` (a payload
+ * predating the field) and `null` (a check that could not run) are BOTH
+ * unverified, and only a literal `false` earns silence. A `??`-style coercion
+ * would promote `undefined` into the silent branch, which is the conflation
+ * the field exists to prevent — and which appeared in this feature's own test
+ * fixture before it appeared anywhere else.
+ *
+ * `graphStale` is checked AFTER `=== true`: a mismatch already observed does
+ * not stop being true because a later refresh failed, and softening it would
+ * retire a warning on no evidence.
+ */
+export type SnapshotFreshness = 'stale' | 'unverified' | 'fresh';
+
+export function snapshotFreshness(
+  graph: InfraGraph | null,
+  graphStale: boolean = false,
+): SnapshotFreshness {
+  if (graph === null) return 'unverified';
+  if (graph.iac_snapshot_stale === true) return 'stale';
+  if (graph.iac_snapshot_stale === false) return graphStale ? 'unverified' : 'fresh';
+  return 'unverified';
+}
+
+/**
+ * May this snapshot drive an ADOPTION? Only when fresh.
+ *
+ * Adopt is an ABSENCE claim — "this resource is not declared in IaC" — read
+ * off the worker's baked `iac/`. Both non-fresh states make that absence
+ * unsupported, and the difference between them does not help the operator:
+ * `stale` proves the basis is wrong, `unverified` means nobody can say it is
+ * right. The rollout that produces `unverified` is precisely the one that
+ * produces real staleness — a coordinator deployed ahead of the worker, which
+ * is the ds-1vn incident exactly, wearing "unknown" instead of "mismatch"
+ * (Codex r3). Prior releases having shipped without the check establishes
+ * compatibility, not that the action was safe.
+ *
+ * The backend preflight still refuses a PR for an already-declared identity
+ * (`agent/adk_tools.py`), so what this prevents is a FALSE RECOMMENDATION
+ * rather than a bad apply. On a surface whose whole purpose is not claiming
+ * more than it can prove, that is reason enough.
+ */
+export function adoptionTrusted(freshness: SnapshotFreshness): boolean {
+  return freshness === 'fresh';
 }
 
 // ---------------------------------------------------------------------------

@@ -85,6 +85,9 @@ const GRAPH = {
   generated_at: null,
   project: 'demo-proj',
   caveat: '',
+  // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+  // omitted — absent means "unverified", which pauses adoption.
+  iac_snapshot_stale: false,
   degraded: false,
   degraded_reason: null,
   totals: { resources: 1, managed: 0, drift: 1 },
@@ -592,6 +595,9 @@ const ADOPT_GRAPH = {
   generated_at: null,
   project: 'demo-proj',
   caveat: 'test caveat',
+  // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+  // omitted — absent means "unverified", which pauses adoption.
+  iac_snapshot_stale: false,
   degraded: false,
   degraded_reason: null,
   totals: { resources: 1, managed: 0, drift: 1 },

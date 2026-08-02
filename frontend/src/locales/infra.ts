@@ -26,8 +26,8 @@ export const infra = {
     'infra.label.systemManaged': 'system-managed',
     'infra.label.notAdoptableType': 'not an adoptable type',
 
-    'infra.summary.count': '{managed}/{resources} managed',
-    'infra.summary.countWithPct': '{managed}/{resources} managed · {pct}%',
+    'infra.summary.count': '{managed}/{resources} declared',
+    'infra.summary.countWithPct': '{managed}/{resources} declared · {pct}%',
 
     'infra.preview.lead':
       'Previewing PR #{pr}. Dashed nodes show what approving this change ' +
@@ -46,7 +46,7 @@ export const infra = {
     'infra.preview.rendering': 'Rendering diagram…',
 
     'infra.legend.title': 'Legend',
-    'infra.legend.managed': 'managed in IaC',
+    'infra.legend.managed': 'declared in IaC',
     'infra.legend.drift': 'adoptable drift',
     'infra.legend.openPr': 'Open PR',
     'infra.legend.ghostCreate': 'will be created',
@@ -54,7 +54,7 @@ export const infra = {
     'infra.legend.ghostDestroy': 'will be destroyed',
     'infra.legend.helpAriaLabel': 'Explain the resource colors and tags',
     'infra.legend.help':
-      'Every box is a real resource in your project. Green means managed in IaC: ' +
+      'Every box is a real resource in your project. Green means declared in IaC: ' +
       'it is defined in OpenTofu, so DriftScribe tracks it and can change it through ' +
       'the approval flow. Yellow means adoptable drift: the resource exists, is not ' +
       'in any .tf file, and is a type DriftScribe can import, so it has an Adopt ' +
@@ -112,14 +112,14 @@ export const infra = {
     'infra.error.renderDiagram': 'Could not render the diagram.',
 
     'infra.card.startHere': 'Start here',
-    'infra.card.managedTag': 'managed',
+    'infra.card.managedTag': 'declared',
     'infra.card.pendingLink': 'Review pending adoption (PR #{pr}) →',
     'infra.card.pendingTag': 'PR open',
     'infra.card.adoptButton': 'Adopt into IaC',
     'infra.card.systemManagedCount': '{n} system-managed',
     'infra.card.protected': '· protected',
     'infra.card.systemManagedMore': '+{n} more not shown',
-    'infra.card.trailerUnmanaged': '+{n} more unmanaged {label}(s) not shown',
+    'infra.card.trailerUnmanaged': '+{n} more undeclared {label}(s) not shown',
     'infra.card.trailerNotShown': '+{n} more {label}(s) not shown',
     'infra.card.hiddenCountLine.one': '{n} {label} · hidden',
     'infra.card.hiddenCountLine.other': '{n} {label}s · hidden',
@@ -171,16 +171,16 @@ export const infra = {
 
     'infra.coverage.subjectDefault': 'your infrastructure',
     'infra.coverage.subjectSupported': 'your supported infrastructure',
-    'infra.coverage.ariaLabel': 'IaC coverage',
+    'infra.coverage.ariaLabel': 'IaC declaration coverage',
     // '{{PCT}}' is a literal marker (not a `{param}` — interpolate() leaves an
     // unrecognized `{word}` untouched), split out in the component to slot in
     // the separately-styled/tested percentage <strong>. Keeps this a single
     // whole-sentence key per locale (EN leads with the number; JA needs it
     // mid-sentence) with no empty catalog value.
-    'infra.coverage.headline': '{{PCT}} of {subject} is under IaC management',
-    'infra.coverage.ariaValueText': '{pct}% of {subject}, {managed} of {resources} resources managed',
-    'infra.coverage.detail': '{managed} of {resources} resources managed',
-    'infra.coverage.detailWithDrift': '{managed} of {resources} resources managed · {drift} not yet in IaC',
+    'infra.coverage.headline': '{{PCT}} of {subject} is declared in IaC',
+    'infra.coverage.ariaValueText': '{pct}% of {subject}, {managed} of {resources} resources declared in IaC',
+    'infra.coverage.detail': '{managed} of {resources} resources declared in IaC',
+    'infra.coverage.detailWithDrift': '{managed} of {resources} resources declared in IaC · {drift} not yet',
 
     'infra.driftDiff.ariaLabel': 'Environment drift detail',
     'infra.driftDiff.label': 'Drift detail',
@@ -240,8 +240,8 @@ export const infra = {
     'infra.label.systemManaged': 'システム管理',
     'infra.label.notAdoptableType': 'IaC 管理への取り込み対象外',
 
-    'infra.summary.count': 'IaC 管理済み：{managed}/{resources}件',
-    'infra.summary.countWithPct': 'IaC 管理済み：{managed}/{resources}件・{pct}%',
+    'infra.summary.count': 'IaC に定義済み：{managed}/{resources}件',
+    'infra.summary.countWithPct': 'IaC に定義済み：{managed}/{resources}件・{pct}%',
 
     'infra.preview.lead':
       'PR #{pr} をプレビュー中です。破線のノードは、この変更を承認した場合に何が起こるかを' +
@@ -261,7 +261,7 @@ export const infra = {
     'infra.preview.rendering': '図を描画中…',
 
     'infra.legend.title': '凡例',
-    'infra.legend.managed': 'IaC 管理済み',
+    'infra.legend.managed': 'IaC に定義済み',
     'infra.legend.drift': 'IaC 管理に取り込み可能なドリフト',
     'infra.legend.openPr': '開いている PR',
     'infra.legend.ghostCreate': '作成予定',
@@ -269,7 +269,7 @@ export const infra = {
     'infra.legend.ghostDestroy': '削除予定',
     'infra.legend.helpAriaLabel': '色とタグの意味を説明',
     'infra.legend.help':
-      'すべてのボックスは、プロジェクト内の実際のリソースです。緑は IaC 管理済みを意味します。' +
+      'すべてのボックスは、プロジェクト内の実際のリソースです。緑は IaC に定義済みを意味します。' +
       'OpenTofu で定義されているため、DriftScribe がそのリソースを追跡し、承認フローを通じて' +
       '変更できます。黄色は IaC 管理に取り込み可能なドリフトを意味します。そのリソースは存在しますが、' +
       'どの .tf ファイルにも定義されておらず、DriftScribe が IaC 管理に取り込める種類のため、取り込むボタンが' +
@@ -317,14 +317,14 @@ export const infra = {
     'infra.error.renderDiagram': '図を描画できませんでした。',
 
     'infra.card.startHere': 'はじめに',
-    'infra.card.managedTag': 'IaC 管理済み',
+    'infra.card.managedTag': 'IaC に定義済み',
     'infra.card.pendingLink': '保留中の IaC 管理への取り込みを確認（PR #{pr}）→',
     'infra.card.pendingTag': 'PR あり',
     'infra.card.adoptButton': 'IaC 管理に取り込む',
     'infra.card.systemManagedCount': 'システム管理 {n}件',
     'infra.card.protected': '・保護対象',
     'infra.card.systemManagedMore': 'ほかに {n}件あります（表示されていません）',
-    'infra.card.trailerUnmanaged': 'ほかに IaC 未管理の {label} が {n}件あります（表示されていません）',
+    'infra.card.trailerUnmanaged': 'ほかに IaC に未定義の {label} が {n}件あります（表示されていません）',
     'infra.card.trailerNotShown': 'ほかに {label} が {n}件あります（表示されていません）',
     'infra.card.hiddenCountLine.one': '{label}：{n}件・非表示',
     'infra.card.hiddenCountLine.other': '{label}：{n}件・非表示',
@@ -371,11 +371,11 @@ export const infra = {
 
     'infra.coverage.subjectDefault': '稼働中のインフラ全体',
     'infra.coverage.subjectSupported': '対象のインフラ',
-    'infra.coverage.ariaLabel': 'IaC 管理率',
-    'infra.coverage.headline': '{subject}の {{PCT}} が IaC 管理下にあります。',
-    'infra.coverage.ariaValueText': '{subject}の IaC 管理率は {pct}%、全{resources}件中{managed}件が IaC 管理済みです',
-    'infra.coverage.detail': '{resources}件中{managed}件が IaC 管理済み',
-    'infra.coverage.detailWithDrift': '{resources}件中{managed}件が IaC 管理済み・{drift}件は IaC 未管理',
+    'infra.coverage.ariaLabel': 'IaC 定義率',
+    'infra.coverage.headline': '{subject}の {{PCT}} が IaC に定義済みです。',
+    'infra.coverage.ariaValueText': '{subject}の IaC 定義率は {pct}%、全{resources}件中{managed}件が IaC に定義済みです',
+    'infra.coverage.detail': '{resources}件中{managed}件が IaC に定義済み',
+    'infra.coverage.detailWithDrift': '{resources}件中{managed}件が IaC に定義済み・{drift}件は未定義',
 
     'infra.driftDiff.ariaLabel': '環境変数の差分の詳細',
     'infra.driftDiff.label': '環境変数の差分',

@@ -147,6 +147,7 @@ def build_inventory(
     *,
     project: str,
     iac_snapshot_sha: str,
+    iac_tree_hash: str | None = None,
     declared_parse_ok: bool = True,
 ) -> dict:
     """Build the bounded summary dict. See design §4.5 for the shape."""
@@ -269,6 +270,14 @@ def build_inventory(
         "inventory_source": "cloud_asset_inventory",
         "freshness_caveat": _FRESHNESS,
         "iac_snapshot_sha": iac_snapshot_sha,
+        # ds-1vn: the FRESHNESS identity, distinct from iac_snapshot_sha above.
+        # That one is a commit SHA, which a docs-only commit moves without
+        # touching iac/ — useless as a "is this snapshot current" key. This is a
+        # content hash of the iac/ tree the declared set was actually parsed
+        # from, so the coordinator can compare it against its own baked tree.
+        # None when the worker could not hash its tree; consumers must read that
+        # as UNVERIFIED, never as fresh.
+        "iac_tree_hash": iac_tree_hash,
         "total_resources": total,
         "declared_in_iac": declared_total,
         "not_in_iac": total - declared_total,

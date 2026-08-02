@@ -39,6 +39,9 @@ beforeEach(() => {
           generated_at: null,
           project: 'demo-proj',
           caveat: '',
+          // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+          // omitted — absent means "unverified", which pauses adoption.
+          iac_snapshot_stale: false,
           degraded: false,
           degraded_reason: null,
           totals: { resources: 1, managed: 0, drift: 1 },
@@ -254,6 +257,9 @@ describe('App — open-trace surfaces the PR body ("what this change did")', () 
           generated_at: null,
           project: 'demo-proj',
           caveat: '',
+          // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+          // omitted — absent means "unverified", which pauses adoption.
+          iac_snapshot_stale: false,
           degraded: false,
           degraded_reason: null,
           totals: { resources: 1, managed: 0, drift: 1 },
@@ -344,6 +350,9 @@ describe('App — history-aware view navigation (ds-7ag.1)', () => {
     generated_at: null,
     project: 'demo-proj',
     caveat: '',
+    // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+    // omitted — absent means "unverified", which pauses adoption.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 1, managed: 0, drift: 1 },
@@ -628,6 +637,9 @@ describe('App — view routing (Task 2.2)', () => {
             generated_at: null,
             project: 'demo-proj',
             caveat: '',
+            // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+            // omitted — absent means "unverified", which pauses adoption.
+            iac_snapshot_stale: false,
             degraded: false,
             degraded_reason: null,
             totals: { resources: 1, managed: 0, drift: 1 },
@@ -837,6 +849,9 @@ describe('App — view routing (Task 2.2)', () => {
             generated_at: null,
             project: 'demo-proj',
             caveat: '',
+            // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+            // omitted — absent means "unverified", which pauses adoption.
+            iac_snapshot_stale: false,
             degraded: false,
             degraded_reason: null,
             totals: { resources: 1, managed: 0, drift: 1 },
@@ -900,6 +915,9 @@ describe('App — rails come off the desk (Task 3.5)', () => {
             generated_at: null,
             project: 'demo-proj',
             caveat: '',
+            // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+            // omitted — absent means "unverified", which pauses adoption.
+            iac_snapshot_stale: false,
             degraded: false,
             degraded_reason: null,
             totals: { resources: 1, managed: 0, drift: 1 },
@@ -979,6 +997,9 @@ describe('App — estate section (Task 4.1)', () => {
             generated_at: '2026-07-28T06:00:00Z',
             project: 'demo-proj',
             caveat: '',
+            // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+            // omitted — absent means "unverified", which pauses adoption.
+            iac_snapshot_stale: false,
             degraded: false,
             degraded_reason: null,
             totals: { resources: 2, managed: 0, drift: 1 },
@@ -1008,6 +1029,92 @@ describe('App — estate section (Task 4.1)', () => {
       }),
     );
   }
+
+  // ds-1vn r3. `graphStale` is a store fact threaded App -> EstateView and
+  // App -> TourCard BY HAND, and a hand-threaded prop is what a refactor drops.
+  // Verified by injection: removing either `graphStale={...}` from App reddened
+  // NOTHING across all 1866 tests — the component-level tests pass the prop
+  // themselves, so they cannot see App failing to. This is the wiring test.
+  //
+  // Driven through TWO cycles on purpose. One failing cycle leaves `graph`
+  // null and the estate shows its degraded line, which proves nothing; the
+  // dangerous state is a RETAINED graph that still says `iac_snapshot_stale:
+  // false` while the refresh that would have rechecked it failed.
+  it('a failed graph REFRESH retires the adopt affordance on the retained estate', async () => {
+    let failGraph = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph')) {
+          if (failGraph) return new Response('boom', { status: 500 });
+          return okJson({
+            generated_at: '2026-07-28T06:00:00Z',
+            project: 'demo-proj',
+            caveat: '',
+            iac_snapshot_stale: false,
+            degraded: false,
+            degraded_reason: null,
+            totals: { resources: 2, managed: 0, drift: 1 },
+            groups: [
+              {
+                asset_type: BUCKET,
+                label: 'Storage bucket',
+                count: 1,
+                managed: 0,
+                drift: 1,
+                sensitive: false,
+                adoptable: true,
+                nodes: [
+                  {
+                    id: 'b0',
+                    label: 'shipping-topic',
+                    asset_type: BUCKET,
+                    managed: false,
+                    location: 'asia-northeast1',
+                  },
+                ],
+              },
+            ],
+            edges: [],
+          });
+        }
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, queryByTestId, getByTestId } = render(App);
+    // Cycle 1 succeeds: the estate is fresh and Adopt is offered.
+    expect(await findByTestId('estate-adopt-btn')).toBeTruthy();
+
+    // Cycle 2 fails. The graph is RETAINED — the rows stay, which is right —
+    // but its freshness claim must not be retained with it.
+    failGraph = true;
+    await fireEvent.focus(window);
+    await waitFor(() => expect(getByTestId('estate-snapshot-unverified')).toBeTruthy());
+    expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    // 'unverified', not 'stale': a failed refresh is no evidence of a mismatch.
+    expect(getByTestId('estate-adopt-unverified')).toBeTruthy();
+    // The row itself survives: a warning must not hide its own subject.
+    expect(getByTestId('estate-row').textContent).toContain('shipping-topic');
+
+    // ...and the TOUR agrees (Codex r4). I first judged this seam not worth
+    // covering because App feeds both children `graphStale` from the same
+    // source on adjacent lines. That reasoning is wrong twice over: both props
+    // are OPTIONAL, so svelte-check accepts the omission silently, and this is
+    // the exact seam whose absence let a high-severity defect through in round
+    // 3 — the estate suppressing adoption while the tour beside it still
+    // recommended one. TourCard's own test supplies the prop itself and
+    // therefore cannot prove App forwards it.
+    await fireEvent.click(getByTestId('tour-banner-start'));
+    await fireEvent.click(getByTestId('tour-next')); // welcome → estate
+    await fireEvent.click(getByTestId('tour-next')); // estate → controls
+    await fireEvent.click(getByTestId('tour-next')); // controls → adopt
+    await waitFor(() => expect(getByTestId('tour-body')).toBeTruthy());
+    expect(queryByTestId('tour-adopt-btn')).toBeNull();
+  });
 
   it('renders real drift rows sourced from the overview store', async () => {
     stubFetchWithAdoptableGraph();
@@ -1107,6 +1214,9 @@ describe('App — estate section (Task 4.1)', () => {
             generated_at: '2026-07-31T06:00:00Z',
             project: 'demo-proj',
             caveat: '',
+            // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+            // omitted — absent means "unverified", which pauses adoption.
+            iac_snapshot_stale: false,
             degraded: false,
             degraded_reason: null,
             totals: { resources: 2, managed: 0, drift: 1 },
@@ -1192,6 +1302,9 @@ describe('App — desk decision records (ds-jns)', () => {
     generated_at: null,
     project: 'demo-proj',
     caveat: '',
+    // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+    // omitted — absent means "unverified", which pauses adoption.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 1, managed: 0, drift: 1 },
@@ -1395,6 +1508,9 @@ describe('App — popstate and the desk record (ds-jns)', () => {
     generated_at: null,
     project: 'demo-proj',
     caveat: '',
+    // ds-1vn: a healthy deployment's snapshot matches. Explicit, not
+    // omitted — absent means "unverified", which pauses adoption.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 1, managed: 0, drift: 1 },

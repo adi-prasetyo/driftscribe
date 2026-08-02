@@ -110,6 +110,22 @@ export interface OverviewState {
    * operator was still told something false, on the demo's action surface.
    */
   approvalsStale: boolean;
+  /**
+   * Did the LAST cycle's `/infra/graph` fetch fail? (Codex review of ds-1vn.)
+   *
+   * Sibling of `approvalsStale` above and for the same reason, one lane over.
+   * A failed graph fetch PRESERVES the previous graph (see `runCycle`), which
+   * is right for the numbers — a stale count beats a blank panel — but wrong
+   * for the graph's own `iac_snapshot_stale` field, because that field is an
+   * ASSURANCE. Retaining a `false` through a failed refresh converts "we could
+   * not look" into "we looked and it is current", which is precisely the
+   * conflation ds-1vn exists to remove. So the estate degrades a retained
+   * `fresh` to `unverified` while this is true.
+   *
+   * Only `!g.ok` — a graph that came back DEGRADED is a successful fetch of a
+   * degraded answer, and EstateView already replaces the whole panel for it.
+   */
+  graphStale: boolean;
 }
 
 export interface OverviewStore extends Readable<OverviewState> {
@@ -138,6 +154,7 @@ const INITIAL: OverviewState = {
   settled: false,
   degraded: false,
   approvalsStale: false,
+  graphStale: false,
 };
 
 type FetchResult<T> = { ok: true; value: T } | { ok: false };
@@ -251,6 +268,7 @@ export function createOverviewStore(
       degraded: !p.ok || !d.ok || (p.ok && p.value.degraded),
       // The approvals lane alone. Same recompute-never-latch rule.
       approvalsStale: !p.ok || p.value.degraded,
+      graphStale: !g.ok,
     }));
   }
 

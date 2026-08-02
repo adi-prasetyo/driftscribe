@@ -169,7 +169,7 @@ describe('InstrumentBand — accessible names name their destination', () => {
     // pass if the label degraded to the bare numeral or the {n} placeholder
     // leaked through uninterpolated.
     expect(getByTestId('instrument-band-managed').getAttribute('aria-label')).toBe(
-      '9 managed by IaC — view infrastructure map',
+      '9 declared in IaC — view infrastructure map',
     );
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
       '6 drift detected — view infrastructure map',
@@ -238,7 +238,7 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
     // destination too — the visible hint is aria-hidden, and a button that never
     // says what it opens is the gap that leaves (Codex review).
     expect(getByTestId('instrument-band-managed').getAttribute('aria-label')).toBe(
-      'Managed by IaC: not yet known — view infrastructure map',
+      'Declared in IaC: not yet known — view infrastructure map',
     );
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
       'Drift detected: not yet known — view infrastructure map',

@@ -51,6 +51,10 @@ const GRAPH = {
   generated_at: '2026-07-30T02:00:00Z',
   project: 'driftscribe-hack-2026',
   caveat: '',
+  // ds-1vn: a healthy deployment's snapshot matches. Explicit, not omitted —
+  // absent means "unverified", which draws a freshness notice and mutes the
+  // Adopt controls in frames that are not about freshness at all.
+  iac_snapshot_stale: false,
   degraded: false,
   degraded_reason: null,
   totals: { resources: 735, managed: 9, drift: 6 },
@@ -194,6 +198,15 @@ for (const locale of ['ja', 'en'] as const) {
     //    deliberate control rather than a collapsed row. `expect` rather than an
     //    `if (count)` guard: a fixture that stopped producing untracked rows
     //    would otherwise skip this frame in silence.
+    // ds-1vn (Codex r4). These frames are about wayfinding, not freshness, so
+    // a stray "could not verify" banner and muted Adopt controls would quietly
+    // change what every shot depicts — and this spec's assertions cover the
+    // scroll and the fold, so the gate would stay green while the frames drifted.
+    // Exactly the trap the header comment above describes, one field over.
+    await expect(page.getByTestId('estate-snapshot-unverified')).toHaveCount(0);
+    await expect(page.getByTestId('estate-snapshot-stale')).toHaveCount(0);
+    await expect(page.getByTestId('estate-adopt-btn').first()).toBeVisible();
+
     const fold = page.getByTestId('estate-untracked-fold');
     await expect(fold).toBeVisible();
     await fold.locator('summary').click();

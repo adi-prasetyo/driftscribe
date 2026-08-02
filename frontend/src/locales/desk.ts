@@ -22,7 +22,7 @@ export const desk = {
     // ("nine") is meaningless without what it counts, so each stat button's
     // accessible name pairs the figure with its meaning explicitly rather
     // than relying on visible-text concatenation order.
-    'desk.band.managedLabel': 'Managed by IaC',
+    'desk.band.managedLabel': 'Declared in IaC',
     'desk.band.driftLabel': 'Drift detected',
     // "decision", not "approval" (ds-22k). `awaitingCount` unions two lanes: an
     // unspent rollback approval, AND an iac row whose remaining operator step is
@@ -46,7 +46,7 @@ export const desk = {
     // estate view. The 2026-07-31 merge left one page and one variant; the
     // keys keep their names because renaming them across every locale buys
     // nothing an operator can see.
-    'desk.band.managedAriaDesk': '{n} managed by IaC — view infrastructure map',
+    'desk.band.managedAriaDesk': '{n} declared in IaC — view infrastructure map',
     'desk.band.driftAriaDesk': '{n} drift detected — view infrastructure map',
     // The VISIBLE hover/focus hint on an interactive numeral (plan Task 3). The
     // numerals read as figures, so nothing said a click went anywhere. Keyed by
@@ -62,7 +62,7 @@ export const desk = {
     // (the map is where you go to find out), so their accessible name carries
     // the destination as well.
     'desk.band.managedUnknownAriaDesk':
-      'Managed by IaC: not yet known — view infrastructure map',
+      'Declared in IaC: not yet known — view infrastructure map',
     'desk.band.driftUnknownAriaDesk': 'Drift detected: not yet known — view infrastructure map',
     // LedgerStrip (Task 3.4) — the "Recent record" strip beneath the desk
     // hero. `openTitle`/`appliedTitle` cover the two states this module
@@ -247,21 +247,52 @@ export const desk = {
     'desk.estate.ariaLabel': 'Estate',
     'desk.estate.loading': 'Loading the estate…',
     'desk.estate.degraded': 'The estate map is temporarily unavailable.',
-    'desk.estate.driftGroup': 'Drift — not managed by IaC ({n})',
+    // ds-1vn — the age of the iac/ snapshot this whole list was read from.
+    // Says "than the running deployment", not "than main": what the check
+    // actually compares is the infra-reader's baked iac/ tree against the
+    // coordinator's. If both were equally behind main it would report a match,
+    // so claiming currency against main would overstate the evidence.
+    'desk.estate.snapshotStale':
+      'This list was read from a different iac/ snapshot than the running deployment, so what it calls declared may be out of date. Adoption is paused on these rows until the two agree.',
+    // Deliberately not silence. "We could not check" and "it is current" are
+    // different facts, and rendering them the same way is the defect ds-1vn
+    // exists to remove.
+    'desk.estate.snapshotUnverified':
+      'This deployment could not confirm which iac/ snapshot the list below was read from, so what it calls declared may be out of date. Adoption is paused until it can.',
+    'desk.estate.driftGroup': 'Drift — not declared in IaC ({n})',
     // The drift group's mirror image: declared in IaC, no live resource. The
     // heading carries the TRUE server-side count, which can exceed the rows
     // shown (the trailer below reports the difference). Its lead line and
     // Investigate button reuse the `infra.unmatched.*` copy this group was
     // built from in InfraDiagram — same words, new home (ds-zld).
     'desk.estate.unmatchedGroup': 'Declared in IaC, not found live ({n})',
-    'desk.estate.managedGroup': 'Managed by IaC ({n})',
-    'desk.estate.untrackedGroup': 'Not managed, not adoptable ({n})',
+    'desk.estate.managedGroup': 'Declared in IaC ({n})',
+    'desk.estate.untrackedGroup': 'Not declared, not adoptable ({n})',
     'desk.estate.adoptButton': 'Open an adoption PR',
     // Shown in the Adopt button's place when the pending-approvals lane was
     // unreliable this cycle. Offering Adopt there would claim no adoption PR
     // exists, which is exactly what we failed to establish (Codex review #258).
     'desk.estate.adoptUnavailable': 'adoption status unknown',
+    // ds-1vn. Both distinct from adoptUnavailable above, which means "we could
+    // not ask GitHub whether a PR exists". These two are about the declared set
+    // this row's status came from — and they are SEPARATE strings because they
+    // assert different things (Codex r4). "Out of step" claims a mismatch was
+    // established; on the unverified path nothing was, and reusing the stale
+    // wording made the row contradict the notice above it, which says only
+    // "could not confirm". Widening a suppression is not licence to widen its
+    // claim.
+    'desk.estate.adoptSnapshotStale': 'paused · snapshot out of step',
+    'desk.estate.adoptSnapshotUnverified': 'paused · snapshot not verified',
     'desk.estate.prPending': 'PR #{pr} awaiting review',
+    // ds-1vn r5. "awaiting review" is PRESENT TENSE — a claim about the PR's
+    // state right now. On a pending-approvals failure the store retains the
+    // previous list, so that claim outlives the fetch that established it, and
+    // a PR closed/merged/rejected elsewhere sits there labelled "awaiting
+    // review" indefinitely. The PR NUMBER is still a fact worth showing; only
+    // its status is unrefreshed. Exactly the split already made for the graph's
+    // freshness assurance one lane over — a retained value may keep its
+    // identity and must not keep its verdict.
+    'desk.estate.prPendingUnrefreshed': 'PR #{pr} · status not refreshed',
     'desk.estate.driftMore': '…{n} more drift',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
     // Pluralized on the TYPE count via i18n.ts's `.one`/`.other` convention —
@@ -272,8 +303,8 @@ export const desk = {
     'desk.estate.otherResources.one': "{other} more resources in 1 type DriftScribe doesn't manage",
     'desk.estate.otherResources.other':
       "{other} more resources across {types} types DriftScribe doesn't manage",
-    'desk.estate.legendManaged': 'Managed by IaC',
-    'desk.estate.legendDrift': 'Not managed by IaC · drift',
+    'desk.estate.legendManaged': 'Declared in IaC',
+    'desk.estate.legendDrift': 'Not declared in IaC · drift',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -282,9 +313,9 @@ export const desk = {
     'desk.seal.ariaLabel': '承認済み',
     // Visible labels straight from the mockup (docs/plans/2026-07-28-
     // composite-mockup.html "instrument band"). Aria variants prefix the
-    // count so a screen reader announces "9件、IaC管理下" rather than a bare
+    // count so a screen reader announces "9件、IaC に定義済み" rather than a bare
     // label with no number.
-    'desk.band.managedLabel': 'IaC 管理下',
+    'desk.band.managedLabel': 'IaC に定義済み',
     'desk.band.driftLabel': 'ドリフト検出',
     // 「承認」ではなく「判断」（ds-22k）。awaitingCount はロールバックの未使用承認と、
     // マージ後の適用を待つ IaC 行の両方を数える。後者に必要なのは承認ではなく適用で、
@@ -295,11 +326,11 @@ export const desk = {
     'desk.band.awaitingAria': '{n}件、あなたの判断待ち',
     // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
     // `Desk` サフィックスは名残：2026-07-31 の統合前は文脈を表していた。
-    'desk.band.managedAriaDesk': '{n}件、IaC 管理下 — インフラを見る',
+    'desk.band.managedAriaDesk': '{n}件、IaC に定義済み — インフラを見る',
     'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
     'desk.band.statHintEstate': 'インフラを見る →',
     'desk.band.awaitingUnknownAria': 'あなたの判断待ち：未取得',
-    'desk.band.managedUnknownAriaDesk': 'IaC 管理下：未取得 — インフラを見る',
+    'desk.band.managedUnknownAriaDesk': 'IaC に定義済み：未取得 — インフラを見る',
     'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',
     'desk.ledger.heading': '最近の記録',
     // 記録欄は体言止め（「ロールバック」「エスカレーション」と同じ調子）。
@@ -389,13 +420,20 @@ export const desk = {
     'desk.estate.ariaLabel': 'インフラ',
     'desk.estate.loading': 'インフラ情報を読み込み中…',
     'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
-    'desk.estate.driftGroup': 'ドリフト — IaC 未管理 {n} 件',
+    'desk.estate.snapshotStale':
+      'この一覧は、稼働中のデプロイとは異なる iac/ スナップショットから読み取られています。定義済みかどうかの判定が最新でない可能性があるため、該当の行では取り込みを一時停止しています。',
+    'desk.estate.snapshotUnverified':
+      'この一覧がどの iac/ スナップショットから読み取られたかを、稼働中のデプロイでは確認できませんでした。定義済みかどうかの判定が最新でない可能性があるため、取り込みを一時停止しています。',
+    'desk.estate.driftGroup': 'ドリフト — IaC に未定義 {n} 件',
     'desk.estate.unmatchedGroup': 'IaC に定義済み・実環境で未検出 {n} 件',
-    'desk.estate.managedGroup': '管理下 — {n} 件',
-    'desk.estate.untrackedGroup': '未管理（取り込み対象外） {n} 件',
+    'desk.estate.managedGroup': 'IaC に定義済み — {n} 件',
+    'desk.estate.untrackedGroup': '未定義（取り込み対象外） {n} 件',
     'desk.estate.adoptButton': '取り込み PR を作成',
     'desk.estate.adoptUnavailable': '取り込み状況を確認できません',
+    'desk.estate.adoptSnapshotStale': '一時停止 ・ スナップショット不一致',
+    'desk.estate.adoptSnapshotUnverified': '一時停止 ・ スナップショット未確認',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
+    'desk.estate.prPendingUnrefreshed': 'PR #{pr} ・ 状態は未更新',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',
     // JA carries no grammatical plural, so .one/.other are identical text
@@ -403,7 +441,7 @@ export const desk = {
     'desk.estate.otherResources.one': '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
     'desk.estate.otherResources.other':
       '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
-    'desk.estate.legendManaged': 'IaC 管理下',
-    'desk.estate.legendDrift': 'IaC 未管理 ・ ドリフト',
+    'desk.estate.legendManaged': 'IaC に定義済み',
+    'desk.estate.legendDrift': 'IaC に未定義 ・ ドリフト',
   },
 };

@@ -14,12 +14,14 @@
 import {
   adoptGroupRank,
   adoptPrefill,
+  adoptionTrusted,
   findPendingPr,
   infraTypeLabel,
   normalizeForPrompt,
   prefillLocation,
   resourceCards,
   scopeTotals,
+  snapshotFreshness,
   type InfraGraph,
   type PendingApproval,
 } from './infra_graph';
@@ -193,7 +195,30 @@ export function adoptStepState(
    *  suggestion built on it would steer the operator at a duplicate adoption.
    *  Optional so existing callers keep their behavior (Codex review #258). */
   approvalsStale?: boolean,
+  /** The last `/infra/graph` fetch failed, so `graph` is a retained snapshot —
+   *  see OverviewState.graphStale. Only needed here because it is a STORE fact,
+   *  not something readable off the graph itself. */
+  graphStale?: boolean,
 ): AdoptStepState {
+  // ds-1vn (Codex r3). The estate suppresses its Adopt buttons on a snapshot it
+  // cannot vouch for; without this the tour went right on recommending "adopt
+  // X" beside them, with a live prefill button — one surface disowning the
+  // claim while its sibling still acted on it, the shape that cost four rounds
+  // on the ledger. Same predicate as EstateView, imported rather than restated.
+  //
+  // Ahead of `approvalsStale` (Codex r4), even though that one was deliberately
+  // first before this existed. Both yield `none`, so this is purely about which
+  // explanation the operator reads — and they imply different next moves. An
+  // approvals outage says "come back in a moment"; an untrusted snapshot needs
+  // the two sides to agree, which takes a deploy. Telling someone to wait for a
+  // blocker that waiting cannot clear is worse than saying nothing.
+  //
+  // Deliberately NOT hoisted above the null/degraded guard: `approvalsStale`
+  // winning over an absent graph is pinned from #258, and nothing here needs to
+  // disturb it. Hence the explicit usability test rather than a reorder.
+  if (graph !== null && !graph.degraded && !adoptionTrusted(snapshotFreshness(graph, graphStale))) {
+    return { kind: 'none', line: t('tour.adopt.snapshotUnverified') };
+  }
   if (approvalsStale) {
     return { kind: 'none', line: t('tour.adopt.approvalsUnknown') };
   }

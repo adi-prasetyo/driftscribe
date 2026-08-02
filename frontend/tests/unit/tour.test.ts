@@ -12,6 +12,7 @@ import {
   adoptStepState,
 } from '../../src/lib/tour';
 import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
+import { adoptionTrusted, snapshotFreshness } from '../../src/lib/infra_graph';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
 // The raw catalog, not the translator: the off-view guard at the bottom of this
 // file walks EVERY string a step can render, including the branches no fixture
@@ -116,6 +117,10 @@ function makeGraph(over: Partial<InfraGraph> = {}): InfraGraph {
     generated_at: null,
     project: 'driftscribe-hack-2026',
     caveat: 'CAI may lag recent changes.',
+    // ds-1vn: a healthy deployment's snapshot matches. Explicit, not omitted —
+    // absent now means "unverified", which pauses the adopt suggestion, and
+    // every unrelated ranking test would then exercise the paused path.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 12, managed: 9, drift: 3 },
@@ -240,7 +245,7 @@ describe('step copy', () => {
     expect(line).toContain('2 of 3'); // scope managed / scope resources
     expect(line).toContain('(67%)');
     expect(line).toContain('10'); // out-of-scope count
-    expect(line).toContain('The Managed by IaC figure at the top of this page tracks your migration.');
+    expect(line).toContain('The Declared in IaC figure at the top of this page tracks your migration.');
     expect(line).not.toContain('9 of 13');
     expect(line).not.toContain('2 of 13');
   });
@@ -277,7 +282,7 @@ describe('step copy', () => {
     expect(line).toContain('10 resources indexed');
     expect(line).toContain('none are in resource types DriftScribe supports');
     expect(line).not.toContain('The other');
-    expect(line).toContain('The Managed by IaC figure at the top of this page tracks your migration.');
+    expect(line).toContain('The Declared in IaC figure at the top of this page tracks your migration.');
   });
 
   it('estateLine is honest while loading and when degraded (T3)', () => {
@@ -403,7 +408,7 @@ describe('adoptStepState', () => {
       }),
     );
     expect(allManaged.kind).toBe('none');
-    expect(allManaged.line).toContain('already under IaC management');
+    expect(allManaged.line).toContain('already declared in IaC');
 
     const leftovers = adoptStepState(
       t,
@@ -411,7 +416,7 @@ describe('adoptStepState', () => {
     );
     expect(leftovers.kind).toBe('none');
     expect(leftovers.line).toContain('not adoptable types.');
-    expect(leftovers.line).not.toContain('already under IaC management');
+    expect(leftovers.line).not.toContain('already declared in IaC');
   });
 
   it('skips control-plane nodes — the live papercut: rank-1 must not be our own bucket', () => {
@@ -831,4 +836,99 @@ describe('step copy never points off the step\'s own view', () => {
       });
     }
   }
+});
+
+// ds-1vn r3 (Codex review). Nulling EstateView's `adoptTarget` removed the
+// SPOTLIGHT and nothing else: TourCard derives its own adopt target through
+// `adoptStepState` and renders its own prefill button, so the stale estate
+// could show zero Adopt buttons while the tour beside it said "adopt X" with a
+// live control. One surface disowning the claim while its sibling acted on it
+// — the shape that cost four review rounds on the ledger.
+//
+// The fix is the SHARED predicate (`adoptionTrusted` / `snapshotFreshness` in
+// lib/infra_graph), imported by both, so they cannot drift apart again.
+describe('adoptStepState — an unvouched-for snapshot pauses the suggestion (ds-1vn)', () => {
+  // Local copy: the sibling block's helper is scoped inside its own describe.
+  function adoptableGraph(): InfraGraph {
+    return makeGraph({
+      groups: [
+        makeGroup({
+          adopt_rank: 1,
+          adopt_hint: 'Buckets are the simplest first adoption.',
+          nodes: [makeNode({ id: 'g1n0', label: 'demo-bucket' })],
+        }),
+      ],
+    });
+  }
+
+  it('suggests normally when the snapshot matches this deployment', () => {
+    expect(adoptStepState(t, adoptableGraph()).kind).toBe('target');
+  });
+
+  it('pauses on a STALE snapshot', () => {
+    const g = adoptableGraph();
+    g.iac_snapshot_stale = true;
+    const s = adoptStepState(t, g);
+    expect(s.kind).toBe('none');
+    expect(s.line).toBe(t('tour.adopt.snapshotUnverified'));
+  });
+
+  it('pauses on an UNVERIFIED snapshot', () => {
+    const g = adoptableGraph();
+    g.iac_snapshot_stale = null;
+    expect(adoptStepState(t, g).kind).toBe('none');
+  });
+
+  it('pauses when the field is absent entirely', () => {
+    const g = adoptableGraph();
+    delete (g as Partial<InfraGraph>).iac_snapshot_stale;
+    expect(adoptStepState(t, g).kind).toBe('none');
+  });
+
+  it('pauses when the last graph fetch failed, even though the retained graph says fresh', () => {
+    expect(adoptStepState(t, adoptableGraph(), [], false, true).kind).toBe('none');
+  });
+
+  // Codex r4. Both yield `none`, so this is purely about which explanation the
+  // operator reads — and the two imply different next moves. An approvals
+  // outage clears by waiting; an untrusted snapshot needs the two sides to
+  // agree, which takes a deploy. The first cut reported the approvals line and
+  // told the operator to come back in a moment for a blocker that waiting
+  // cannot clear.
+  it('reports the DURABLE snapshot blocker when both lanes are unreliable', () => {
+    const g = adoptableGraph();
+    g.iac_snapshot_stale = true;
+    expect(adoptStepState(t, g, [], true).line).toBe(t('tour.adopt.snapshotUnverified'));
+  });
+
+  it('still reports the approvals lane when the snapshot itself is fine', () => {
+    expect(adoptStepState(t, adoptableGraph(), [], true).line).toBe(
+      t('tour.adopt.approvalsUnknown'),
+    );
+  });
+
+  // #258's pin is untouched: an ABSENT graph plus unreliable approvals still
+  // reports the approvals line. Freshness cannot be judged without a graph, so
+  // the new arm is explicitly gated on having one rather than hoisted above
+  // the null guard.
+  it('leaves the #258 ordering alone for a graph that never loaded', () => {
+    expect(adoptStepState(t, null, [], true).line).toBe(t('tour.adopt.approvalsUnknown'));
+    expect(adoptStepState(t, null, [], false).kind).toBe('unavailable');
+  });
+
+  // The invariant that makes the shared predicate worth having: whatever the
+  // estate refuses to offer, the tour refuses to suggest.
+  it('agrees with adoptionTrusted for every freshness state', () => {
+    for (const [value, trusted] of [
+      [false, true],
+      [true, false],
+      [null, false],
+    ] as const) {
+      const g = adoptableGraph();
+      g.iac_snapshot_stale = value;
+      const suggests = adoptStepState(t, g).kind === 'target';
+      expect(suggests).toBe(adoptionTrusted(snapshotFreshness(g)));
+      expect(suggests).toBe(trusted);
+    }
+  });
 });

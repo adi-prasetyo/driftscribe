@@ -105,7 +105,14 @@ const UNMATCHED = {
   ],
 };
 
-function graphBody(opts: { drift: boolean; degraded?: boolean; unmatched?: boolean }) {
+function graphBody(opts: {
+  drift: boolean;
+  degraded?: boolean;
+  unmatched?: boolean;
+  /** ds-1vn — undefined means a fresh snapshot (no notice). `true` is the
+   *  stale banner; `null` is the quieter "could not verify" line. */
+  snapshotStale?: boolean | null;
+}) {
   if (opts.degraded) {
     return {
       generated_at: null,
@@ -140,6 +147,15 @@ function graphBody(opts: { drift: boolean; degraded?: boolean; unmatched?: boole
     project: 'driftscribe-hack-2026',
     caveat: null,
     iac_snapshot_sha: 'cafef00d',
+    // ds-1vn. Default EXPLICITLY fresh: an omitted field means "unverified",
+    // which would put the freshness line into every unrelated estate shot and
+    // stop those shots representing the state they are named for.
+    // `=== undefined`, NOT `?? false` — `??` treats null as nullish, so a
+    // deliberate `null` ("could not verify") would collapse into `false`
+    // ("verified fresh"). That is the exact conflation ds-1vn exists to stop,
+    // and it appeared here first, in the fixture helper.
+    iac_snapshot_stale: opts.snapshotStale === undefined ? false : opts.snapshotStale,
+    iac_snapshot_reason: opts.snapshotStale === true ? 'tree_hash_mismatch' : null,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 735, managed: 9, drift: opts.drift ? 3 : 0 },
@@ -263,6 +279,7 @@ interface Fixture {
   degraded?: boolean;
   unmatched?: boolean;
   pendingApprovals: typeof PENDING_APPROVALS | [];
+  snapshotStale?: boolean | null;
 }
 
 const FIXTURES: Record<string, Fixture> = {
@@ -272,6 +289,22 @@ const FIXTURES: Record<string, Fixture> = {
   // leftover that would go unnoticed in a shot nobody diffs.
   'all-clear': { drift: false, pendingApprovals: [] },
   degraded: { drift: false, degraded: true, unmatched: true, pendingApprovals: [] },
+  // ds-1vn — the estate still renders in full, with the notice ABOVE the rows
+  // it qualifies. The whole point is that the warning does not hide its
+  // subject: an operator must be able to read the drift rows AND know the
+  // snapshot they came from is behind this deployment.
+  'stale-snapshot': {
+    drift: true,
+    unmatched: true,
+    pendingApprovals: PENDING_APPROVALS,
+    snapshotStale: true,
+  },
+  'unverified-snapshot': {
+    drift: true,
+    unmatched: true,
+    pendingApprovals: PENDING_APPROVALS,
+    snapshotStale: null,
+  },
 };
 
 async function mockEstate(page: Page, fx: Fixture) {
@@ -288,7 +321,15 @@ async function mockEstate(page: Page, fx: Fixture) {
   );
   await page.route('**/infra/pending-approvals', (r) => json(r, { approvals: fx.pendingApprovals }));
   await page.route('**/infra/graph', (r) =>
-    json(r, graphBody({ drift: fx.drift, degraded: fx.degraded, unmatched: fx.unmatched })),
+    json(
+      r,
+      graphBody({
+        drift: fx.drift,
+        degraded: fx.degraded,
+        unmatched: fx.unmatched,
+        snapshotStale: fx.snapshotStale,
+      }),
+    ),
   );
   await page.route(/\/conversations(\?|$)/, (r) => json(r, { conversations: [] }));
 }
@@ -318,6 +359,26 @@ for (const locale of ['en', 'ja'] as Locale[]) {
       // shooting it — otherwise a fixture that silently collapsed to the empty
       // model hands back three near-identical screenshots and the rig looks
       // green while showing nothing.
+      // ds-1vn — same "prove the fixture produced its shape" rule as below.
+      // A stale/unverified shot that captured a quiet estate would look fine
+      // in review and pin nothing.
+      const staleNote = page.getByTestId('estate-snapshot-stale');
+      const unverifiedNote = page.getByTestId('estate-snapshot-unverified');
+      if (fx.degraded) {
+        // Degraded already replaces the estate; no freshness line rides along.
+        await expect(staleNote).toHaveCount(0);
+        await expect(unverifiedNote).toHaveCount(0);
+      } else if (fx.snapshotStale === true) {
+        await expect(staleNote).toBeVisible();
+        await expect(unverifiedNote).toHaveCount(0);
+      } else if (fx.snapshotStale === null) {
+        await expect(unverifiedNote).toBeVisible();
+        await expect(staleNote).toHaveCount(0);
+      } else {
+        await expect(staleNote).toHaveCount(0);
+        await expect(unverifiedNote).toHaveCount(0);
+      }
+
       if (fx.degraded) {
         await expect(page.getByTestId('estate-degraded')).toBeVisible();
         await expect(page.getByTestId('estate-row')).toHaveCount(0);
@@ -330,7 +391,25 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         // adopt button than drift rows — this is the assertion that pins the
         // "one action per row, and a PR'd row is not adoptable" rule.
         await expect(page.getByTestId('estate-pr-chip')).toHaveCount(1);
-        await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(2);
+        // ds-1vn r3: adoption needs a snapshot this deployment can vouch for.
+        // BOTH non-fresh states suppress it — `stale` proves the basis is
+        // wrong, `unverified` means nobody can say it is right, and the
+        // rollout that produces `unverified` (coordinator ahead of worker) is
+        // the one that produces real staleness. The rows themselves stay: a
+        // warning must not hide its own subject.
+        if (fx.snapshotStale !== undefined && fx.snapshotStale !== false) {
+          await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(0);
+          // The chip names the reason it actually has (Codex r4): "out of step"
+          // only where a mismatch was established, "not verified" where nobody
+          // could check. Asserting the RIGHT testid is what stops the two
+          // collapsing back into one over-claiming string.
+          const chip =
+            fx.snapshotStale === true ? 'estate-adopt-stale' : 'estate-adopt-unverified';
+          await expect(page.getByTestId(chip)).toHaveCount(2);
+        } else {
+          await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(2);
+          await expect(page.getByTestId('estate-adopt-stale')).toHaveCount(0);
+        }
         await expect(page.getByTestId('estate-system-fold')).toBeVisible();
         // The merge's density concession: the untracked group folds shut, so
         // its COUNT is what the section spends space on. Assert it is closed —

@@ -54,6 +54,7 @@ from pydantic import BaseModel, ConfigDict
 
 from driftscribe_lib.auth import verify_caller
 from driftscribe_lib.iac_hcl import DeclaredIdentity, extract_declared_identities
+from driftscribe_lib.iac_tree import iac_tree_hash
 from driftscribe_lib.infra_inventory import CaiResource, build_inventory, shorten_topic
 from driftscribe_lib.logging import install_trace_middleware, setup as setup_logging
 
@@ -256,6 +257,32 @@ def _load_declared() -> tuple[list[DeclaredIdentity], bool]:
     return declared, len(parse_errors) == 0
 
 
+def _iac_tree_hash_or_none() -> str | None:
+    """Canonical content hash of the baked ``iac/`` tree, or None if it cannot
+    be computed.
+
+    This is the FRESHNESS identity the estate compares against the coordinator's
+    own baked tree (ds-1vn). ``IAC_SNAPSHOT_SHA`` cannot serve: it is a commit
+    SHA, so a docs-only commit moves it while ``iac/`` is untouched, and a
+    comparison on it would read "stale" forever.
+
+    Deliberately the SAME :func:`iac_tree_hash` the C6 head-config gate uses,
+    not a bespoke hash over the ``*.tf`` files :func:`_load_declared` parses.
+    Whole-tree means an ``iac/README.md`` edit flips it without changing a
+    single declared identity — an over-warning, which is the safe direction,
+    and worth paying to keep ONE definition of "the iac/ tree" in this codebase
+    rather than two that can silently diverge.
+
+    Never raises. A missing dir or a symlink makes :func:`iac_tree_hash` fail
+    closed, and that must degrade the freshness ANSWER to "unknown", never
+    break the inventory this worker exists to produce."""
+    try:
+        return iac_tree_hash(IAC_DIR)
+    except Exception:  # noqa: BLE001 — freshness metadata must never break the inventory
+        log.warning("iac_tree_hash failed; snapshot freshness unverifiable", exc_info=True)
+        return None
+
+
 def _search_all(client: asset_v1.AssetServiceClient) -> list[CaiResource]:
     """Enumerate the project's CAI resources via a minimal-masked search."""
     request = asset_v1.SearchAllResourcesRequest(
@@ -403,5 +430,6 @@ def describe(
         declared,
         project=GCP_PROJECT,
         iac_snapshot_sha=IAC_SNAPSHOT_SHA,
+        iac_tree_hash=_iac_tree_hash_or_none(),
         declared_parse_ok=parse_ok,
     )

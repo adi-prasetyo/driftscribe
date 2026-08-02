@@ -132,6 +132,12 @@ export interface Decision extends Record<string, unknown> {
   approval?: DecisionApproval | null;
   github?: DecisionGithub | null;
   diffs?: EnvDiff[];
+  /** rollback rows: the revision being rolled back TO (the last-known-good).
+   *  Mirrors agent/models.py:DecisionProposal.target_revision, persisted on the
+   *  decision doc at agent/main.py:1794,1989. Present on rollback and nothing
+   *  else — the ledger uses it as the last-resort subject for a rollback whose
+   *  diffs are absent or entirely non-violations (ds-bch). */
+  target_revision?: string;
   // ds-hdt: what became of the operator NOTIFICATION for this row. Advisory —
   // the row itself is the surface, so a failed delivery does not make the
   // approval unusable, it only means nobody was paged about it.

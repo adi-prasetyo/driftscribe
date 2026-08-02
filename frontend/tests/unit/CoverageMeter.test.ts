@@ -17,15 +17,15 @@ describe('CoverageMeter', () => {
     });
     expect(getByTestId('coverage-pct').textContent).toBe('26%');
     expect(getByTestId('coverage-meter').textContent).toContain(
-      'of your infrastructure is under IaC management',
+      'of your infrastructure is declared in IaC',
     );
     const bar = getByRole('progressbar');
     expect(bar.getAttribute('aria-valuenow')).toBe('26');
     expect(bar.getAttribute('aria-valuemin')).toBe('0');
     expect(bar.getAttribute('aria-valuemax')).toBe('100');
-    expect(bar.getAttribute('aria-valuetext')).toBe('26% of your infrastructure, 13 of 50 resources managed');
+    expect(bar.getAttribute('aria-valuetext')).toBe('26% of your infrastructure, 13 of 50 resources declared in IaC');
     expect(getByTestId('coverage-detail').textContent).toContain(
-      '13 of 50 resources managed · 37 not yet in IaC',
+      '13 of 50 resources declared in IaC · 37 not yet',
     );
   });
 
@@ -54,7 +54,7 @@ describe('CoverageMeter', () => {
       props: { totals: totals(7, 7, 0) },
     });
     expect(getByTestId('coverage-pct').textContent).toBe('100%');
-    expect(getByTestId('coverage-detail').textContent).toContain('7 of 7 resources managed');
+    expect(getByTestId('coverage-detail').textContent).toContain('7 of 7 resources declared in IaC');
     expect(getByTestId('coverage-detail').textContent).not.toContain('not yet in IaC');
   });
 
@@ -63,7 +63,7 @@ describe('CoverageMeter', () => {
       props: { totals: totals(9, 29, 20), subject: 'your supported infrastructure' },
     });
     expect(getByTestId('coverage-meter').textContent).toContain(
-      'of your supported infrastructure is under IaC management',
+      'of your supported infrastructure is declared in IaC',
     );
     expect(getByTestId('coverage-meter').textContent).not.toContain('of your infrastructure is');
   });
@@ -73,7 +73,7 @@ describe('CoverageMeter', () => {
       props: { totals: totals(9, 9, 0), subject: 'your supported infrastructure' },
     });
     expect(getByRole('progressbar').getAttribute('aria-valuetext')).toBe(
-      '100% of your supported infrastructure, 9 of 9 resources managed',
+      '100% of your supported infrastructure, 9 of 9 resources declared in IaC',
     );
   });
 
