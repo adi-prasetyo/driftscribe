@@ -397,7 +397,23 @@ uv run pytest
 
 ## After merge
 
-Deploy is operator-facing. `driftscribe_lib` is baked into both images, so a change there ships worker **and** coordinator (`unmatched_iac_declarations_pr244`). Follow the `driftscribe-deploy` skill.
+> ### ⚠️ DEPLOY BOTH IMAGES, WORKER FIRST. A coordinator-only deploy suppresses every Adopt button on prod.
+>
+> This became load-bearing at Codex round 3, not before, so it is easy to carry a
+> stale mental model into the deploy. Since only `fresh` may drive an adoption:
+>
+> - ship the coordinator alone → the old infra-reader publishes no `iac_tree_hash`
+>   → every graph reads `worker_hash_unavailable` → **`unverified` → adoption
+>   suppressed estate-wide**, with the "could not confirm" notice, until the worker
+>   ships. Not a bug — it is the honest state — but it silences the demo's headline
+>   flow, and nobody will connect it to a deploy they did an hour earlier.
+> - ship **`infra-reader` first, then the coordinator**, both from the same merge
+>   commit → the two trees match → `fresh` → adoption normal.
+>
+> Verify on prod with `GET /infra/graph`: `iac_snapshot_stale` must be `false`, not
+> `null`. `null` means the pair is half-deployed.
+
+`driftscribe_lib` is baked into both images, so a change there ships worker **and** coordinator (`unmatched_iac_declarations_pr244`). Follow the `driftscribe-deploy` skill.
 
 **Verify on prod** that `adopt-probe-topic` reads as *declared*, carries no second Adopt button, and that the estate discloses its snapshot age.
 
