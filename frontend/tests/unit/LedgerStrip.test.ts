@@ -170,6 +170,184 @@ describe('LedgerStrip', () => {
     });
   });
 
+  // ds-bch. A rollback carries neither pr_title nor pr_number, so an APPLIED
+  // rollback row rendered "Approved · applied" with no subject at all — and on
+  // a strip, a row with no subject borrows the eye's memory of the row above
+  // it. That is how an operator read the live desk on 2026-08-02 and concluded
+  // PR #168 had been applied; the applied row was a PAYMENT_MODE rollback.
+  //
+  // What a rollback DOES carry is `diffs` (name + contract_status) and
+  // `target_revision`. Live shape confirmed against prod GET /decisions: seven
+  // rollback docs, one applied (phase 'applied'), diffs FEATURE_NEW_CHECKOUT
+  // (match) + PAYMENT_MODE (present_disallow_manual), and one older doc with no
+  // diffs at all — so both the filter and the fallback are exercised by real
+  // data, not only by fixtures.
+  describe('subtitle: a rollback names its subject (ds-bch)', () => {
+    const rollback = (over: Partial<Decision> & { decision_id: string }): Decision =>
+      decision({
+        action: 'rollback',
+        approval: { approval_url: '/approvals/x', status: 'used', phase: 'applied' },
+        ...over,
+      });
+
+    /** The rendered <small>, or null when the row omits it entirely. */
+    function subtitleOf(d: Decision): string | null {
+      const { getByTestId } = render(LedgerStrip, { props: { decisions: [d] } });
+      const el = getByTestId('ledger-strip-row').querySelector('.ledger-strip__title small');
+      return el === null ? null : (el.textContent ?? '');
+    }
+
+    it('names the drifted variable on an applied rollback row', () => {
+      const d = rollback({
+        decision_id: 'rb1',
+        target_revision: 'payment-demo-00024-f6v',
+        diffs: [{ name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' }],
+      });
+      const { getByTestId } = render(LedgerStrip, { props: { decisions: [d] } });
+      const row = getByTestId('ledger-strip-row');
+      expect(row.getAttribute('data-state')).toBe('applied');
+      expect(row.textContent).toContain('PAYMENT_MODE');
+    });
+
+    // The live payload's other diff. `match` means the live value AGREES with
+    // the contract — context on the card, never the subject of the rollback.
+    // Naming it would replace one lie with a wider one.
+    it('does NOT name a diff whose contract_status is match', () => {
+      const d = rollback({
+        decision_id: 'rb2',
+        target_revision: 'payment-demo-00024-f6v',
+        diffs: [
+          { name: 'FEATURE_NEW_CHECKOUT', contract_status: 'match' },
+          { name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' },
+        ],
+      });
+      expect(subtitleOf(d)).toBe('PAYMENT_MODE');
+    });
+
+    it('does NOT name a diff whose contract_status is present_allow_manual', () => {
+      const d = rollback({
+        decision_id: 'rb3',
+        target_revision: 'payment-demo-00024-f6v',
+        diffs: [
+          { name: 'OPS_TUNABLE', contract_status: 'present_allow_manual' },
+          { name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' },
+        ],
+      });
+      expect(subtitleOf(d)).toBe('PAYMENT_MODE');
+    });
+
+    // Rule (i), desk_awaiting_rebake_and_ledger_dedup: on an audit surface
+    // unknown must fail toward RETENTION. The exclusion is a positive set of
+    // the two values PROVEN not to be violations, never `!isViolation` — a
+    // status added server-side later must show up, not vanish. Safe because
+    // the subtitle claims "this decision concerns X", not "X violated policy".
+    it('names a diff with an unrecognised contract_status', () => {
+      const d = rollback({
+        decision_id: 'rb4',
+        diffs: [{ name: 'NEWLY_CLASSIFIED', contract_status: 'some_future_status' }],
+      });
+      expect(subtitleOf(d)).toBe('NEWLY_CLASSIFIED');
+    });
+
+    it('names a diff whose contract_status is missing entirely', () => {
+      const d = rollback({ decision_id: 'rb5', diffs: [{ name: 'NO_STATUS' } as never] });
+      expect(subtitleOf(d)).toBe('NO_STATUS');
+    });
+
+    // agent/validator.py permits identical duplicate diffs, so the raw list can
+    // repeat a name. "PAYMENT_MODE, PAYMENT_MODE" reads as two variables.
+    it('deduplicates repeated diff names', () => {
+      const d = rollback({
+        decision_id: 'rb6',
+        diffs: [
+          { name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' },
+          { name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' },
+        ],
+      });
+      expect(subtitleOf(d)).toBe('PAYMENT_MODE');
+    });
+
+    // Live: decision 82ea22e0 (2026-07-29) has target_revision and no diffs.
+    it('falls back to target_revision when a rollback has no violating diffs', () => {
+      const d = rollback({ decision_id: 'rb7', target_revision: 'payment-demo-00015-sgt' });
+      expect(subtitleOf(d)).toContain('payment-demo-00015-sgt');
+    });
+
+    it('falls back to target_revision when every diff is a non-violation', () => {
+      const d = rollback({
+        decision_id: 'rb8',
+        target_revision: 'payment-demo-00015-sgt',
+        diffs: [{ name: 'FEATURE_NEW_CHECKOUT', contract_status: 'match' }],
+      });
+      expect(subtitleOf(d)).toContain('payment-demo-00015-sgt');
+    });
+
+    // Gate the whole derivation on the action. A drift_issue or an escalation
+    // also carries `diffs`, and "what this decision is ABOUT" is not the same
+    // question there — an issue's subject is the issue, not the env var list.
+    it('does not derive a diff subject for a non-rollback action', () => {
+      const d = decision({
+        decision_id: 'rb9',
+        action: 'drift_issue',
+        diffs: [{ name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' }],
+      });
+      expect(subtitleOf(d)).toBeNull();
+    });
+
+    // pr_title/pr_number still win: an iac_apply row's PR title is a better
+    // subject than anything derivable, and this ordering is what the existing
+    // "prefers pr_title" tests above pin.
+    it('prefers pr_title over a derived rollback subject', () => {
+      const d = rollback({
+        decision_id: 'rb10',
+        pr_title: 'Roll payment-demo back',
+        diffs: [{ name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' }],
+      });
+      expect(subtitleOf(d)).toBe('Roll payment-demo back');
+    });
+
+    // The decision doc is UNREDACTED and `diffs[].name` is server data, so the
+    // strip must not be resizable by a long name. Clamped, with an ellipsis so
+    // the truncation is visible rather than silent.
+    it('clamps a very long derived subject', () => {
+      const d = rollback({
+        decision_id: 'rb11',
+        diffs: Array.from({ length: 12 }, (_, i) => ({
+          name: `A_VERY_LONG_VARIABLE_NAME_NUMBER_${i}`,
+          contract_status: 'present_disallow_manual',
+        })),
+      });
+      const s = subtitleOf(d) ?? '';
+      expect(s.length).toBeLessThanOrEqual(81);
+      expect(s.endsWith('…')).toBe(true);
+    });
+
+    // The honest invariant. NOT "an applied row never renders without a
+    // subject" — v1 of the plan asserted that while the implementation could
+    // still return undefined, so the test and the code disagreed. What is
+    // actually true: identity present ⇒ subject rendered.
+    it('renders a subject whenever the decision carries identity', () => {
+      const carriers: Decision[] = [
+        rollback({
+          decision_id: 'i1',
+          diffs: [{ name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' }],
+        }),
+        rollback({ decision_id: 'i2', target_revision: 'payment-demo-00015-sgt' }),
+        decision({ decision_id: 'i3', action: 'iac_apply', apply_status: 'applied', pr_number: 42 }),
+      ];
+      for (const d of carriers) {
+        expect(subtitleOf(d)).toBeTruthy();
+        cleanup();
+      }
+    });
+
+    // And the other half: no identity ⇒ no <small> at all. A placeholder would
+    // be worse than the omission, which is the rule the block above pins.
+    it('renders no <small> at all when no identity exists', () => {
+      expect(subtitleOf(rollback({ decision_id: 'i4' }))).toBeNull();
+    });
+  });
+
   it('respects an explicit max prop (fewer rows rendered than decisions supplied)', () => {
     const decisions = Array.from({ length: 6 }, (_, i) =>
       decision({ decision_id: `m${i}`, created_at: `2026-07-28T0${i}:00:00Z` }),

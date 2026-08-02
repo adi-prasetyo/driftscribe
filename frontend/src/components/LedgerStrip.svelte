@@ -19,10 +19,10 @@
    */
   import { t, locale, type TranslateFn } from '../lib/i18n';
   import { ledgerRows, ledgerTotal, type LedgerRow, type LedgerState } from '../lib/ledger';
-  import { fmtClock, decisionActionLabel } from '../lib/format';
+  import { fmtClock, fmtPreview, decisionActionLabel } from '../lib/format';
   import { isReplayableTraceId } from '../lib/deeplink';
   import type { TraceCache } from '../lib/traceCache';
-  import type { Decision } from '../lib/types';
+  import type { Decision, EnvDiff } from '../lib/types';
   import DecisionRecord from './DecisionRecord.svelte';
   import SealStamp from './SealStamp.svelte';
 
@@ -167,13 +167,78 @@
     return decisionActionLabel(row.decision.action, tf);
   }
 
+  /** `contract_status` values that are NOT a policy violation, and therefore
+   *  not what a rollback is ABOUT. Live proof both are reachable: the applied
+   *  PAYMENT_MODE rollback ships FEATURE_NEW_CHECKOUT at `match` alongside it —
+   *  context on the diff card, never the subject.
+   *
+   *  A positive exclusion set, deliberately, not `!isViolation`: an
+   *  unrecognised status must fall THROUGH to being named. Rule (i) — on an
+   *  audit surface unknown fails toward retention, and here retention means
+   *  naming. The subtitle asserts "this decision concerns X", never "X violated
+   *  policy", which is what makes naming an unknown status safe rather than a
+   *  second claim we cannot support. */
+  const NON_VIOLATION_STATUS: ReadonlySet<string> = new Set(['match', 'present_allow_manual']);
+
+  /** Longest derived subject before the ellipsis bites. The decision doc is
+   *  UNREDACTED server data, so a name here is not length-bounded by anything
+   *  the SPA controls, and the strip is a fixed-width grid. */
+  const SUBJECT_MAX = 80;
+
+  /** What a rollback is about, derived from the fields it actually carries.
+   *
+   *  Gated on `action === 'rollback'` on purpose. A `drift_issue` and an
+   *  `escalation` also carry `diffs`, but "what is this decision about" has a
+   *  different answer there (the issue, the escalation) — so this is not a
+   *  generic diff-naming helper and must not become one.
+   *
+   *  Names are deduplicated: `agent/validator.py:275-286` permits identical
+   *  duplicate diffs, and "PAYMENT_MODE, PAYMENT_MODE" reads as two variables.
+   *
+   *  Deliberately NOT `diffRows()` (lib/diff.ts) — that clamps each name for a
+   *  table layout and routes values through `displayDiffValue`. Different
+   *  filter, different truncation contract; sharing one would couple a subtitle
+   *  to a card's formatting decisions. */
+  function rollbackSubject(d: Decision): string | undefined {
+    if (d.action !== 'rollback' || !Array.isArray(d.diffs)) return undefined;
+    const seen = new Set<string>();
+    for (const raw of d.diffs as unknown[]) {
+      if (raw === null || typeof raw !== 'object') continue;
+      const o = raw as Partial<EnvDiff>;
+      if (typeof o.name !== 'string' || o.name === '') continue;
+      const status = typeof o.contract_status === 'string' ? o.contract_status : '';
+      if (NON_VIOLATION_STATUS.has(status)) continue;
+      seen.add(o.name);
+    }
+    return seen.size > 0 ? fmtPreview([...seen].join(', '), SUBJECT_MAX) : undefined;
+  }
+
   // Best-effort identity only, never a placeholder: a "—" or "unknown" string
   // would claim a fact we don't have. Omitting the <small> entirely (undefined,
-  // not '') is the honest rendering when neither field is present.
+  // not '') is the honest rendering when no field is present.
+  //
+  // ds-bch: before the rollback arms below, an APPLIED rollback rendered
+  // "Approved · applied" with no subject at all — it carries neither pr_title
+  // nor pr_number. On a strip, a row with no subject borrows the eye's memory
+  // of the row above it, and on 2026-08-02 that is exactly what happened: an
+  // operator read a PAYMENT_MODE rollback as the adopt-probe-topic PR sitting
+  // above it and concluded that PR had been applied. It had not.
+  //
+  // Ordering is deliberate. pr_title/pr_number stay first — a PR title is a
+  // better subject than anything derivable — and the derived arms only ever
+  // fill a gap those left empty.
   function subtitleFor(row: LedgerRow): string | undefined {
     const d = row.decision;
     if (typeof d.pr_title === 'string' && d.pr_title !== '') return d.pr_title;
     if (typeof d.pr_number === 'number') return `#${d.pr_number}`;
+    const subject = rollbackSubject(d);
+    if (subject !== undefined) return subject;
+    // Last resort, and a real one: prod holds a rollback doc (2026-07-29) with
+    // a target_revision and no diffs at all. The revision it rolled back TO
+    // still says which service this row concerns.
+    if (d.action === 'rollback' && typeof d.target_revision === 'string' && d.target_revision !== '') {
+      return fmtPreview(d.target_revision, SUBJECT_MAX);
+    }
     return undefined;
   }
 </script>
