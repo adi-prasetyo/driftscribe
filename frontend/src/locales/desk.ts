@@ -284,6 +284,15 @@ export const desk = {
     'desk.estate.adoptSnapshotStale': 'paused · snapshot out of step',
     'desk.estate.adoptSnapshotUnverified': 'paused · snapshot not verified',
     'desk.estate.prPending': 'PR #{pr} awaiting review',
+    // ds-1vn r5. "awaiting review" is PRESENT TENSE — a claim about the PR's
+    // state right now. On a pending-approvals failure the store retains the
+    // previous list, so that claim outlives the fetch that established it, and
+    // a PR closed/merged/rejected elsewhere sits there labelled "awaiting
+    // review" indefinitely. The PR NUMBER is still a fact worth showing; only
+    // its status is unrefreshed. Exactly the split already made for the graph's
+    // freshness assurance one lane over — a retained value may keep its
+    // identity and must not keep its verdict.
+    'desk.estate.prPendingUnrefreshed': 'PR #{pr} · status not refreshed',
     'desk.estate.driftMore': '…{n} more drift',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
     // Pluralized on the TYPE count via i18n.ts's `.one`/`.other` convention —
@@ -424,6 +433,7 @@ export const desk = {
     'desk.estate.adoptSnapshotStale': '一時停止 ・ スナップショット不一致',
     'desk.estate.adoptSnapshotUnverified': '一時停止 ・ スナップショット未確認',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
+    'desk.estate.prPendingUnrefreshed': 'PR #{pr} ・ 状態は未更新',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',
     // JA carries no grammatical plural, so .one/.other are identical text

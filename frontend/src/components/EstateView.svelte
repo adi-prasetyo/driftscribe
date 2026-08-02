@@ -195,8 +195,21 @@
             <span class="estate-view__name">{row.label}</span>
             <span class="estate-view__type">{row.typeLabel}</span>
             {#if row.pendingPr !== null}
+              <!-- The PR chip stays FIRST and stays on a stale/unverified
+                   snapshot: unlike everything below it, this is a positively
+                   observed fact from the GitHub listing rather than an absence
+                   read off the iac/ tree, and it drives no action.
+                   But its WORDING follows the approvals lane (ds-1vn r5). On a
+                   pending-approvals failure the store retains the previous
+                   list, so "awaiting review" — present tense — outlives the
+                   fetch that established it, and a PR closed or merged
+                   elsewhere would sit here labelled awaiting review forever.
+                   Identity survives a retained value; a verdict does not. Same
+                   split already made for the graph's freshness assurance. -->
               <span class="estate-view__chip estate-view__chip--q" data-testid="estate-pr-chip">
-                {$t('desk.estate.prPending', { pr: row.pendingPr })}
+                {approvalsStale
+                  ? $t('desk.estate.prPendingUnrefreshed', { pr: row.pendingPr })
+                  : $t('desk.estate.prPending', { pr: row.pendingPr })}
               </span>
             {:else if row.adoptable && !canAdopt}
               <!-- ds-1vn. The SECOND absence claim on this row, and the one

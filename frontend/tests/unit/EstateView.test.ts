@@ -478,9 +478,16 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
     expect(getByTestId('estate-adopt-unknown').textContent).toContain('adoption status unknown');
   });
 
-  it('still renders a POSITIVELY observed PR chip', () => {
+  it('still renders a POSITIVELY observed PR chip — but does not vouch for its status', () => {
     // Only the absence claim is unsupported. A PR we actually saw is still a
     // fact, and hiding it would be its own information loss.
+    //
+    // ds-1vn r5: that reasoning is right about the PR's IDENTITY and was wrong
+    // about its STATE. This test used to assert only that the chip existed,
+    // which blessed a chip reading "PR #268 awaiting review" — present tense —
+    // built from a list the failed fetch did not refresh. A PR closed, merged
+    // or rejected elsewhere would carry that label indefinitely. The number
+    // survives the retention; the verdict must not.
     const { getByTestId, queryByTestId } = render(EstateView, {
       props: baseProps({
         pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
@@ -488,7 +495,10 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
         approvalsStale: true,
       }),
     });
-    expect(getByTestId('estate-pr-chip')).toBeTruthy();
+    const chip = getByTestId('estate-pr-chip').textContent ?? '';
+    expect(chip).toContain('268');
+    expect(chip).toContain('not refreshed');
+    expect(chip).not.toContain('awaiting review');
     expect(queryByTestId('estate-adopt-unknown')).toBeNull();
   });
 
@@ -709,6 +719,31 @@ describe('EstateView — a stale snapshot suppresses adoption (ds-1vn r2)', () =
   // The two suppressions have DIFFERENT reasons and must not be conflated: one
   // means "we could not ask GitHub whether a PR is open", the other "the
   // declared set this row's status came from is not this deployment's".
+  it('a PR chip says "awaiting review" only when the approvals lane is current', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({
+        pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
+        settled: true,
+      }),
+    });
+    expect(getByTestId('estate-pr-chip').textContent).toContain('awaiting review');
+  });
+
+  // The narrower case Codex confirmed is right: SNAPSHOT staleness must not
+  // suppress or hedge a freshly verified PR. The two lanes are independent —
+  // the PR comes from the GitHub listing, not from the iac/ tree — so a stale
+  // snapshot leaves this chip alone.
+  it('a stale snapshot does not hedge a freshly verified PR', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({
+        graph: graph({ iac_snapshot_stale: true }),
+        pendingApprovals: [pending({ resource_name: 'demo-node', asset_type: BUCKET })],
+        settled: true,
+      }),
+    });
+    expect(getByTestId('estate-pr-chip').textContent).toContain('awaiting review');
+  });
+
   it('a stale snapshot and an unreliable approvals lane give different reasons', () => {
     const { getByTestId, queryByTestId } = render(EstateView, {
       props: baseProps({ graph: graph({ iac_snapshot_stale: true }), approvalsStale: true }),

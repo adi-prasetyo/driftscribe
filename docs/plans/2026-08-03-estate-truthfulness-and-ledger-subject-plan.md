@@ -186,6 +186,29 @@ just as much as to `rm`.
 Plus two cleanups: this document's round-2 record still asserted the invariant round 3
 had corrected, and a stray blank line at EOF.
 
+### Codex review round 5 (same thread) — the same bug, one lane over
+
+**Medium — a retained PR was still presented as currently awaiting review.** On a
+pending-approvals failure the store retains the previous list (`overviewStore.ts`) while
+setting `approvalsStale`. The row chip then rendered "PR #268 awaiting review" — PRESENT
+TENSE — from a list the failed fetch never refreshed. A PR closed, merged or rejected
+elsewhere would carry that label indefinitely; `reconcileApprovals` only corrects it when
+a separate decision proves applied-and-merged.
+
+This is the round-2 finding exactly, one lane over. I fixed "a retained graph must not
+keep vouching for its own freshness" and left "a retained PR keeps vouching for its own
+status" untouched three lines away. **Identity survives a retained value; a verdict does
+not.** The chip keeps the number and drops the tense: `PR #268 · status not refreshed`.
+
+I had asked specifically about this branch's precedence and reasoned it was safe because
+the PR is a positively observed fact rather than an absence claim. That is right about
+the PR's IDENTITY and was wrong about its STATE — and the existing test asserted only
+that the chip EXISTED, which is how it blessed the faulty premise.
+
+Codex confirmed the narrower half of my reasoning: SNAPSHOT staleness must not hedge a
+freshly verified PR, because the two lanes are independent. Both directions are now
+pinned by tests, and both redden under injection.
+
 ### What the work found that the plan did not anticipate
 
 - **A `$derived` guard that caught nothing.** The `graph.degraded` arm of
