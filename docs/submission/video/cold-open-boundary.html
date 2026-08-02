@@ -1,0 +1,1556 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DriftScribe — cold open (boundary rework)</title>
+<!--
+  DriftScribe demo cold-open v2 — "the boundary" (segment 0, 34.6s, silent, JA captions).
+  Design: docs/plans/2026-08-01-cold-open-boundary-rework-design.md (decisions closed
+  2026-08-01 in an operator / Claude / Codex review round — this file implements THAT
+  revision, incl. §4's solid-vs-dashed rule and §"Depicted scale").
+  Round-2 punch list: docs/plans/2026-08-02-cold-open-boundary-punch-list.md.
+  Supersedes cold-open.html (the drift-gap story). That file stays renderable and is
+  the shippable fallback.
+
+  RUNTIME: 34.6s. The 35s cap was WAIVED for the punch-list round (operator decision,
+  2026-08-02): the round adds five substantive gestures — a leader line, micro-labels,
+  an explicit refusal, a re-staged key with a visible execution path, and the ring
+  lift-off — and the instruction was to build them at their natural length and record
+  the real number rather than trim elsewhere to hide the growth. A separate streamline
+  pass cuts fat later.
+  Beats are sized to CAPTION READING TIME, not to their motion — see the MARKS comment.
+
+  THE ARGUMENT (why this replaces v1): v1 spent its 20s on detect -> propose ->
+  approve -> revert, which is the shape every DevOps agent in the field has. What
+  no one else does is AUTHOR the infrastructure definition. So the opening now
+  draws a boundary around the part of the estate that HAS a definition, shows that
+  drift is only visible inside it, and ends by MOVING the line outward. The arc
+  ends larger than it started instead of returning to zero.
+
+  ACCURACY NOTES — every claim on screen is checked:
+  - The proposing crew never mints its own approval. Anchor detects and proposes
+    (agent/main.py:1688 — "an HMAC-bound approval URL minted by the Rollback
+    Worker"); agent/main.py ~1725 pins that no code path here calls Cloud Run's
+    admin API. The token is minted by the worker that will ACT, bound to that one
+    revision, single-use, TTL 15m (workers/rollback/main.py:718,
+    driftscribe_lib/approvals.py:221). Hence three roles on screen, not two.
+  - The .tf shown at beat 7 is a DEPICTED PROPOSAL, not a file in the repo. Its
+    shape is the real adopt recipe's — iac/adopt_bucket_driftscribe_hack_2026_adopt_probe.tf,
+    resource + a RETAINED `import` block — and the import block IS the boundary
+    moving; that is not a metaphor we invented for the video. What is depicted:
+      * the bucket driftscribe-hack-2026-receipts is REAL and REALLY UNMANAGED —
+        verified live 2026-08-02 (`gcloud storage buckets list` lists it; iac/
+        declares only adopt-probe, adopt-ui-probe, c6e_probe and checkout_assets).
+        So the card shows a genuine pending adoption, which is exactly what
+        Provision would open a PR for. NOT invented.
+      * iac/adopt_bucket_receipts.tf does not exist — because the adoption has not
+        been approved. The real recipe would emit the longer
+        adopt_bucket_driftscribe_hack_2026_receipts.tf / "adopt_driftscribe_hack_2026_receipts";
+        both identifiers are SHORTENED here so the widest line stays inside the
+        card at 19px mono. Shape-accuracy binds, exact identifier length does not.
+  - Micro-labels (beat 1) name resources that exist. Verified live 2026-08-02:
+    payment-demo (Cloud Run, in iac/cloudrun.tf = inside the line);
+    driftscribe-hack-2026-receipts, driftscribe-hack-2026_cloudbuild and the
+    shipping-events topic (all live, none in iac/ = outside the line).
+    ⚠ gcf-sources-* was proposed for this and DOES NOT EXIST in this project —
+    Cloud Functions gen1 was never used here. Re-verify before changing any label.
+  - The word HMAC appears only in small mono on the gate, never in a caption.
+  - SOLID vs DASHED is load-bearing, not decoration. Solid = under management.
+    Dashed = proposed. Provision only opens a PR (docs/OVERVIEW.md:101), so the
+    extension arrives dashed at beat 7 and the human approval snaps it solid at
+    beat 8. Do not restyle either without re-reading design §4.
+  - COUNTER: 管理下 rolls 9 -> 10 by default, and ~30 marks sit outside the line.
+    The denominator (735) deliberately never appears and the field is STYLIZED,
+    not a census — a literal 9-of-735 field reads as toy coverage the moment a
+    judge divides. Exactly 9 marks sit inside the line at beat 0 and 10 at beat 8,
+    so the visual and the counter always agree.
+    ⚠ The counter must carry the REAL counts at record time or the match-cut into
+    the live desk dies: pass ?managed=N&grown=N+1, pulled when shooting.
+  - The closing frame does NOT yet match-cut into the live desk panel (design
+    §"The match-cut ending"). That framing, and whether the desk's estate section
+    needs a tweak to receive the cut, is the remaining open item.
+
+  Brand: re-grounded on frontend/src/styles/tokens.css AFTER the ds-qbo two-world
+  unification (v1 snapshotted the pre-qbo warm set). Cool ink, Google-blue stream,
+  and the two tokens that did not exist when v1 was made: --ds-navy (the deck
+  palette, used here for the boundary itself) and --ds-seal (the 判子 vermilion,
+  used exactly once — the approval).
+  Type stays Zen Old Mincho / JetBrains Mono to match segments 1-4's caption hand.
+
+  NOTE: no `.cap::before` leading rule. NOTES.md production lessons: operators read
+  that 54x3px bar as an artifact and it was removed from studio.js. Not reintroduced.
+
+  Playback:
+    - default: autoplays once after fonts are ready, holds the final frame.
+    - ?hold=N : freeze at end-state of beat N (0..8) for screenshot review.
+    - ?manual : suppress autoplay so a recorder can call window.play().
+    - ?managed=9&grown=10 : override the counter with live counts (see above).
+    - window.play() restarts. window.RUNTIME_MS is the full length.
+
+  Beats (data-beat on <body>), with cumulative ms:
+    0  0      field     the estate blooms in, a few dozen resources   cap A
+    1  3200   line      the SOLID boundary draws; 4 marks get names   cap B
+    2  7400   drift     ONE amber square, a leader line, its pair     cap C  <- the hinge
+    3  11300  propose   the watcher detects and proposes              cap D
+    4  14400  key       its reach is refused — an explicit x          cap E
+    5  18300  seal      a human seals it, THEN the worker acts        cap F
+    6  22000  pullback  the field again — seen, but with no definition cap G
+    7  26000  write     the file bursts out; a ring lifts off it      cap H
+    8  31200  commit    approval snaps the line SOLID; 管理下 rolls up cap I
+       34600  end
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700&family=Zen+Old+Mincho:wght@400;600;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root{
+  /* --- tokens mirrored from frontend/src/styles/tokens.css (post ds-qbo) ---- */
+  --bg:#fbfaf8; --surface:#ffffff; --surface-2:#f6f5f1;
+  --ink:#12151c; --ink-soft:#535c6b; --muted:#656c7a; --faint:#8a9099;
+  --border:#e6e3dd; --border-strong:#d6d2ca;
+
+  --navy:#0e1b5f;                   /* identity + THE BOUNDARY */
+  --seal:#c0392b;                   /* 判子 — the one approval moment, once */
+
+  --blue:#4285f4; --blue-ink:#2a63c9; --blue-surface:#ecf3fe; --blue-border:#c7dcfb;
+  --amber:#9a5b12; --amber-ink:#7c490e; --amber-surface:#f8f0e3; --amber-border:#e8d3b4;
+  --red:#c5303f; --red-ink:#9e2531; --red-surface:#fdeef0; --red-border:#f0c2c8;
+  --green:#1a6b52; --green-ink:#14523f; --green-surface:#e9f3ef; --green-border:#bfdcd1;
+
+  --crew-anchor:#1f6feb;            /* 見張る側 — Anchor */
+  --crew-provision:#6f42c1;         /* 書く側  — Provision */
+
+  --mincho:'Zen Old Mincho', serif;
+  --mono:'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+  --ui:'Zen Kaku Gothic New', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --move:1100ms cubic-bezier(.16,1,.3,1);
+  --cam:1500ms cubic-bezier(.16,1,.3,1);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--ui);
+  overflow:hidden; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+
+/* Fixed 1920x1080 stage, scaled to fit the viewport (scale=1 when recording at
+   1080p). The offset is computed in JS against transform-origin 0 0.
+   ⚠ Do NOT go back to centring this with grid `place-items:center`: Chromium
+   start-aligns a grid item LARGER than its area, so the stage sat at (+320,+180)
+   in any window under 1080p and the entire lower third — every caption — fell
+   off the bottom of the screen. Recording at exactly 1080p masked it (s=1,
+   offset 0), so the shot was fine and only REVIEW was broken. */
+#fit{position:fixed; inset:0; overflow:hidden; background:var(--bg)}
+.stage{
+  position:absolute; left:0; top:0; width:1920px; height:1080px; overflow:hidden;
+  transform-origin:0 0;
+  background:radial-gradient(120% 90% at 50% 40%, #ffffff 0%, var(--bg) 58%, #f4f3ef 100%);
+}
+
+/* --- blueprint grid + paper grain --------------------------------------- */
+.grid{
+  position:absolute; inset:0; pointer-events:none;
+  background-image:
+    linear-gradient(to right, rgba(18,21,28,.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(18,21,28,.04) 1px, transparent 1px);
+  background-size:48px 48px;
+  -webkit-mask-image:radial-gradient(120% 100% at 50% 44%, #000 40%, transparent 88%);
+          mask-image:radial-gradient(120% 100% at 50% 44%, #000 40%, transparent 88%);
+}
+.grain{position:absolute; inset:0; pointer-events:none; opacity:.5; mix-blend-mode:multiply;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='.025'/></svg>");}
+
+/* =======================================================================
+   CAMERA — slow ambient push (never still) + per-beat rig framing.
+   .rig uses transform-origin 0 0 so a world point P lands at T + s*P;
+   T is derived per beat to put the subject at screen centre.
+   ======================================================================= */
+.camera{position:absolute; inset:0; transform-origin:50% 46%}
+body.playing .camera{animation:push 40s linear both}
+@keyframes push{from{transform:scale(1)} to{transform:scale(1.045)}}
+
+.rig{position:absolute; inset:0; transform-origin:0 0; transition:transform var(--cam)}
+/* 0,1 wide · 2 tight on the SUBJECT + its pair · 3-5 the actors, creeping in ·
+   6,7 wide · 8 close.
+   Beats 3-5 share one wide framing so the three roles assemble in one space; the
+   scale creeps 1.35 -> 1.40 -> 1.45 so the camera never comes to a full stop. */
+body[data-beat="0"] .rig,
+body[data-beat="1"] .rig{transform:translate(0px,0px) scale(1)}
+/* Beat 2 re-derived for the new composition (punch list item 1). It was
+   translate(-600,-1020) scale(2.6), which framed the pair ALONE — and the pair
+   sits exactly on top of the nine inside marks, so a first-time viewer had no
+   square to attach "drift" to and read the whole circle as having moved.
+   Now: field + amber subject on the left, the boundary's right arc between them
+   (screen x ~956), the pair as a CALLOUT to the right of the line, leader between.
+   Derivation: world point P lands at T + s*P. s=2.06; content spans world
+   x 442..1322 and y 430..685, left margin 50px, content centre at screen y 470.
+   ⚠ 1322, not 1240: the pair's right edge is NOT the pair. `.delta .tagd` hangs
+   outside it (right:-8px + translate(100%,-50%)) and at 2.15 the Δ ドリフト chip
+   ran off the right of the frame. ⚠ y 470, not 400: at 400 the definition card's
+   top landed under the screen-space counter in the corner. The pair had to leave
+   the line's interior: the blob's usable inside is ~480 across and the pair's own
+   half-diagonal is 220, so it alone fills it — cards and separated marks cannot
+   coexist in there at any zoom. Annotation cards outside the line is already this
+   piece's grammar (both role badges sit outside it at beats 3-5). */
+body[data-beat="2"] .rig{transform:translate(-860.5px,-678.5px) scale(2.06)}
+body[data-beat="3"] .rig{transform:translate(-66px,-216px) scale(1.35)}
+body[data-beat="4"] .rig{transform:translate(-104px,-224px) scale(1.4)}
+body[data-beat="5"] .rig{transform:translate(-142px,-272px) scale(1.45)}
+body[data-beat="6"] .rig,
+body[data-beat="7"] .rig{transform:translate(0px,0px) scale(1)}
+body[data-beat="8"] .rig{transform:translate(-57.6px,-32.4px) scale(1.06)}
+
+.world{position:absolute; inset:0}
+
+/* =======================================================================
+   THE FIELD — stylized estate. NOT a census: enough marks to read as
+   "many", never a countable denominator. Exactly 9 sit inside the line.
+   ======================================================================= */
+.field{position:absolute; inset:0;
+  -webkit-mask-image:radial-gradient(128% 104% at 50% 46%, #000 52%, transparent 94%);
+          mask-image:radial-gradient(128% 104% at 50% 46%, #000 52%, transparent 94%);
+}
+/* every mark is the same size — the difference is ink, not scale, so nothing
+   jumps geometry when the line arrives */
+/* Ink strengthened from #cbc7be: at 1.5px on off-white, under both the grain and
+   the field's vignette mask, the estate was so pale that beat 0 read as an empty
+   page — 数百のリソース asserted over nothing — and beat 6's 見えている claimed
+   the viewer could see marks that were barely there. These must read as OBJECTS. */
+.mk{
+  position:absolute; width:20px; height:20px; border-radius:5px;
+  background:#f4f1ea; border:1.5px solid #a29a8b;
+  box-shadow:0 1px 2px rgba(18,21,28,.06);
+  transition:opacity 900ms ease, background var(--move),
+             border-color var(--move), box-shadow var(--move);
+}
+/* Beat 0 used to be 3.4s of a field that was simply THERE. Its only motion was
+   the ambient camera push — 0.11%/s, imperceptible — so the piece opened on what
+   reads as a still frame, against NOTES.md's own "no perfectly-still frames" rule.
+   The marks now ARRIVE, blooming outward from the centre (--d is set per mark in
+   JS from its distance). That buys beat 0 an event of its own, and it turns
+   数百のリソース into something the viewer watches rather than something asserted
+   over an empty frame.
+   `backwards`, never `both` — the beat cascade must keep owning end states, or the
+   beat-6 dim and the beat-7 .tgt reveal would both be frozen out. */
+body.playing .mk{animation:mkin 620ms cubic-bezier(.16,1,.3,1) calc(var(--d)*1ms) backwards}
+@keyframes mkin{from{opacity:0; transform:scale(.6)} to{opacity:1; transform:none}}
+/* beat 0 shows a UNIFORM field — the line arriving is what reveals which
+   resources have a definition, so the answer is not given away early */
+body:not([data-beat="0"]) .mk.in{
+  background:#eef0f8; border:1.5px solid var(--navy);
+  box-shadow:0 0 0 3px rgba(14,27,95,.07);
+}
+/* the pair cards stand in for these marks at beats 3-5; without this they poke
+   out from behind the cards as stray blobs */
+body[data-beat="2"] .mk.in,
+body[data-beat="3"] .mk.in,
+body[data-beat="4"] .mk.in,
+body[data-beat="5"] .mk.in{opacity:0}
+/* ...but NOT at beat 2, and this exception is the whole point of the beat.
+   The blanket rule above used to hide the subject too, so the amber styling two
+   blocks down never rendered: at beat 2 there was literally no square on screen,
+   and the operator read "the whole circle drifted". The subject plus three calm
+   siblings stay lit so the amber one is visibly ONE OF SEVERAL.
+   ⚠ Same specificity as the hide rule (both 0,3,1) — this MUST stay after it. */
+body[data-beat="2"] .mk.subj,
+body[data-beat="2"] .mk.sib{opacity:1}
+/* beat 6 — the eye goes where nothing is watching. Dimmed, NOT erased: the
+   point is that the mass is still there and simply unlit.
+   .58, not .42 — caption G says 見えている outright, so anything that makes the
+   outside hard to see puts the picture in direct contradiction with the words. */
+body[data-beat="6"] .mk:not(.in),
+body[data-beat="7"] .mk:not(.in),
+body[data-beat="8"] .mk:not(.in){opacity:.58}
+body[data-beat="6"] .mk.in,
+body[data-beat="7"] .mk.in,
+body[data-beat="8"] .mk.in{box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgba(14,27,95,.16)}
+
+/* the drift subject — one of the nine */
+.mk.subj{transition:background 700ms ease, border-color 700ms ease, box-shadow 700ms ease}
+body[data-beat="2"] .mk.subj{background:var(--amber-surface); border-color:var(--amber)}
+body[data-beat="3"] .mk.subj,
+body[data-beat="4"] .mk.subj{background:var(--red-surface); border-color:var(--red)}
+body[data-beat="5"] .mk.subj,
+body[data-beat="6"] .mk.subj{background:var(--green-surface); border-color:var(--green);
+  box-shadow:0 0 0 4px rgba(26,107,82,.14)}
+
+/* the resource that gets a definition written for it */
+.mk.tgt{transition:background 800ms ease, border-color 800ms ease, box-shadow 800ms ease,
+                   opacity 800ms ease}
+/* Beat 6 has to LAND on this one. Until now nothing distinguished it from the
+   other ~30 outside marks until its halo fired 3s into beat 7, so the pullback
+   was a general gesture at a general field and caption G had no subject.
+   Exempt from the .58 dim + a grey halo pulse (see .tgt-halo) + its label.
+   ⚠ Same specificity as the beat-6 dim rule above (0,3,1) — order decides, and
+   this block already sits after it. Grey, not navy: navy is "managed", and the
+   argument at beat 6 is that this thing is NOT. */
+body[data-beat="6"] .mk.tgt{opacity:1; border-color:var(--ink-soft);
+  box-shadow:0 0 0 5px rgba(18,21,28,.09)}
+body[data-beat="7"] .mk.tgt,
+body[data-beat="8"] .mk.tgt{
+  opacity:1 !important;
+  background:#eef0f8; border:1.5px solid var(--navy);
+  box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgba(14,27,95,.16);
+}
+/* a soft halo pulses on it while the line reaches out */
+.tgt-halo{position:absolute; width:60px; height:60px; margin:-23px 0 0 -23px; border-radius:50%;
+  border:2px solid var(--navy); opacity:0; pointer-events:none}
+/* delayed to 3.1s so the halo pulses as the LINE REACHES the resource, not while
+   the definition is still being typed (the beat-7 chain starts the morph at
+   ~+2.76s and it runs 1.3s) */
+body[data-beat="7"] .tgt-halo{animation:halo 1.9s cubic-bezier(.25,.6,.35,1) 3.1s 1 backwards}
+@keyframes halo{0%{opacity:.55; transform:scale(.35)} 70%,100%{opacity:0; transform:scale(1)}}
+/* the same pulse, in grey, at beat 6 — the pullback's landing gesture. Settles at
+   opacity 0, which is the base state, so hold mode needs no restatement. */
+body[data-beat="6"] .tgt-halo{border-color:var(--faint);
+  animation:halo 2.2s cubic-bezier(.25,.6,.35,1) 800ms 1 backwards}
+
+/* =======================================================================
+   MICRO-LABELS — a few real resource names, so the boundary argues about
+   things instead of about squares. Quiet by design: 4 labels over ~40
+   marks is a sample, never a legend (NOTES.md: no denominator, ever).
+   NOT children of .mk — as children they would inherit the beats-2-5 hiding
+   and the beat-6 dim, and the target's label has to be legible at beat 6.
+   Fades only (transition, not animation), so hold mode gets the end state
+   from the beat cascade for free.
+   ======================================================================= */
+.mklbl{
+  position:absolute; font-family:var(--mono); font-size:14px; letter-spacing:.02em;
+  color:var(--faint); white-space:nowrap; opacity:0;
+  background:var(--bg); padding:1px 5px; border-radius:4px;
+  transition:opacity 520ms ease, color 700ms ease;
+}
+.mklbl.lft{transform:translateX(-100%)}   /* label ends AT the mark, not after it */
+/* they arrive AFTER the line has drawn (1.5s), never at beat 0: at beat 0 a label
+   only says "this is a resource"; at beat 1 it argues about which side it is on */
+body[data-beat="1"] .mklbl{opacity:1; transition-delay:calc(1500ms + var(--ls,0ms))}
+/* beat 6: the outside is the subject, so the outside keeps its names and the
+   inside one has said its piece. The target is brought up to full ink. */
+body[data-beat="6"] .mklbl.out{opacity:.85; transition-delay:700ms}
+body[data-beat="6"] .mklbl.tgtlbl{opacity:1; color:var(--ink-soft); transition-delay:900ms}
+/* beats 7-8: dropped. The card names the bucket twice in its own code, and the
+   label's screen space is where the .tf card now sits. */
+
+/* =======================================================================
+   THE BOUNDARY — navy, marching dash. Radii are interpolated in JS so the
+   growth is one continuous morph rather than a crossfade.
+   ======================================================================= */
+.bd{position:absolute; inset:0; overflow:visible}
+/* SOLID = a fact. What is inside the line is genuinely under management. */
+.bd .bfill{fill:rgba(14,27,95,.045); stroke:none; opacity:0; transition:opacity 900ms ease}
+.bd .bline{
+  fill:none; stroke:var(--navy); stroke-width:2.6; stroke-linejoin:round; opacity:0;
+  transition:opacity 900ms ease, stroke-width 900ms ease;
+}
+body:not([data-beat="0"]) .bd .bfill{opacity:1}
+body:not([data-beat="0"]) .bd .bline{opacity:1}
+body[data-beat="8"] .bd .bline{stroke-width:3.2}
+/* the line draws itself on at beat 1 */
+body[data-beat="1"] .bd .bline{animation:bdraw 1500ms cubic-bezier(.5,0,.2,1) backwards}
+@keyframes bdraw{from{opacity:0; stroke-dasharray:2 26} to{opacity:1; stroke-dasharray:2000 0}}
+
+/* DASHED = a proposal, not a fact. Provision only opens a PR; a separate
+   plan-bound gate applies it (docs/OVERVIEW.md:101). So the extension arrives
+   dashed and marching — in flight — and only the human approval snaps it solid.
+   Drawn as the FULL grown blob over the solid base one: the overlap coincides,
+   so only the new lobe reads, which is exactly "an extension". */
+.bd .bpropfill{fill:rgba(14,27,95,.03); stroke:none; opacity:0; transition:opacity 600ms ease}
+.bd .bprop{
+  fill:none; stroke:var(--navy); stroke-width:2.4; stroke-linejoin:round;
+  stroke-dasharray:11 8; opacity:0; transition:opacity 600ms ease;
+  animation:march 2.4s linear infinite;   /* in flight, therefore never still */
+}
+@keyframes march{to{stroke-dashoffset:-38}}
+body[data-beat="7"] .bd .bprop{opacity:.9}
+body[data-beat="7"] .bd .bpropfill{opacity:1}
+
+/* small label riding the boundary */
+/* NOT uppercased — text-transform turns "IaC" into "IAC" */
+.bd-tag{
+  position:absolute; left:600px; top:322px; transform:translate(-50%,-100%);
+  font-family:var(--mono); font-size:15px; letter-spacing:.14em;
+  color:var(--navy); background:var(--bg); padding:2px 10px; border-radius:5px;
+  opacity:0; transition:opacity 700ms ease 300ms, top var(--cam);
+  white-space:nowrap;
+}
+body:not([data-beat="0"]) .bd-tag{opacity:.85}
+/* hidden while we are inside the line — at those zooms it lands on the badges */
+body[data-beat="2"] .bd-tag,
+body[data-beat="3"] .bd-tag,
+body[data-beat="4"] .bd-tag,
+body[data-beat="5"] .bd-tag{opacity:0; transition-delay:0ms}
+body[data-beat="7"] .bd-tag,
+body[data-beat="8"] .bd-tag{top:300px}
+
+/* =======================================================================
+   THE PAIR — definition vs actual, inside the line. The hinge: drift is
+   only visible because something declares what should have been there.
+   ======================================================================= */
+/* top moved up from 452 when the definition card became a 4-line HCL excerpt —
+   the pair got ~74px taller and its foot was heading into the caption scrim */
+.pair{position:absolute; left:420px; top:436px; width:360px; opacity:0;
+  transition:opacity 700ms ease, transform var(--cam)}
+body[data-beat="2"] .pair,
+body[data-beat="3"] .pair,
+body[data-beat="4"] .pair,
+body[data-beat="5"] .pair{opacity:1}
+/* Beat 2 only: the pair steps OUT of the line and becomes a callout, because its
+   base position is directly on top of the nine inside marks (it is 360x255 and
+   the blob's interior is ~480 across — there is no arrangement where both fit).
+   Beats 0/1 carry the same offset even though the pair is invisible there: with
+   the offset applied only at beat 2, entering the beat animated the card
+   RIGHTWARD out of the boundary, which reads as the definition leaving the line.
+   Beat 3 transitions it home under cover of the camera pulling back. */
+body[data-beat="0"] .pair,
+body[data-beat="1"] .pair,
+body[data-beat="2"] .pair{transform:translate(460px,-6px)}
+/* Out there the callout lies over the OUTSIDE field, and stray marks poked out
+   from behind and between the two cards. A paper backdrop rather than culling
+   those marks: culling would leave a 360x255 hole in the field at beats 6-8,
+   where the whole scatter is on screen. Painted under the cards (::before
+   precedes the children in paint order) and it stops short of the boundary. */
+.pair::before{content:""; position:absolute; inset:-14px -16px; border-radius:16px;
+  background:var(--bg); opacity:0; transition:opacity 400ms ease}
+body[data-beat="2"] .pair::before{opacity:1}
+
+.pcard{
+  position:relative; border-radius:10px; padding:11px 14px; background:var(--surface);
+  border:1.5px solid var(--border-strong);
+  box-shadow:0 1px 3px rgba(18,21,28,.05), 0 12px 30px -18px rgba(18,21,28,.24);
+  transition:transform var(--move), border-color var(--move), background var(--move);
+}
+/* NOT uppercased — same trap the .bd-tag comment warns about one section up:
+   text-transform turned "definition (.tf)" into "DEFINITION (.TF)", and .tf is
+   exactly the token this card exists to rhyme with at beat 7. */
+.pcard .lbl{font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+  color:var(--muted); margin-bottom:6px}
+.pcard .kv{font-family:var(--mono); font-size:15px; font-weight:500; color:var(--ink-soft); white-space:nowrap}
+.pcard .kv .k{color:var(--muted)}
+
+/* definition — dashed blue, the thing that declares intent.
+   Shown as REAL HCL (iac/cloudrun.tf:41-44), not a key/value gloss, so that
+   Terraform is planted at ~7s and beat 7's .tf card reads as a CALLBACK rather
+   than a new concept arriving in the last third. The actual-side card stays a
+   plain readout on purpose: code on one side, running reality on the other. */
+.pdef{border-style:dashed; border-color:var(--blue-border); background:var(--blue-surface)}
+.pdef .lbl{color:var(--blue-ink)}
+.pdef .hcl{font-family:var(--mono); font-size:15px; font-weight:500; line-height:1.55;
+  color:var(--ink-soft); white-space:pre; margin:0}
+.pdef .hcl .kw{color:var(--crew-provision); font-weight:700}
+.pdef .hcl .str{color:var(--blue-ink); font-weight:700}
+
+/* actual — solid, and it drifts right. At beat 5 it also travels back UP: the
+   gap literally closes rather than merely losing its hatching. */
+.pact{margin-top:52px;
+  transition:transform var(--move), border-color var(--move), background var(--move),
+             margin-top var(--move)}
+body[data-beat="2"] .pact{transform:translateX(26px); border-color:var(--amber-border)}
+body[data-beat="3"] .pact,
+body[data-beat="4"] .pact{transform:translateX(34px); border-color:var(--red-border)}
+/* the gap closes only AFTER the worker's path lands (1150+650=1800ms). Without
+   the delay the drift healed itself the instant beat 5 began — before the stamp,
+   let alone before anything acted — which inverts the causality the beat exists
+   to state. */
+body[data-beat="5"] .pact{transform:translateX(0); margin-top:14px;
+  border-color:var(--green-border); background:var(--green-surface);
+  transition-delay:1800ms}
+/* split-flap value roll: test -> live -> test */
+.pact .val{font-weight:700; display:inline-block; overflow:hidden; height:1.3em; vertical-align:-.34em}
+.pact .flap{display:block; transition:transform 560ms cubic-bezier(.55,0,.15,1)}
+.pact .flap .v{display:block; height:1.3em; line-height:1.3em}
+.pact .flap .vt{color:var(--green-ink)}
+.pact .flap .vl{color:var(--red)}
+body[data-beat="2"] .pact .flap,
+body[data-beat="3"] .pact .flap,
+body[data-beat="4"] .pact .flap{transform:translateY(-1.3em)}
+/* rolls back to "mock" on the same 1800ms beat as the card's travel — the value
+   and the gap must heal together, and both must wait for the worker */
+body[data-beat="5"] .pact .flap{transition-delay:1800ms}
+
+/* the measured difference between them */
+/* sits in the gap between the two cards — retuned when the definition card grew
+   to a 4-line HCL excerpt (measured pdef height, not guessed) */
+.delta{
+  position:absolute; left:0; right:0; top:139px; height:46px; opacity:0;
+  transition:opacity 600ms ease;
+}
+.delta .hatch{
+  position:absolute; inset:0 -4px; border-radius:8px; border:1px dashed var(--red-border);
+  background:repeating-linear-gradient(135deg,
+    rgba(197,48,63,.12) 0 10px, rgba(197,48,63,0) 10px 20px);
+  animation:creep 2.8s linear infinite;
+}
+@keyframes creep{to{background-position:15px 15px}}
+.delta .tagd{
+  position:absolute; right:-8px; top:50%; transform:translate(100%,-50%);
+  font-family:var(--mono); font-size:12px; font-weight:700; color:var(--red-ink);
+  background:var(--red-surface); border:1px solid var(--red-border);
+  border-radius:6px; padding:4px 7px; white-space:nowrap;
+}
+body[data-beat="2"] .delta,
+body[data-beat="3"] .delta,
+body[data-beat="4"] .delta{opacity:1}
+body[data-beat="2"] .delta .tagd,
+body[data-beat="3"] .delta .tagd{animation:calip 1.5s ease-in-out infinite}
+@keyframes calip{0%,100%{transform:translate(100%,-50%)} 50%{transform:translate(100%,-50%) scale(1.06)}}
+
+/* the gap closes when the human seals it */
+.heal{position:absolute; inset:-30px -60px; opacity:0; pointer-events:none; overflow:hidden; border-radius:16px}
+.heal i{position:absolute; top:0; bottom:0; left:-45%; width:45%;
+  background:linear-gradient(100deg, rgba(26,107,82,0) 0%, rgba(26,107,82,.13) 42%,
+    rgba(26,107,82,.26) 50%, rgba(26,107,82,.13) 58%, rgba(26,107,82,0) 100%);
+  filter:blur(1.5px)}
+body[data-beat="5"] .heal{opacity:1}
+/* rides in with the worker's path, not ahead of it (see .lnk-act) */
+body[data-beat="5"] .heal i{animation:healmove 1100ms cubic-bezier(.55,0,.25,1) 1800ms both}
+@keyframes healmove{from{transform:translateX(0)} to{transform:translateX(340%)}}
+
+/* =======================================================================
+   ROLE BADGES — labelled by JOB, not by product name. The crew name rides
+   along in small mono for anyone reading closely (design doc §7).
+   ======================================================================= */
+.badge{
+  position:absolute; display:flex; align-items:center; gap:11px;
+  background:var(--surface); border:1.5px solid var(--border-strong); border-radius:11px;
+  padding:9px 15px; opacity:0; transform:translateY(9px);
+  box-shadow:0 1px 3px rgba(18,21,28,.05), 0 16px 34px -22px rgba(18,21,28,.3);
+  transition:opacity 600ms ease, transform 700ms cubic-bezier(.16,1,.3,1);
+}
+.badge .bdot{width:11px; height:11px; border-radius:3px; flex:none}
+/* the two lines must STACK — as inline spans they run together
+   ("実行側ROLLBACK WORKER") and the role name wraps mid-badge */
+.badge .bstack{display:flex; flex-direction:column; min-width:0}
+.badge .brole{display:block; font-family:var(--ui); font-weight:700; font-size:19px;
+  color:var(--ink); line-height:1.2; white-space:nowrap}
+/* also not uppercased — it would render OpenTofu as "OPENTOFU" */
+.badge .bname{display:block; font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+  color:var(--muted); margin-top:1px; white-space:nowrap}
+.badge .think{display:inline-flex; gap:4px; margin-left:3px}
+.badge .think i{width:5px; height:5px; border-radius:50%; background:var(--faint);
+  animation:think 1.25s ease-in-out infinite}
+.badge .think i:nth-child(2){animation-delay:.16s}
+.badge .think i:nth-child(3){animation-delay:.32s}
+@keyframes think{0%,100%{opacity:.25; transform:translateY(0)} 50%{opacity:1; transform:translateY(-2.5px)}}
+
+/* 見張る側 — Anchor */
+.b-watch{left:180px; top:310px; width:250px}
+.b-watch .bdot{background:var(--crew-anchor)}
+body[data-beat="3"] .b-watch,
+body[data-beat="4"] .b-watch,
+body[data-beat="5"] .b-watch{opacity:1; transform:none}
+/* radar ping while it is scanning */
+.b-watch .ping{position:absolute; left:15px; top:50%; width:44px; height:44px; margin:-22px 0 0 -16px;
+  border-radius:50%; border:2px solid var(--crew-anchor); opacity:0}
+body[data-beat="3"] .b-watch .ping{animation:ping 1.8s cubic-bezier(.25,.6,.35,1) infinite}
+@keyframes ping{0%{opacity:.5; transform:scale(.4)} 70%,100%{opacity:0; transform:scale(1.1)}}
+
+/* 実行側 — the worker that will act, and therefore mints the key */
+.b-act{left:1010px; top:310px; width:280px}
+.b-act .bdot{background:var(--navy)}
+body[data-beat="4"] .b-act,
+body[data-beat="5"] .b-act{opacity:1; transform:none}
+
+/* 書く側 — Provision. Lifted from top:455 with the .tf card (see there). */
+.b-write{left:1140px; top:356px; width:290px}
+.b-write .bdot{background:var(--crew-provision)}
+body[data-beat="7"] .b-write{opacity:1; transform:none}
+
+/* --- the proposal the watcher raises ------------------------------------ */
+.prop{
+  position:absolute; left:180px; top:392px; width:225px;
+  background:var(--surface); border:1.5px solid var(--blue-border); border-radius:10px;
+  padding:9px 13px; opacity:0; transform:translateY(-6px);
+  font-family:var(--ui); font-size:15px; font-weight:600; color:var(--blue-ink);
+  box-shadow:0 12px 26px -18px rgba(18,21,28,.34);
+  transition:opacity 500ms ease, transform 600ms cubic-bezier(.16,1,.3,1);
+}
+.prop .pmeta{font-family:var(--mono); font-size:11px; letter-spacing:.1em; color:var(--muted);
+  font-weight:500; margin-top:3px}
+body[data-beat="3"] .prop,
+body[data-beat="4"] .prop,
+body[data-beat="5"] .prop{opacity:1; transform:none; transition-delay:700ms}
+
+/* =======================================================================
+   THE KEY — the beat the whole piece turns on. The proposer's reach is
+   REFUSED; the key arrives from the role that will actually act.
+   ======================================================================= */
+.links{position:absolute; inset:0; overflow:visible; pointer-events:none}
+
+/* beat 2's leader: "this pair of cards is about THAT square". Amber, the
+   subject's own beat-2 ink. Same visual grammar as the ring at beat 7 —
+   leader = this drift belongs to that one square; ring = this boundary belongs
+   to this code. Fades out at beat 3 when the pair travels home. */
+.lnk-lead{
+  fill:none; stroke:var(--amber); stroke-width:2.2; stroke-linecap:round;
+  stroke-dasharray:300; stroke-dashoffset:300; opacity:0;
+  transition:opacity 400ms ease;
+}
+body[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0;
+  animation:lead 320ms cubic-bezier(.4,0,.25,1) 260ms backwards}
+@keyframes lead{from{stroke-dashoffset:300} to{stroke-dashoffset:0}}
+
+/* refused reach: marches out, stops short of the gate, then greys.
+   ⚠ This is a DOTTED stroke, so animating stroke-dashoffset marches the dots
+   along a fully-present line — it does not draw progressively and it cannot
+   retract the endpoint. The recoil therefore lives in .lnk-tip, which is the
+   real last 10% of this same cubic (split at t=0.90) moved by a transform. */
+.lnk-blocked, .lnk-tip{
+  fill:none; stroke:var(--crew-anchor); stroke-width:2.5; stroke-linecap:round;
+  stroke-dasharray:7 6; stroke-dashoffset:0; opacity:0;
+  transition:opacity 500ms ease, stroke 700ms ease;
+}
+body[data-beat="4"] .lnk-blocked,
+body[data-beat="5"] .lnk-blocked{opacity:1; animation:reach 900ms cubic-bezier(.4,0,.25,1) 250ms backwards}
+@keyframes reach{from{stroke-dashoffset:420} to{stroke-dashoffset:0}}
+/* it greys the moment the refusal lands */
+body[data-beat="4"] .lnk-blocked,
+body[data-beat="4"] .lnk-tip{stroke:var(--muted); transition-delay:1450ms}
+body[data-beat="5"] .lnk-blocked,
+body[data-beat="5"] .lnk-tip{stroke:var(--muted); opacity:.45}
+/* the jab: extends to the contact point, is stopped, and settles ~9px short.
+   The residual gap between the tip and the x IS the refusal. */
+body[data-beat="4"] .lnk-tip{opacity:1; transform:translate(-6.4px,-6.3px);
+  animation:tipjab 560ms cubic-bezier(.3,0,.2,1) 1000ms backwards}
+body[data-beat="5"] .lnk-tip{transform:translate(-6.4px,-6.3px)}
+@keyframes tipjab{
+  0%{transform:translate(-35.3px,-34.4px)}
+  46%{transform:translate(0,0)}
+  72%{transform:translate(-9.3px,-9.1px)}
+  100%{transform:translate(-6.4px,-6.3px)}
+}
+/* the refusal itself. Two strokes, hand-drawn correction mark.
+   Ink, deliberately: --seal is the one 判子 and is spent at beat 5, and --red
+   already means "the subject is wrong" at beats 3-4 — but a refusal here is the
+   system WORKING, not an error. The old single grey bar was never registered by
+   the operator across several viewings. */
+.stopx{stroke:var(--ink); stroke-width:5; stroke-linecap:round; opacity:0;
+  transform-box:fill-box; transform-origin:center; transition:opacity 400ms ease}
+body[data-beat="4"] .stopx{opacity:1;
+  animation:xpop 300ms cubic-bezier(.3,1.6,.4,1) 1258ms backwards}
+@keyframes xpop{from{opacity:0; transform:scale(.35) rotate(-14deg)} to{opacity:1; transform:none}}
+body[data-beat="5"] .stopx{opacity:.5}
+
+/* The key MATERIALIZES ON THE LOCK. It used to start beside the 実行側 badge and
+   fly here, with a link drawn between the two — which read as the worker handing
+   the agent a credential, i.e. machine-to-machine authorization, the exact
+   opposite of the claim. Screen story now: the key exists only at the gate, and
+   only the human turns it.
+   This is VISUAL STAGING, not a provenance claim. Architecturally the acting
+   worker still mints the token (workers/rollback/main.py:718) and the header
+   accuracy note above is unchanged; the worker's job on screen is the hands
+   (see .lnk-act), not the key.
+   It sits after the gate in the DOM so it lands on top of the card. */
+.key{
+  position:absolute; left:967px; top:473px; width:34px; height:34px; opacity:0;
+  color:var(--navy); z-index:6;
+  /* paper halo so it reads as an object landing ON the header, not a stray icon */
+  filter:drop-shadow(0 0 5px rgba(251,250,248,.95)) drop-shadow(0 0 2px rgba(251,250,248,1));
+}
+.key svg{width:100%; height:100%; display:block}
+body[data-beat="4"] .key{animation:keyset 520ms cubic-bezier(.3,1.35,.45,1) 1700ms both}
+body[data-beat="5"] .key{opacity:1; transform:rotate(-14deg)}
+@keyframes keyset{
+  0%{opacity:0; transform:rotate(-14deg) scale(1.9)}
+  60%{opacity:1; transform:rotate(-14deg) scale(.96)}
+  100%{opacity:1; transform:rotate(-14deg) scale(1)}
+}
+
+/* THE EXECUTION — the 実行側 badge keeps its job, it just is not the source of
+   the key. Anchored to the END of the stamp (500+620=1120ms), so approval
+   visibly completes before anything moves, and it targets the actual-state CARD
+   rather than the .mk.subj mark (which is hidden at beats 2-5). Solid navy: this
+   is a fact being applied, not a proposal. */
+.lnk-act{
+  fill:none; stroke:var(--navy); stroke-width:2.5; stroke-linecap:round;
+  stroke-dasharray:330; stroke-dashoffset:330; opacity:0;
+  transition:opacity 400ms ease;
+}
+body[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0;
+  animation:actdraw 650ms cubic-bezier(.4,0,.25,1) 1150ms backwards}
+@keyframes actdraw{from{stroke-dashoffset:330} to{stroke-dashoffset:0}}
+
+/* --- the approval gate --------------------------------------------------- */
+.gate{
+  position:absolute; left:960px; top:470px; width:380px; opacity:0; transform:translateY(12px) scale(.97);
+  background:var(--surface); border:1.5px solid var(--amber-border); border-radius:13px;
+  box-shadow:0 2px 6px rgba(18,21,28,.07), 0 26px 54px -28px rgba(18,21,28,.4);
+  transition:opacity 600ms ease, transform 750ms cubic-bezier(.16,1,.3,1), border-color var(--move);
+  overflow:hidden;
+}
+body[data-beat="4"] .gate,
+body[data-beat="5"] .gate{opacity:1; transform:none}
+/* the gate turns over WITH the 判子 (which lands at 500+620=1120ms), not the
+   instant the beat opens */
+body[data-beat="5"] .gate{border-color:var(--green-border); transition-delay:900ms}
+.gate .ghead{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:11px 15px; background:var(--amber-surface); border-bottom:1px solid var(--amber-border);
+  transition:background var(--move), border-color var(--move);
+}
+body[data-beat="5"] .gate .ghead{background:var(--green-surface);
+  border-bottom-color:var(--green-border); transition-delay:900ms}
+.gate .gt{display:flex; align-items:center; gap:9px;
+  font-family:var(--ui); font-weight:700; font-size:17px; color:var(--amber-ink);
+  transition:color var(--move)}
+body[data-beat="5"] .gate .gt{color:var(--green-ink); transition-delay:900ms}
+.gate .gt svg{width:1em; height:1em; flex:none}
+.gate .gbadge{font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--amber-ink);
+  border:1px solid var(--amber-border); border-radius:999px; padding:3px 9px; white-space:nowrap}
+.gate .gbody{padding:14px 15px 15px; position:relative}
+.gate .gsvc{font-family:var(--mono); font-size:13px; color:var(--muted); margin-bottom:9px}
+.gate .gchange{display:flex; align-items:center; gap:10px; font-family:var(--mono);
+  font-size:21px; font-weight:700; margin-bottom:12px}
+.gate .gchange .from{color:var(--red)}
+.gate .gchange .ar{color:var(--faint); font-weight:400}
+.gate .gchange .to{color:var(--green-ink)}
+/* The three properties of the credential, stated without cryptographic
+   vocabulary. max-width reserves the right gutter for the 判子 — without it the
+   stamp lands on top of the third pill. */
+.gate .gprops{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:13px; max-width:250px}
+.gate .gprops span{font-family:var(--ui); font-size:12px; font-weight:600; color:var(--ink-soft);
+  background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:4px 10px}
+.gate .gfoot{display:flex; align-items:center; justify-content:space-between; gap:12px}
+/* HMAC lives here in small mono and NOWHERE in a caption */
+.gate .gsig{font-family:var(--mono); font-size:11px; color:var(--faint); letter-spacing:.02em}
+.gate .gbtn{
+  font-family:var(--ui); font-weight:700; font-size:16px; color:#fff; background:var(--navy);
+  border-radius:9px; padding:9px 22px; transition:opacity 300ms ease;
+}
+body[data-beat="5"] .gate .gbtn{opacity:0; transition-delay:380ms}
+/* 判子 — the only vermilion in the piece */
+.stamp{
+  position:absolute; right:12px; bottom:16px; width:92px; height:92px; border-radius:50%;
+  border:4px solid var(--seal); color:var(--seal);
+  display:grid; place-items:center; text-align:center; line-height:1.15;
+  font-family:var(--mincho); font-weight:900; font-size:26px; letter-spacing:.06em;
+  opacity:0; transform:rotate(-9deg) scale(2.1);
+}
+body[data-beat="5"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 500ms both}
+@keyframes stampin{
+  0%{opacity:0; transform:rotate(-9deg) scale(2.1)}
+  55%{opacity:1; transform:rotate(-9deg) scale(.94)}
+  100%{opacity:1; transform:rotate(-9deg) scale(1)}
+}
+
+/* =======================================================================
+   THE DEFINITION — Provision writes it, and the line moves.
+   Real shape: iac/adopt_bucket_driftscribe_hack_2026_adopt_probe.tf
+   ======================================================================= */
+/* Lifted from top:545 for the ring (punch list item 5). At 545 the import block
+   ran to y~903 — well inside the caption scrim, which is ~35% opaque there — so
+   the ring would have closed on washed-out ink right above the caption type.
+   At 430 the block ends at ~790 and the ring's lowest point is ~810, where the
+   scrim is ~13%. .b-write moved up with it to keep its 22px header gap. */
+.tf{
+  position:absolute; left:1140px; top:430px; width:610px; opacity:0; transform:translateY(14px);
+  background:var(--surface); border:1.5px solid var(--border-strong); border-radius:13px;
+  box-shadow:0 2px 6px rgba(18,21,28,.07), 0 26px 56px -28px rgba(18,21,28,.4);
+  transition:opacity 550ms ease, transform 700ms cubic-bezier(.16,1,.3,1);
+  overflow:hidden;
+}
+/* beat 7 only. At beat 8 the subject is the LINE and the counter — the card
+   would sit under the closing caption and its work is already done. */
+body[data-beat="7"] .tf{opacity:1; transform:none}
+.tf .thead{display:flex; align-items:center; gap:11px; padding:9px 16px;
+  background:var(--surface-2); border-bottom:1px solid var(--border)}
+.tf .tfile{font-family:var(--mono); font-size:13px; color:var(--ink-soft); font-weight:500}
+.tf .ttag{margin-left:auto; font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--crew-provision)}
+.tf .tbody{margin:0; padding:14px 18px 16px; font-family:var(--mono); font-size:19px;
+  line-height:1.6; color:var(--ink-soft); white-space:pre-wrap}
+.tf .cmt{color:var(--faint)}
+.tf .kw{color:var(--crew-provision); font-weight:700}
+.tf .str{color:var(--green-ink)}
+.tf .imp{color:var(--navy); font-weight:700}
+.tf .caret{display:inline-block; width:9px; height:1.05em; background:var(--ink-soft);
+  vertical-align:-.16em; margin-left:1px; animation:caretb 900ms steps(1) infinite}
+@keyframes caretb{0%,100%{opacity:1} 50%{opacity:0}}
+.tf.done .caret{opacity:0; animation:none}
+/* the import block is highlighted — it IS the boundary moving */
+.tf .impblock{display:inline-block; border-radius:6px; padding:0 5px; margin:0 -5px;
+  background:transparent; transition:background 700ms ease}
+.tf.done .impblock{background:rgba(14,27,95,.08)}
+
+/* =======================================================================
+   THE RING — a hand-drawn circle closes around the import block, holds,
+   then lifts off toward the resource as the real lobe grows. The thesis
+   made literal: the code draws the line.
+   ⚠ It CANNOT live inside .tf (overflow:hidden clips it the moment it
+   lifts) and it cannot live in the .bd svg (that paints before .tf in DOM
+   order, so it would hide behind the opaque card). Hence a world-level
+   overlay appended AFTER .tf.
+   ⚠ It is NOT a morph into .bprop. .bprop is the entire grown blob drawn
+   over the coincident base one, not a lobe — there is no lobe path to morph
+   into. The handoff is a RHYME: the ring rises and fades while the lobe
+   grows out beneath it, both navy, both moving toward the same mark.
+   ======================================================================= */
+.ovl{position:absolute; inset:0; overflow:visible; pointer-events:none; z-index:7}
+.ring{
+  fill:none; stroke:var(--navy); stroke-width:3; stroke-linecap:round; opacity:0;
+  transform-box:fill-box; transform-origin:center;
+}
+body.ring-draw .ring{opacity:.95; animation:ringdraw 460ms cubic-bezier(.35,0,.2,1) backwards}
+@keyframes ringdraw{from{stroke-dashoffset:var(--rl,900px)} to{stroke-dashoffset:0}}
+/* end state is opacity 0, which the base rule already owns, so `backwards` is
+   enough — the transform it leaves behind is on an invisible element */
+body.ring-lift .ring{opacity:0; animation:ringlift 900ms cubic-bezier(.3,0,.25,1) backwards}
+/* it CONTRACTS as it travels, so it lands at roughly the size and place of the
+   lobe now growing out of the boundary. Scaling UP (1.5x) smeared a 990px oval
+   across the whole frame and read as a sweep, not a hand-off. */
+@keyframes ringlift{
+  0%{opacity:.95; transform:none}
+  55%{opacity:.55}
+  100%{opacity:0; transform:translate(var(--lx,0px),var(--ly,0px)) scale(.55)}
+}
+
+/* =======================================================================
+   COUNTER — screen space, fixed. 管理下 9 -> 10. No denominator, ever.
+   ======================================================================= */
+.cnt{position:absolute; right:104px; top:72px; text-align:right; opacity:0;
+  transition:opacity 800ms ease}
+body:not([data-beat="0"]) .cnt{opacity:1}
+.cnt .cl{font-family:var(--ui); font-size:17px; font-weight:700; color:var(--muted);
+  letter-spacing:.1em; margin-bottom:2px}
+.cnt .cwrap{display:flex; align-items:baseline; justify-content:flex-end; gap:9px}
+.cnt .cv{display:inline-block; overflow:hidden; height:1.12em; font-family:var(--mono);
+  font-size:62px; font-weight:700; color:var(--navy); line-height:1.12em}
+.cnt .cflap{display:block; transition:transform 780ms cubic-bezier(.55,0,.15,1)}
+.cnt .cflap .cn{display:block; height:1.12em; line-height:1.12em}
+body[data-beat="8"] .cnt .cflap{transform:translateY(-1.12em)}
+.cnt .cu{font-family:var(--ui); font-size:18px; font-weight:600; color:var(--muted)}
+
+/* top-left ground label */
+.eyebrow{position:absolute; left:104px; top:78px;
+  font-family:var(--mono); font-size:15px; letter-spacing:.3em; text-transform:uppercase;
+  color:var(--faint); opacity:0; transition:opacity 800ms ease}
+body.playing .eyebrow{opacity:1}
+
+/* =======================================================================
+   CAPTIONS — lower third, Zen Old Mincho, screen-space (outside .camera).
+   No ::before leading rule (NOTES.md production lesson).
+   ======================================================================= */
+/* soft paper scrim under the lower third — matches the live segments' caption
+   treatment (studio.js cap()) and keeps the boundary line and the code card from
+   running through the type */
+.capscrim{
+  position:absolute; left:0; right:0; bottom:0; height:300px; pointer-events:none;
+  background:linear-gradient(to top,
+    rgba(251,250,248,.98) 0%, rgba(251,250,248,.93) 34%, rgba(251,250,248,0) 100%);
+}
+.captions{position:absolute; left:0; right:0; bottom:92px; display:grid; place-items:center;
+  pointer-events:none}
+.cap{
+  position:absolute; text-align:center; font-family:var(--mincho); color:var(--ink);
+  font-weight:700; font-size:58px; letter-spacing:.04em; line-height:1.5;
+  opacity:0; transform:translateY(8px);
+  transition:opacity 480ms ease, transform 560ms cubic-bezier(.16,1,.3,1);
+  max-width:1600px; white-space:nowrap;
+}
+.cap b{color:var(--red-ink); font-weight:900; position:relative}
+.cap b::after{
+  content:""; position:absolute; left:1%; right:1%; bottom:-9px; height:4px;
+  border-radius:2px; background:var(--red-ink); opacity:.8;
+  transform:scaleX(0); transform-origin:left;
+}
+.cap .navy{color:var(--navy); font-weight:900; position:relative}
+.cap .navy::after{
+  content:""; position:absolute; left:1%; right:1%; bottom:-9px; height:4px;
+  border-radius:2px; background:var(--navy); opacity:.72;
+  transform:scaleX(0); transform-origin:left;
+}
+.cap .accent-blue{color:var(--blue-ink); font-weight:900}
+.cap .accent-green{color:var(--green-ink); font-weight:900}
+.cap .accent-seal{color:var(--seal); font-weight:900}
+
+body[data-beat="0"] .cap[data-c="A"],
+body[data-beat="1"] .cap[data-c="B"],
+body[data-beat="2"] .cap[data-c="C"],
+body[data-beat="3"] .cap[data-c="D"],
+body[data-beat="4"] .cap[data-c="E"],
+body[data-beat="5"] .cap[data-c="F"],
+body[data-beat="6"] .cap[data-c="G"],
+body[data-beat="7"] .cap[data-c="H"],
+body[data-beat="8"] .cap[data-c="I"]{opacity:1; transform:none}
+
+/* per-phrase stagger */
+.cap .w{display:inline-block; opacity:0; transform:translateY(16px);
+  transition:opacity 360ms ease, transform 360ms ease}
+body[data-beat="0"] .cap[data-c="A"] .w,
+body[data-beat="1"] .cap[data-c="B"] .w,
+body[data-beat="2"] .cap[data-c="C"] .w,
+body[data-beat="3"] .cap[data-c="D"] .w,
+body[data-beat="4"] .cap[data-c="E"] .w,
+body[data-beat="5"] .cap[data-c="F"] .w,
+body[data-beat="6"] .cap[data-c="G"] .w,
+body[data-beat="7"] .cap[data-c="H"] .w,
+body[data-beat="8"] .cap[data-c="I"] .w{
+  animation:wordin 640ms cubic-bezier(.16,1,.3,1) calc(var(--i)*110ms + 140ms) both}
+@keyframes wordin{from{opacity:0; transform:translateY(16px)} to{opacity:1; transform:none}}
+
+/* keyword underlines draw when the beat's evidence lands */
+body[data-beat="2"] .cap[data-c="C"] .navy::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 900ms both}
+body[data-beat="6"] .cap[data-c="G"] b::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 1250ms both}
+/* lands as the solid line snaps out to meet the proposal (~+700ms into beat 8) */
+body[data-beat="8"] .cap[data-c="I"] .navy::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 800ms both}
+@keyframes uline{from{transform:scaleX(0)} to{transform:scaleX(1)}}
+
+/* =======================================================================
+   HOLD-FRAME REVIEW (?hold=N) — kill motion, force every one-shot end state
+   so a screenshot shows the beat WHOLE. Anything an animation *delivers*
+   must be restated here (NOTES.md animation-lifecycle rules).
+   ======================================================================= */
+/* ⚠ The ::before/::after arms are load-bearing — `*` does NOT match pseudo-elements.
+   Without them the caption keyword underlines (the only pseudo-element animations
+   here) kept running in hold mode; a ?hold= screenshot lands inside their delay,
+   where fill-mode:both applies the BACKWARDS keyframe (scaleX(0)) — and an active
+   animation outranks any normal rule, so the override two blocks down was silently
+   losing. Every static frame was missing its underline while playback drew it.
+   Any new animation on a pseudo-element inherits this trap. */
+body.no-anim *,
+body.no-anim *::before,
+body.no-anim *::after{transition:none !important; animation:none !important}
+body.no-anim .cap .w{opacity:1; transform:none}
+body.no-anim .cap b::after,
+body.no-anim .cap .navy::after{transform:scaleX(1)}
+body.no-anim .eyebrow{opacity:1}
+/* The solid line must stay SOLID here. An earlier revision dashed the whole
+   boundary; that dasharray survived into this block and silently re-dashed it in
+   every hold frame, so static review showed a boundary playback never renders —
+   and it erased the solid-vs-dashed distinction §4 rests on. */
+body.no-anim .bd .bline{opacity:1; stroke-dasharray:none}
+body.no-anim[data-beat="0"] .bd .bline,
+body.no-anim[data-beat="0"] .bd .bfill{opacity:0}
+body.no-anim[data-beat="7"] .bd .bprop{opacity:.9}
+body.no-anim[data-beat="7"] .bd .bpropfill{opacity:1}
+body.no-anim[data-beat="3"] .b-watch,
+body.no-anim[data-beat="4"] .b-watch,
+body.no-anim[data-beat="5"] .b-watch,
+body.no-anim[data-beat="4"] .b-act,
+body.no-anim[data-beat="5"] .b-act,
+body.no-anim[data-beat="7"] .b-write{opacity:1; transform:none}
+body.no-anim[data-beat="3"] .prop,
+body.no-anim[data-beat="4"] .prop,
+body.no-anim[data-beat="5"] .prop{opacity:1; transform:none}
+body.no-anim[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0}
+body.no-anim[data-beat="4"] .lnk-blocked,
+body.no-anim[data-beat="5"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
+/* the tip's SETTLED (recoiled) position — without this the hold frame shows it
+   fully extended and touching the x, i.e. a refusal that never recoiled */
+body.no-anim[data-beat="4"] .lnk-tip{opacity:1; stroke:var(--muted); transform:translate(-6.4px,-6.3px)}
+body.no-anim[data-beat="5"] .lnk-tip{opacity:.45; stroke:var(--muted); transform:translate(-6.4px,-6.3px)}
+body.no-anim[data-beat="4"] .stopx{opacity:1; transform:none}
+body.no-anim[data-beat="5"] .stopx{opacity:.5; transform:none}
+body.no-anim[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0}
+body.no-anim[data-beat="4"] .key,
+body.no-anim[data-beat="5"] .key{opacity:1; transform:rotate(-14deg)}
+body.no-anim[data-beat="5"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
+/* the beat-5 card travel/heal are transition-delayed to 1800ms; no-anim kills the
+   transition so the end state applies at once, which is what a settled frame is */
+body.no-anim .tf .caret{opacity:0}
+body.no-anim[data-beat="7"] .tf .impblock,
+body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
+/* THE RING IS ABSENT IN HOLD MODE, ON PURPOSE. Its settled state at the end of
+   beat 7 is "gone" — it lifts off and fades — so a hold frame showing a ring
+   would show a moment beat 7 never ends on. It is the one gesture in this file
+   that ?hold= cannot review; check it in playback (see NOTES.md). No rule is
+   needed: the base .ring opacity is already 0 and JS never sets its path in
+   hold mode.
+   The micro-labels need no restatement either — they are transitions, not
+   animations, so killing the transition still leaves the beat cascade's opacity. */
+</style>
+</head>
+<body data-beat="0">
+
+<div id="fit">
+  <div class="stage">
+    <div class="grid"></div>
+
+    <div class="camera"><div class="rig"><div class="world">
+
+      <!-- the estate: marks are generated by JS from a fixed seed so every
+           render is byte-identical. Exactly 9 carry .in at beat 0. -->
+      <div class="field" id="field"></div>
+
+      <!-- the boundary: radii interpolated in JS, path rebuilt per frame -->
+      <svg class="bd" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
+        <path class="bpropfill" d=""></path>
+        <path class="bfill" d=""></path>
+        <path class="bprop" d=""></path>
+        <path class="bline" d=""></path>
+      </svg>
+      <div class="bd-tag">IaC で定義済み — 管理下</div>
+
+      <!-- definition vs actual, inside the line -->
+      <div class="pair">
+        <!-- Real excerpt, iac/cloudrun.tf:41-44. The value is "mock" — NOT "test".
+             demo/ops-contract.yaml pins PAYMENT_MODE to "mock" and the runbook says
+             so too; v1 showed "test" and this inherited it. A card that names a real
+             file must show what that file really contains. -->
+        <div class="pcard pdef">
+          <div class="lbl">定義 · iac/cloudrun.tf</div>
+<pre class="hcl"><span class="kw">env</span> {
+  name  = <span class="str">"PAYMENT_MODE"</span>
+  value = <span class="str">"mock"</span>
+}</pre>
+        </div>
+        <div class="delta">
+          <div class="hatch"></div>
+          <div class="tagd">Δ ドリフト</div>
+        </div>
+        <div class="pcard pact">
+          <div class="lbl">実際 · 稼働中の payment-demo</div>
+          <div class="kv"><span class="k">PAYMENT_MODE</span> = <span class="val"><span class="flap"><span class="v vt">mock</span><span class="v vl">live</span></span></span></div>
+        </div>
+        <div class="heal"><i></i></div>
+      </div>
+
+      <!-- Annotation strokes, all in world coordinates (viewBox 1:1 with .world).
+           - lnk-lead   beat 2: the amber subject -> its callout pair.
+           - lnk-blocked + lnk-tip: ONE cubic, split at t=0.90 by de Casteljau, so
+             the tip is genuinely the last 49px of the reach and can be moved
+             independently. Original: M430 342 C 570 258, 800 268, 906 394.
+           - stopx: the two arms of the refusal x, centred on the contact point.
+           - lnk-act   beat 5: the 実行側 worker -> the actual-state card. Routed
+             left of the gate (x < 960 by the time it is level with the gate's top)
+             and it enters the boundary near the end, which is correct: the worker
+             is outside the line, the resource is inside it. -->
+      <svg class="links" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
+        <path class="lnk-lead" d="M613 570 C 690 534, 782 524, 866 540"></path>
+        <path class="lnk-blocked" d="M430 342 C 556 266.4, 754.9 266.94, 870.69 359.66"></path>
+        <path class="lnk-tip" d="M870.69 359.66 C 883.56 369.96, 895.4 381.4, 906 394"></path>
+        <line class="stopx" x1="893.8" y1="404.3" x2="918.2" y2="383.7"></line>
+        <line class="stopx" x1="895.7" y1="381.8" x2="916.3" y2="406.2"></line>
+        <path class="lnk-act" d="M1030 366 C 946 404, 872 508, 786 612"></path>
+      </svg>
+
+      <!-- 見張る側 — detects, proposes, and cannot authorise itself -->
+      <div class="badge b-watch">
+        <span class="ping"></span>
+        <span class="bdot"></span>
+        <span class="bstack">
+          <span class="brole">見張る側<span class="think"><i></i><i></i><i></i></span></span>
+          <span class="bname">Anchor · event-driven</span>
+        </span>
+      </div>
+      <div class="prop">
+        ロールバックを提案
+        <div class="pmeta">payment-demo · 実行はしない</div>
+      </div>
+
+      <!-- 実行側 — the worker that will act, and therefore mints the key -->
+      <div class="badge b-act">
+        <span class="bdot"></span>
+        <span class="bstack">
+          <span class="brole">実行側</span>
+          <span class="bname">Rollback Worker</span>
+        </span>
+      </div>
+
+      <!-- the gate -->
+      <div class="gate">
+        <div class="ghead">
+          <span class="gt">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="4.5" y="10.5" width="15" height="10" rx="2.2" stroke="currentColor" stroke-width="2"/>
+              <path d="M7.5 10.5V7.5a4.5 4.5 0 0 1 9 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            ロールバック承認
+          </span>
+          <span class="gbadge">TTL 15分</span>
+        </div>
+        <div class="gbody">
+          <div class="gsvc">payment-demo · PAYMENT_MODE</div>
+          <div class="gchange"><span class="from">live</span><span class="ar">→</span><span class="to">mock</span></div>
+          <div class="gprops">
+            <span>この操作にだけ有効</span><span>他には使えない</span><span>一度きり</span>
+          </div>
+          <div class="gfoot">
+            <span class="gsig">HMAC 署名付き</span>
+            <span class="gbtn">承認</span>
+          </div>
+          <div class="stamp">承認<br>済</div>
+        </div>
+      </div>
+
+      <!-- the key — after the gate in the DOM so it sits ON the lock. It does not
+           travel any more; see the .key rule for why the flight was retired. -->
+      <div class="key">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="4.6" stroke="currentColor" stroke-width="2.2"/>
+          <path d="M11.4 11.4 L19.5 19.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M16.6 16.6 L14.4 18.8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M19.5 19.5 L17.4 21.6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+      </div>
+
+      <!-- 書く側 — writes the definition that moves the line -->
+      <div class="badge b-write">
+        <span class="bdot"></span>
+        <span class="bstack">
+          <span class="brole">書く側<span class="think"><i></i><i></i><i></i></span></span>
+          <span class="bname">Provision · OpenTofu</span>
+        </span>
+      </div>
+
+      <!-- The definition: a DEPICTED PROPOSAL, real shape from
+           iac/adopt_bucket_driftscribe_hack_2026_adopt_probe.tf — a resource plus a
+           RETAINED import block, which is the line moving.
+           The bucket is real and really unmanaged (verified live 2026-08-02, see the
+           header accuracy note); the FILE does not exist because the adoption has not
+           been approved, which is precisely the state this beat depicts. Identifiers
+           are shortened from what the recipe would actually emit
+           (adopt_bucket_driftscribe_hack_2026_receipts.tf /
+           "adopt_driftscribe_hack_2026_receipts") so the widest line stays inside the
+           610px card at 19px mono — 50 characters is the fit. Do not lengthen a line
+           past that without re-measuring; white-space:pre-wrap will silently wrap it. -->
+      <div class="tf">
+        <div class="thead">
+          <span class="tfile">iac/adopt_bucket_receipts.tf</span>
+          <span class="ttag">new file</span>
+        </div>
+<pre class="tbody"><span class="code"><span class="cmt"># Adopted into IaC management by DriftScribe</span>
+<span class="kw">resource</span> <span class="str">"google_storage_bucket"</span> <span class="str">"adopt_receipts"</span> {
+  name     = <span class="str">"driftscribe-hack-2026-receipts"</span>
+  location = <span class="str">"asia-northeast1"</span>
+}
+
+<span class="impblock"><span class="imp">import</span> {
+  to = google_storage_bucket.adopt_receipts
+  id = <span class="str">"driftscribe-hack-2026-receipts"</span>
+}</span></span><span class="caret"></span></pre>
+      </div>
+
+      <!-- the ring — LAST in .world, after .tf, so it paints above the card and is
+           not clipped by its overflow:hidden. Path is measured and set in JS. -->
+      <svg class="ovl" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
+        <path class="ring" d=""></path>
+      </svg>
+
+    </div></div></div><!-- /.world /.rig /.camera -->
+
+    <div class="grain"></div>
+    <div class="capscrim"></div>
+
+    <!-- screen-space chrome (outside the camera) -->
+    <div class="eyebrow">本番環境 · asia-northeast1</div>
+    <div class="cnt">
+      <div class="cl">管理下のリソース</div>
+      <div class="cwrap">
+        <span class="cv"><span class="cflap"><span class="cn">9</span><span class="cn">10</span></span></span>
+        <span class="cu">件</span>
+      </div>
+    </div>
+
+    <div class="captions">
+      <div class="cap" data-c="A"><span class="w" style="--i:0">クラウドには、</span><span class="w" style="--i:1">数百のリソース</span></div>
+      <div class="cap" data-c="B"><span class="w" style="--i:0">コードで定義されているのは</span><span class="w" style="--i:1">一部</span></div>
+      <div class="cap" data-c="C"><span class="w" style="--i:0"><span class="navy">定義がある</span>から、</span><span class="w" style="--i:1">ズレが見える</span></div>
+      <div class="cap" data-c="D"><span class="w" style="--i:0">見張る側が検知し、</span><span class="w" style="--i:1"><span class="accent-blue">提案</span>する</span></div>
+      <div class="cap" data-c="E"><span class="w" style="--i:0">実行の鍵は、</span><span class="w" style="--i:1">提案した側には出せない</span></div>
+      <div class="cap" data-c="F"><span class="w" style="--i:0">人が<span class="accent-seal">承認</span>して、</span><span class="w" style="--i:1">はじめて戻る</span></div>
+      <!-- G: NOT "見えない". The product itself counts these resources (the desk's
+           estate footnote), so calling them invisible contradicts the UI this cuts
+           into. They are seen; what they lack is a definition.
+           Shortened from 「あるべき姿が書かれていない」 (22 chars) to 14 so beat 6
+           could actually be trimmed instead of merely rushed — and it now reuses
+           定義, the word B establishes and H pays off, instead of introducing
+           あるべき姿 once and never again. -->
+      <div class="cap" data-c="G"><span class="w" style="--i:0">見えている。でも、</span><span class="w" style="--i:1"><b>定義がない</b></span></div>
+      <div class="cap" data-c="H"><span class="w" style="--i:0">もう一方の側が、</span><span class="w" style="--i:1">定義を書く</span></div>
+      <!-- I deliberately repeats F's clause: same act, different consequence.
+           戻る (restore) at the first gate, 動く (grow) at the second — that
+           contrast IS the arc argument the rework exists to make. -->
+      <div class="cap" data-c="I"><span class="w" style="--i:0">人が<span class="accent-seal">承認</span>して、</span><span class="w" style="--i:1"><span class="navy">線が動く</span></span></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function(){
+  var body=document.body;
+
+  /* ---- fit the 1920x1080 stage to the viewport (scale 1 when recording) ----
+     Offset computed explicitly rather than leaning on any centring layout: see
+     the .stage rule for the grid-centring bug this replaced. */
+  var stageEl=document.querySelector('.stage');
+  function fit(){
+    var s=Math.min(window.innerWidth/1920, window.innerHeight/1080);
+    stageEl.style.transform=
+      'translate('+((window.innerWidth-1920*s)/2)+'px,'
+                 +((window.innerHeight-1080*s)/2)+'px) scale('+s+')';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  /* =====================================================================
+     BOUNDARY GEOMETRY
+     A closed blob sampled as N radii around a centre. Base and grown states
+     share the sample count, so growth is a straight lerp over the radii —
+     no path-morph support needed, and it lands identically every render.
+     ===================================================================== */
+  var CX=600, CY=600, N=28, R0=240;
+  /* the resource that gets a definition written for it */
+  var TGT={x:900, y:470};
+  var TGT_ANG=Math.atan2(TGT.y-CY, TGT.x-CX);          /* ~-0.409 rad */
+  var LOBE=135, SIGMA=0.42;
+
+  /* deterministic PRNG — every render must be frame-identical */
+  var seed=20260801>>>0;
+  function rnd(){ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }
+
+  /* gentle organic wobble so the boundary is not a circle */
+  var wobble=[];
+  for(var i=0;i<N;i++) wobble.push((rnd()*2-1)*13);
+
+  function angDiff(a,b){ var d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; }
+
+  var baseR=[], growR=[];
+  for(var i=0;i<N;i++){
+    var th=i/N*2*Math.PI;
+    var r=R0+wobble[i];
+    baseR.push(r);
+    var dd=angDiff(th, TGT_ANG);
+    growR.push(r + LOBE*Math.exp(-(dd/SIGMA)*(dd/SIGMA)));
+  }
+
+  function ptsFrom(radii){
+    var p=[];
+    for(var i=0;i<N;i++){
+      var th=i/N*2*Math.PI;
+      p.push([CX+radii[i]*Math.cos(th), CY+radii[i]*Math.sin(th)]);
+    }
+    return p;
+  }
+  /* closed Catmull-Rom -> cubic bezier, so a blob reads as drawn, not polygonal.
+     Shared by the boundary and by the beat-7 ring. */
+  function closedPath(p){
+    var n=p.length, d='M'+p[0][0].toFixed(2)+' '+p[0][1].toFixed(2);
+    for(var i=0;i<n;i++){
+      var p0=p[(i-1+n)%n], p1=p[i], p2=p[(i+1)%n], p3=p[(i+2)%n];
+      var c1x=p1[0]+(p2[0]-p0[0])/6, c1y=p1[1]+(p2[1]-p0[1])/6;
+      var c2x=p2[0]-(p3[0]-p1[0])/6, c2y=p2[1]-(p3[1]-p1[1])/6;
+      d+=' C'+c1x.toFixed(2)+' '+c1y.toFixed(2)+','+c2x.toFixed(2)+' '+c2y.toFixed(2)
+        +','+p2[0].toFixed(2)+' '+p2[1].toFixed(2);
+    }
+    return d+' Z';
+  }
+  function pathFrom(radii){ return closedPath(ptsFrom(radii)); }
+  function radiusAt(radii, ang){
+    var t=(ang/(2*Math.PI))*N; while(t<0)t+=N;
+    var i=Math.floor(t)%N, f=t-Math.floor(t);
+    return radii[i]*(1-f)+radii[(i+1)%N]*f;
+  }
+
+  var bfill=document.querySelector('.bd .bfill'), bline=document.querySelector('.bd .bline');
+  var bpfill=document.querySelector('.bd .bpropfill'), bprop=document.querySelector('.bd .bprop');
+  /* the SOLID boundary — what is actually under management */
+  function drawBoundary(radii){
+    var d=pathFrom(radii); bfill.setAttribute('d', d); bline.setAttribute('d', d);
+  }
+  /* the DASHED proposal drawn over it — only its new lobe is visible */
+  function drawProposal(radii){
+    var d=pathFrom(radii); bpfill.setAttribute('d', d); bprop.setAttribute('d', d);
+  }
+
+  /* =====================================================================
+     THE FIELD — exactly 9 marks inside the line (so the visual and the
+     counter agree), the adopt target just outside it, and a stylized
+     scatter everywhere else. Never a census; no denominator is shown.
+     ===================================================================== */
+  var INSIDE=[[470,505],[560,462],[682,486],[600,578],[712,592],
+              [486,622],[578,690],[690,700],[452,566]];
+  var SUBJ=3;                                   /* index of the drift subject */
+  /* the three that stay lit beside the subject at beat 2 (punch list item 1):
+     without company the amber square reads as "the only resource", with company
+     it reads as "one of these". Chosen because they sit left of the subject, i.e.
+     clear of the relocated callout pair and inside the beat-2 framing. */
+  var SIBS=[0,5,8];
+  var field=document.getElementById('field');
+
+  /* Beat-0 bloom delay (see the .mk/mkin rules). Ordered by distance from the
+     centre so the field opens outward from where the boundary is about to draw.
+     The jitter is derived from the coordinates, NOT from rnd() — pulling another
+     number off the PRNG here would shift every subsequent draw and silently
+     re-scatter the whole field. Max delay 1500+220, +620 duration = 2340ms, so
+     the bloom finishes inside beat 0 with room to settle. */
+  var MAXD=1250;
+  function addMark(x,y,cls){
+    var m=document.createElement('div');
+    m.className='mk'+(cls?' '+cls:'');
+    m.style.left=(x-10)+'px'; m.style.top=(y-10)+'px';
+    var d=Math.sqrt((x-CX)*(x-CX)+(y-CY)*(y-CY));
+    m.style.setProperty('--d',
+      Math.round(Math.min(1,d/MAXD)*1500 + ((Math.round(x)*31+Math.round(y)*17)%220)));
+    field.appendChild(m); return m;
+  }
+  INSIDE.forEach(function(p,i){
+    addMark(p[0],p[1],'in'+(i===SUBJ?' subj':'')+(SIBS.indexOf(i)>=0?' sib':''));
+  });
+
+  /* --- micro-labels ------------------------------------------------------
+     Four real resource names. Verified live 2026-08-02 against the estate, NOT
+     inferred: payment-demo is declared in iac/cloudrun.tf (inside the line); the
+     other three are live and appear nowhere in iac/ (outside it). The proposed
+     `gcf-sources-*` bucket does NOT exist in this project — Cloud Functions gen1
+     was never used here — which is exactly why the punch list said to check.
+     Positions are world coordinates; `lft` makes a label END at its mark instead
+     of starting after it, which is how the left-hand one stays off the boundary. */
+  function addLabel(x,y,text,cls,stagger){
+    var l=document.createElement('div');
+    l.className='mklbl '+cls;
+    l.style.left=x+'px'; l.style.top=y+'px';
+    if(stagger) l.style.setProperty('--ls', stagger+'ms');
+    l.textContent=text;
+    field.appendChild(l); return l;
+  }
+  /* the drift subject, inside the line. Placed ABOVE the mark: to its right the
+     label would run into the two marks at (712,592)/(690,700). */
+  addLabel(500, 546, 'payment-demo · Cloud Run', 'inlbl', 0);
+
+  /* A FEW DOZEN marks, not a census (design §"Depicted scale"): a literal
+     9-of-735 field invites the room to do the division and read "toy coverage".
+     ~30 outside + 9 inside reads as a visible-minority fraction, which is the
+     honest shape of the argument; the real numbers live in the counter.
+     Jitter is large relative to the step so it reads as a field, not a grid.
+     Culled anywhere the grown boundary will reach, so the lobe arrives at a
+     clean target instead of swallowing bystanders. */
+  /* two outside marks at FIXED coordinates so they can carry labels — a mark
+     pulled out of the deterministic scatter has no stable identity to point at */
+  var NAMED_OUT=[{x:1360, y:700}, {x:300, y:330}];
+  for(var gy=250; gy<=830; gy+=190){
+    for(var gx=150; gx<=1790; gx+=205){
+      var x=gx+(rnd()*2-1)*48, y=gy+(rnd()*2-1)*48;
+      var dx=x-CX, dy=y-CY, dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist < radiusAt(growR, Math.atan2(dy,dx))+34) continue;
+      /* keep the named pair clear of neighbours. The `continue` is AFTER both
+         rnd() draws, so culling never shifts the rest of the field. */
+      var clash=false;
+      for(var k=0;k<NAMED_OUT.length;k++){
+        var nx=x-NAMED_OUT[k].x, ny=y-NAMED_OUT[k].y;
+        if(Math.sqrt(nx*nx+ny*ny) < 120){ clash=true; break; }
+      }
+      if(clash) continue;
+      addMark(x,y,null);
+    }
+  }
+  NAMED_OUT.forEach(function(p){ addMark(p.x, p.y, null); });
+  addLabel(1376, 692, 'driftscribe-hack-2026_cloudbuild · Cloud Storage', 'out', 190);
+  addLabel(284, 322, 'shipping-events · Pub/Sub', 'out lft', 560);
+
+  /* the one that will be enclosed. Its label is the returning character: the same
+     string comes back at beat 7 inside the .tf card, twice. */
+  var tgtMark=addMark(TGT.x, TGT.y, 'tgt');
+  addLabel(916, 462, 'driftscribe-hack-2026-receipts · Cloud Storage', 'tgtlbl', 380);
+  var halo=document.createElement('div');
+  halo.className='tgt-halo';
+  halo.style.left=TGT.x+'px'; halo.style.top=TGT.y+'px';
+  field.appendChild(halo);
+
+  /* =====================================================================
+     TIMELINE
+     ===================================================================== */
+  /* 34.6s (was 31.9s; the 35s cap is waived for this round — see the header).
+     Every beat is sized to its CAPTION's reading time AND to what the viewer has
+     to watch — the captions are the only narration in a silent piece nobody can
+     pause. Caption budget: chars / (duration - 0.5s stagger) <= ~5.2 per second;
+     NOTES.md's conservative figure is 4/s. Every beat below is at or under 4.2.
+       beat 0  3200  unchanged — the field blooms in
+       beat 1  4200  +800: the line draws for 1.5s and only THEN do four resource
+                     names fade up. Caption B was already at the 5.2 ceiling.
+       beat 2  3900  +500: there is now a mark, a leader stroke and a pair to read
+       beat 3  3100  unchanged
+       beat 4  3900  unchanged; the refusal fits inside it (x lands at ~1.56s)
+       beat 5  3700  +600: the whole beat is now serial — 判子 at 1.12s, the
+                     worker's path 1.15-1.80s, the gap closing 1.80-2.90s. At
+                     3100 the heal ended exactly on the cut.
+       beat 6  4000  +400: the pullback now has to LAND on the target
+       beat 7  5200  +400: burst -> highlight -> ring -> lift-off -> lobe. The
+                     definition must finish being written BEFORE the line reaches
+                     out or the causality inverts, and this is the one beat no
+                     rival's demo can show. Never trim it first.
+       beat 8  3400  unchanged
+     Only the beat-7 chain's ANCHOR (26500) is coupled to these numbers; the rest
+     of that beat is serial, so a burst-speed change cannot open a hole in it. */
+  var MARKS=[[0,'0'],[3200,'1'],[7400,'2'],[11300,'3'],[14400,'4'],
+             [18300,'5'],[22000,'6'],[26000,'7'],[31200,'8']];
+  var TOTAL=34600;
+  var timers=[], raf=null;
+  function clear(){
+    timers.forEach(clearTimeout); timers=[];
+    if(raf){ cancelAnimationFrame(raf); raf=null; }
+  }
+
+  /* The line moves in TWO steps, because that is what the system actually does.
+     Driven off performance.now() so a wall-clock step (WSL2 NTP, see NOTES.md
+     "Recorder timestamps must be MONOTONIC") cannot distort either one. */
+  function morph(draw, from, to, ms, done){
+    var t0=performance.now();
+    (function step(){
+      var t=Math.min(1,(performance.now()-t0)/ms);
+      var e=t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;   /* easeInOutCubic */
+      var cur=[]; for(var i=0;i<N;i++) cur.push(from[i]+(to[i]-from[i])*e);
+      draw(cur);
+      if(t<1) raf=requestAnimationFrame(step);
+      else { raf=null; if(done) done(); }
+    })();
+  }
+  /* 1. beat 7 — the DASHED proposal reaches out toward the resource */
+  function proposeBoundary(){ morph(drawProposal, baseR, growR, 1300); }
+  /* 2. beat 8 — the human approves and the solid line SNAPS out to meet it */
+  function commitBoundary(){ morph(drawBoundary, baseR, growR, 620); }
+
+  /* the definition types itself; the full text stays in the markup so
+     ?hold=7 renders it complete (NOTES.md animation-lifecycle rule) */
+  var tfEl=document.querySelector('.tf'), codeEl=document.querySelector('.tf .code');
+  var CODE_HTML=codeEl.innerHTML;
+  var CODE_TEXT=codeEl.textContent;
+  function typeCode(done){
+    tfEl.classList.remove('done');
+    codeEl.textContent='';
+    /* A BURST: 4.5ms/char x ~266 chars = ~1.2s (was 8ms = ~2.17s). Speed is
+       energy, and reading happens on the settled frame, not during the write —
+       which now gets ~3.5s of stillness before beat 8 takes the card away.
+       At 60fps this lands ~4 characters per frame, which is what a burst looks
+       like. `done` is the chain's next link: nothing downstream is on a fixed
+       clock, so changing `per` can never open a hole or an overlap. */
+    var i=0, t0=performance.now(), per=4.5;
+    (function step(){
+      var n=Math.min(CODE_TEXT.length, Math.floor((performance.now()-t0)/per));
+      if(n!==i){ i=n; codeEl.textContent=CODE_TEXT.slice(0,i); }
+      if(i<CODE_TEXT.length) raf=requestAnimationFrame(step);
+      else {
+        codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); raf=null;
+        if(done) done();
+      }
+    })();
+  }
+
+  /* ---- the ring ---------------------------------------------------------
+     Geometry is measured from OFFSETS, never from getBoundingClientRect():
+     .impblock lives under the camera rig, so a screen rect would be in stage
+     pixels while the overlay draws in world units. .tf is absolutely positioned
+     inside .world and the <pre> between them is static, so offsetParent(.impblock)
+     is .tf and the two offsets simply add.
+     ⚠ Measure only AFTER typeCode restores CODE_HTML — while typing, codeEl holds
+     a plain text node and .impblock does not exist at all. */
+  var ringEl=document.querySelector('.ring');
+  function ringGeom(){
+    var imp=tfEl.querySelector('.impblock');
+    if(!imp) return null;
+    var x=tfEl.offsetLeft+imp.offsetLeft, y=tfEl.offsetTop+imp.offsetTop;
+    /* An ellipse only CONTAINS a rectangle's corners when it is ~sqrt(2) larger
+       than the box. rx=w/2+30 clipped the first and last lines of the block at
+       their left ends; 1.28x plus a margin clears them with the ring poking
+       ~75px out of the card on the left, which is what a pen circle does anyway. */
+    return {cx:x+imp.offsetWidth/2,       rx:imp.offsetWidth*0.64+20,
+            cy:y+imp.offsetHeight/2,      ry:imp.offsetHeight*0.64+16};
+  }
+  function ringClose(done){
+    var g=ringGeom(); if(!g){ if(done) done(); return; }
+    /* Hand-drawn = LOW-frequency deviation. A per-sample jitter array (32 points,
+       alternating +/-4%) produced a 16-cycle ripple that read as a cloud, not a
+       pen stroke; two slow harmonics read as a hand. Deterministic and NOT drawn
+       from rnd(): that PRNG is consumed by the field layout and one extra draw
+       would re-scatter every mark in the piece. */
+    var p=[], n=26;
+    for(var i=0;i<n;i++){
+      var a=i/n*2*Math.PI - Math.PI*0.55;
+      var k=1 + 0.030*Math.sin(2*a+0.9) + 0.018*Math.sin(3*a+2.4);
+      p.push([g.cx+g.rx*k*Math.cos(a), g.cy+g.ry*k*Math.sin(a)]);
+    }
+    ringEl.setAttribute('d', closedPath(p));
+    var L=ringEl.getTotalLength();
+    ringEl.style.strokeDasharray=L+'px';
+    ringEl.style.strokeDashoffset='0';
+    ringEl.style.setProperty('--rl', L+'px');
+    /* aim the lift at the resource, stopping ~18% short: it is a rhyme with the
+       lobe, not a delivery — the lobe is what actually arrives */
+    ringEl.style.setProperty('--lx', ((TGT.x-g.cx)*0.82).toFixed(1)+'px');
+    ringEl.style.setProperty('--ly', ((TGT.y-g.cy)*0.82).toFixed(1)+'px');
+    body.classList.remove('ring-lift');
+    body.classList.add('ring-draw');
+    timers.push(setTimeout(done, 460));
+  }
+  function ringLift(){
+    body.classList.remove('ring-draw');
+    body.classList.add('ring-lift');
+  }
+
+  /* Beat 7, as ONE serial chain rather than three fixed timeouts. Only the first
+     link is anchored to the clock; each later link starts when its predecessor
+     finishes, which is what makes the argument's ORDER a structural property
+     instead of an arithmetic coincidence:
+       burst completes -> the import block highlights -> a ring closes on it ->
+       the ring lifts off as the DASHED lobe extends -> (beat 8) approval snaps
+       the solid line out to meet it.
+     Every timeout goes through `timers`, so a replay cancels the whole chain. */
+  function beat7Chain(){
+    typeCode(function(){
+      timers.push(setTimeout(function(){
+        ringClose(function(){
+          timers.push(setTimeout(function(){
+            ringLift();
+            proposeBoundary();
+          }, 340));
+        });
+      }, 260));
+    });
+  }
+
+  window.play=function(){
+    clear();
+    body.classList.remove('no-anim','playing','ring-draw','ring-lift');
+    body.setAttribute('data-beat','0');
+    codeEl.innerHTML=CODE_HTML; tfEl.classList.remove('done');
+    ringEl.removeAttribute('d');
+    drawBoundary(baseR); drawProposal(baseR);
+    void body.offsetWidth;                            /* reflow so CSS re-runs */
+    body.classList.add('playing');
+    MARKS.forEach(function(m){
+      timers.push(setTimeout(function(){ body.setAttribute('data-beat', m[1]); }, m[0]));
+    });
+    /* the only two clock anchors left in beat 7/8: the chain's start, and the
+       approval, which belongs to beat 8's mark and nothing else */
+    timers.push(setTimeout(beat7Chain, 26500));       /* beat 7 + 500ms */
+    timers.push(setTimeout(commitBoundary, 31300));   /* beat 8 + 100ms */
+  };
+  window.RUNTIME_MS=TOTAL;
+
+  var qp=new URLSearchParams(location.search);
+
+  /* The counter must land on the REAL counts at record time — the match-cut into
+     the live desk panel dies if these disagree with the UI, and the untracked
+     total moves. Pull them when shooting: ?managed=9&grown=10 */
+  var cns=document.querySelectorAll('.cnt .cn');
+  if(qp.has('managed')) cns[0].textContent=qp.get('managed');
+  if(qp.has('grown'))   cns[1].textContent=qp.get('grown');
+
+  if(qp.has('hold')){
+    var h=Math.max(0, Math.min(8, parseInt(qp.get('hold'),10)||0));
+    body.classList.add('no-anim');
+    body.setAttribute('data-beat', String(h));
+    /* beat 7 = proposed (dashed out, solid still at base); beat 8 = committed */
+    drawBoundary(h>=8 ? growR : baseR);
+    drawProposal(h>=7 ? growR : baseR);
+    if(h>=7){ codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); }
+  } else if(!qp.has('manual')){
+    /* fonts.ready is the trigger; the 1400ms timer is only a fallback for when it
+       never settles. Both used to fire — fonts.ready started the piece, then the
+       timer RESTARTED it, so every normal viewing opened with ~1.6s of repeated,
+       dead beat 0 (measured: beat 1 landed at 5055ms against a MARKS value of
+       3400). window.play() stays a public restart; the latch is only on autoplay. */
+    var started=false;
+    var go=function(){ if(started) return; started=true; window.play(); };
+    if(document.fonts && document.fonts.ready){ document.fonts.ready.then(go); setTimeout(go, 1400); }
+    else { go(); }
+  } else {
+    drawBoundary(baseR); drawProposal(baseR);          /* manual: park at beat 0 */
+  }
+})();
+</script>
+</body>
+</html>
