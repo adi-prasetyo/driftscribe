@@ -110,6 +110,38 @@
   const unmatched = $derived(graph === null ? null : (graph.unmatched_declarations ?? null));
   const unmatchedEntries = $derived(unmatched?.entries ?? []);
 
+  /** How current is the `iac/` tree this estate was read from? (ds-1vn)
+   *
+   *  Three outcomes, and `'fresh'` is the ONLY one that renders nothing:
+   *
+   *   - `'stale'`      — the snapshot is a different `iac/` tree than the
+   *                      running deployment holds, so a resource declared
+   *                      since then can still be listed as undeclared.
+   *   - `'unverified'` — one side reported no hash. This is prod's state until
+   *                      infra-reader is redeployed, and the easy mistake is
+   *                      to let it render as silence.
+   *   - `'fresh'`      — the two trees are byte-identical.
+   *
+   *  Written as an explicit `=== true` / `=== false`, not `?? true`-style
+   *  coercion: `undefined` (a coordinator predating the field) and `null` (a
+   *  check that could not run) are BOTH unverified, and only a literal `false`
+   *  earns silence. A truthiness test would quietly promote `undefined` into
+   *  the silent branch — the exact conflation the field exists to prevent.
+   *
+   *  NO `graph.degraded` term here, on purpose, and the same reasoning the
+   *  `unmatched` derived above records: the notices render only inside the
+   *  loaded branch, so a degraded graph never reads this. A `degraded` arm
+   *  would sit un-exercised — deleting it reddens nothing, verified by
+   *  injection. The degraded BEHAVIOUR is pinned where it is real, by a test
+   *  asserting no notice renders on a degraded graph. The `graph === null`
+   *  term stays: that one is the type system's, not a second arm. */
+  const snapshotFreshness = $derived.by((): 'stale' | 'unverified' | 'fresh' => {
+    if (graph === null) return 'fresh';
+    if (graph.iac_snapshot_stale === true) return 'stale';
+    if (graph.iac_snapshot_stale === false) return 'fresh';
+    return 'unverified';
+  });
+
   function clickInvestigate(d: UnmatchedDeclaration): void {
     // `graph` is non-null wherever a row can be clicked (the rows only render
     // inside the loaded branch), but the prefill builder needs it as a value,
@@ -138,6 +170,23 @@
   {:else if graph === null || graph.degraded}
     <p class="estate-view__status" data-testid="estate-degraded">{$t('desk.estate.degraded')}</p>
   {:else}
+    <!-- ds-1vn — how old is the iac/ tree this estate was read from?
+         First thing in the branch, deliberately: it qualifies every row below
+         it, including the Adopt buttons, and a notice an operator reaches
+         AFTER clicking Adopt has not warned anybody.
+         Neither `caveat` nor `degraded` could carry this — InfraDiagram hides
+         the caveat when degraded, and degraded replaces the whole estate with
+         a generic line, hiding the very rows being qualified. -->
+    {#if snapshotFreshness === 'stale'}
+      <p class="estate-view__snapshot estate-view__snapshot--stale" data-testid="estate-snapshot-stale">
+        {$t('desk.estate.snapshotStale')}
+      </p>
+    {:else if snapshotFreshness === 'unverified'}
+      <p class="estate-view__snapshot" data-testid="estate-snapshot-unverified">
+        {$t('desk.estate.snapshotUnverified')}
+      </p>
+    {/if}
+
     {#if model.drift.length > 0}
       <h2 class="estate-view__group" data-testid="estate-group-drift">
         {$t('desk.estate.driftGroup', { n: model.drift.length })}
@@ -347,6 +396,27 @@
     font-family: var(--ds-font-mono);
     font-size: 12.5px;
     color: var(--ds-fg-soft);
+  }
+
+  /* ds-1vn. Prose, not mono like __status: this is something to READ before
+     acting on the rows under it, not a machine state. The unverified variant
+     stays at __status's soft grey — it reports an absence of information, and
+     dressing that as an alert would spend the operator's attention on the
+     quieter of the two facts. The stale variant earns the warn surface. */
+  .estate-view__snapshot {
+    margin: 0;
+    padding: 14px 40px 0;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--ds-fg-soft);
+  }
+  .estate-view__snapshot--stale {
+    margin: 16px 40px 0;
+    padding: 10px 14px;
+    border: 1px solid var(--ds-warn-border);
+    border-radius: var(--ds-radius-sm);
+    background: var(--ds-warn-surface);
+    color: var(--ds-warn-ink);
   }
 
   .estate-view__group {

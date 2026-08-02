@@ -220,6 +220,13 @@ export function infraGraphResponse() {
     project: 'driftscribe-hack-2026',
     caveat: 'CAI is eventually consistent — may lag a recent apply.',
     iac_snapshot_sha: 'cafef00d',
+    // ds-1vn: a healthy deployment's snapshot matches, so no freshness notice.
+    // Set EXPLICITLY rather than omitted: omitting it means "unverified", the
+    // SPA would draw the notice in every smoke and visual shot, and the shots
+    // would then stop representing the state they exist to represent. The
+    // stale/unverified branches are exercised in tests/unit/EstateView.test.ts.
+    iac_snapshot_stale: false,
+    iac_snapshot_reason: null,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 3, managed: 1, drift: 2 },

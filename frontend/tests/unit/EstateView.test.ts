@@ -503,3 +503,100 @@ describe('EstateView — unreliable approvals must not imply "safe to adopt" (ds
   });
 });
 
+
+// --------------------------------------------------------------------------- //
+// ds-1vn — the estate discloses when its IaC snapshot is not this deployment's.
+//
+// The incident: infra-reader was baked at f72ef29 (07-29); PR #168 added
+// iac/adopt_topic_adopt_probe_topic.tf on 07-31. The worker parsed an iac/ tree
+// without the declaration, so the topic listed as undeclared and offered an
+// Adopt button for a resource already declared and merged. The page said
+// nothing about the snapshot's age.
+//
+// ⚠️ Why this cannot ride the existing channels, both of which were the obvious
+// first choice and both of which fail:
+//
+//   * `graph.caveat` — InfraDiagram renders it only `{#if graph && !degraded}`,
+//     so the disclosure disappears exactly when things are worst.
+//   * `graph.degraded` — EstateView (above) replaces the ENTIRE estate with a
+//     generic unavailable line. That hides the resources the warning is about,
+//     which is worse than the bug.
+//
+// So it gets its own visible state, tested here rather than assumed.
+// --------------------------------------------------------------------------- //
+
+describe('EstateView — IaC snapshot freshness disclosure (ds-1vn)', () => {
+  it('shows a specific notice when the snapshot is stale', () => {
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    const el = getByTestId('estate-snapshot-stale');
+    expect(el.textContent?.trim()).toBeTruthy();
+  });
+
+  it('still renders the estate itself when stale — the warning must not hide its subject', () => {
+    const { getByTestId, getAllByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    expect(getByTestId('estate-snapshot-stale')).toBeTruthy();
+    expect(getAllByTestId('estate-row').length).toBeGreaterThan(0);
+    expect(queryByTestId('estate-degraded')).toBeNull();
+  });
+
+  it('says nothing when the snapshot matches this deployment', () => {
+    const { queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: false }) }),
+    });
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+    expect(queryByTestId('estate-snapshot-unverified')).toBeNull();
+  });
+
+  // The state prod is in until infra-reader is redeployed, and the one most
+  // easily rendered as silence. "Could not check" is not "fine".
+  it('shows a DISTINCT, quieter notice when freshness could not be verified', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: null }) }),
+    });
+    expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+  });
+
+  it('treats a graph with no freshness field at all as unverified, not as fresh', () => {
+    // A build serving a payload from before these fields existed. Absent must
+    // not read as false — that is the same conflation as `phase: null` meaning
+    // "applied" (ds-2mc).
+    const { getByTestId } = render(EstateView, { props: baseProps({ graph: graph() }) });
+    expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+  });
+
+  it('renders no freshness notice at all on a degraded graph', () => {
+    // Degraded already replaces the estate with its own line. Stacking a
+    // freshness note onto a panel that is showing nothing would be noise about
+    // the currency of data that is not on screen.
+    const { queryByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ degraded: true, iac_snapshot_stale: null }) }),
+    });
+    expect(getByTestId('estate-degraded')).toBeTruthy();
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+    expect(queryByTestId('estate-snapshot-unverified')).toBeNull();
+  });
+
+  it('renders no freshness notice while the graph is still loading', () => {
+    const { queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: null, settled: false }),
+    });
+    expect(queryByTestId('estate-snapshot-stale')).toBeNull();
+    expect(queryByTestId('estate-snapshot-unverified')).toBeNull();
+  });
+
+  // The notice sits ABOVE the rows it qualifies. An operator who has already
+  // scrolled to an Adopt button and clicked it was never warned.
+  it('places the notice before the first estate row', () => {
+    const { getByTestId, getAllByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    const notice = getByTestId('estate-snapshot-stale');
+    const firstRow = getAllByTestId('estate-row')[0];
+    expect(notice.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});

@@ -132,6 +132,26 @@ export interface InfraGraph {
   project: string | null;
   caveat: string;
   iac_snapshot_sha?: string | null;
+  /**
+   * Is the estate's `iac/` snapshot a DIFFERENT tree than the running
+   * deployment holds? (ds-1vn)
+   *
+   * Tri-state, and `null` is a real answer, not a placeholder: `true` the two
+   * trees differ, `false` they are byte-identical, `null` it could not be
+   * checked (one side reported no hash). ABSENT — a payload from a coordinator
+   * that predates the field — must be read as `null` too. Absent-means-fresh is
+   * the same conflation as `approval.phase: null` meaning "applied" (ds-2mc),
+   * and here it would restore exactly the silence this field exists to break.
+   *
+   * NOT derivable from `iac_snapshot_sha`: that is a commit SHA, which a
+   * docs-only commit moves while `iac/` is untouched.
+   */
+  iac_snapshot_stale?: boolean | null;
+  /** Machine-readable why: `tree_hash_mismatch` | `worker_hash_unavailable` |
+   *  `local_hash_unavailable`, or null when not stale. The UI branches on
+   *  `iac_snapshot_stale` for copy; this is for logs and for an operator
+   *  reading the raw payload. */
+  iac_snapshot_reason?: string | null;
   degraded: boolean;
   degraded_reason: string | null;
   detail?: string | null;

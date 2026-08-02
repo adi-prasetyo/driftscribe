@@ -247,6 +247,18 @@ export const desk = {
     'desk.estate.ariaLabel': 'Estate',
     'desk.estate.loading': 'Loading the estate…',
     'desk.estate.degraded': 'The estate map is temporarily unavailable.',
+    // ds-1vn — the age of the iac/ snapshot this whole list was read from.
+    // Says "than the running deployment", not "than main": what the check
+    // actually compares is the infra-reader's baked iac/ tree against the
+    // coordinator's. If both were equally behind main it would report a match,
+    // so claiming currency against main would overstate the evidence.
+    'desk.estate.snapshotStale':
+      'This list was read from an older iac/ snapshot than the running deployment. A resource declared since then may still appear below as not declared.',
+    // Deliberately not silence. "We could not check" and "it is current" are
+    // different facts, and rendering them the same way is the defect ds-1vn
+    // exists to remove.
+    'desk.estate.snapshotUnverified':
+      'The age of this list’s iac/ snapshot could not be verified.',
     'desk.estate.driftGroup': 'Drift — not managed by IaC ({n})',
     // The drift group's mirror image: declared in IaC, no live resource. The
     // heading carries the TRUE server-side count, which can exceed the rows
@@ -389,6 +401,9 @@ export const desk = {
     'desk.estate.ariaLabel': 'インフラ',
     'desk.estate.loading': 'インフラ情報を読み込み中…',
     'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
+    'desk.estate.snapshotStale':
+      'この一覧は、稼働中のデプロイより古い iac/ スナップショットから読み取られています。その後に宣言されたリソースが、未宣言として表示される場合があります。',
+    'desk.estate.snapshotUnverified': 'この一覧の iac/ スナップショットの鮮度は確認できませんでした。',
     'desk.estate.driftGroup': 'ドリフト — IaC 未管理 {n} 件',
     'desk.estate.unmatchedGroup': 'IaC に定義済み・実環境で未検出 {n} 件',
     'desk.estate.managedGroup': '管理下 — {n} 件',
