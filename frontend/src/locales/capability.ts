@@ -15,7 +15,6 @@ export const capability = {
   en: {
     // ---- Card chrome ----
     'capability.card.title': 'What this agent can and cannot do',
-    'capability.card.hint': 'safety cage, generated from enforcement code',
     'capability.error.load': 'Could not load capability data.',
 
     // ---- Gates section ----
@@ -281,7 +280,6 @@ export const capability = {
   ja: {
     // ---- Card chrome ----
     'capability.card.title': 'このエージェントにできること・できないこと',
-    'capability.card.hint': '実際の制御コードから生成された安全機構',
     'capability.error.load': '機能情報を読み込めませんでした。',
 
     // ---- Gates section ----

@@ -167,7 +167,7 @@ describe('App — resume a conversation from the rail', () => {
     await waitFor(() => expect(lastChatPostWorkload()).toBe('provision'));
   });
 
-  it("auto-loads the latest crew turn's reasoning into the inline timeline (thread stays visible, NOT full replay)", async () => {
+  it('fetches no trace on open, and each turn still reaches its own reasoning', async () => {
     const list = {
       conversations: [
         {
@@ -215,26 +215,41 @@ describe('App — resume a conversation from the rail', () => {
       }),
     );
 
-    const { findByTestId, getByText, queryByTestId } = render(App);
+    // Opening a thread used to pull the latest turn's trace into a page-level
+    // timeline, unasked. That panel is gone (ds-jns Task 3.3) and every crew
+    // bubble carries its own disclosure, so the fetch went with it: one GET per
+    // thread open, for one turn's reasoning nobody requested, buying nothing
+    // the disclosures don't already give.
+    const { findByTestId, getByText, queryByText } = render(App);
 
     await fireEvent.click(await findByTestId('conversation-open'));
-
-    // The thread rehydrated AND the latest turn's reasoning shows inline: the
-    // coordinator thought text only renders when the timeline is populated.
     await findByTestId('conversation-thread');
-    await waitFor(() => expect(getByText('weighing the region tradeoff')).toBeTruthy());
-
-    // We are in inline mode, NOT full-page historical replay: the thread and the
-    // reasoning coexist, and the "viewing past reasoning" banner is absent.
-    expect(queryByTestId('conversation-thread')).not.toBeNull();
-    expect(queryByTestId('historical-banner')).toBeNull();
-    // The crew reply bubble is still shown above the reasoning.
     expect(getByText('someone set it in the console')).toBeTruthy();
+
+    // Several ticks, so this is the settled state and not a race the assertion
+    // happened to win before an in-flight prefetch landed.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    const traceCalls = (fetch as unknown as { mock: { calls: [RequestInfo | URL][] } }).mock.calls
+      .filter(([u]) => String(u).includes('/trace/'));
+    expect(traceCalls).toHaveLength(0);
+    expect(queryByText('weighing the region tradeoff')).toBeNull();
+
+    // …and the reasoning is one click away on the turn it belongs to, which is
+    // the trade this made: nothing fetched until asked, and then exactly the
+    // turn asked about.
+    // Scoped to the expanded body: once the trace lands the disclosure's own
+    // collapsed subtitle quotes the same thought, so a document-wide text query
+    // matches twice and would pass on the subtitle alone.
+    await fireEvent.click(await findByTestId('reasoning-disclosure'));
+    const expanded = await findByTestId('trace-detail');
+    await waitFor(() =>
+      expect(within(expanded).getByText('weighing the region tradeoff')).toBeTruthy(),
+    );
   });
 });
 
 describe('App — a chat turn settles into the thread', () => {
-  it('appends the exchange and clears the standalone hero when conversation_id is echoed', async () => {
+  it('appends the exchange to the thread when conversation_id is echoed', async () => {
     let listCalls = 0;
     vi.stubGlobal(
       'fetch',
@@ -258,7 +273,7 @@ describe('App — a chat turn settles into the thread', () => {
       }),
     );
 
-    const { findByTestId, getByText, queryByTestId } = render(App);
+    const { findByTestId, getByText, getAllByText, queryByTestId } = render(App);
 
     const input = (await findByTestId('chat-prompt')) as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'why did it drift?' } });
@@ -269,14 +284,17 @@ describe('App — a chat turn settles into the thread', () => {
     await waitFor(() => expect(getByText('here is the answer')).toBeTruthy());
     expect(getByText('why did it drift?')).toBeTruthy();
 
-    // The standalone hero is cleared (the reply now lives in the thread).
-    await waitFor(() => {
-      const hero = queryByTestId('final-response');
-      expect(hero?.hasAttribute('hidden')).toBe(true);
-    });
+    // Exactly ONE copy of the reply. There used to be a standalone hero beside
+    // the thread showing the same text, kept hidden on this path; ds-jns Task
+    // 3.3 deleted it, so "not shown twice" is now a statement about the DOM
+    // rather than about an attribute on a second renderer.
+    expect(queryByTestId('final-response')).toBeNull();
+    expect(getAllByText('here is the answer')).toHaveLength(1);
 
-    // The rail was refreshed after the turn (mount + post-settle).
-    expect(listCalls).toBeGreaterThanOrEqual(2);
+    // The rail was refreshed after the turn (mount + post-settle). Awaited:
+    // settle fires this without blocking the render, and the hero assertion
+    // this test used to end on happened to provide the wait.
+    await waitFor(() => expect(listCalls).toBeGreaterThanOrEqual(2));
   });
 
   it('does NOT settle a paused refusal that echoes conversation_id (no turn persisted)', async () => {
@@ -314,10 +332,12 @@ describe('App — a chat turn settles into the thread', () => {
     await waitFor(() => {
       expect(getByTestId('conversation-thread').textContent).toContain('paused');
     });
-    // Not settled: no ?conversation, and the standalone hero stays out of it.
+    // Not settled: no ?conversation. And the reply is in the thread and ONLY
+    // the thread — the standalone hero that used to render it beside the
+    // transcript is deleted (ds-jns Task 3.3), so there is no second surface a
+    // non-persisted reply could turn up on.
     expect(new URLSearchParams(window.location.search).get('conversation')).toBeNull();
-    const hero = queryByTestId('final-response');
-    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
+    expect(queryByTestId('final-response')).toBeNull();
   });
 
   it('shows an optimistic thinking bubble while the reply is in flight, then settles it in place', async () => {
@@ -349,11 +369,16 @@ describe('App — a chat turn settles into the thread', () => {
 
     // In flight: the exchange renders through the thread — the operator's prompt
     // bubble plus a live "thinking" crew bubble — and the standalone hero is
-    // suppressed entirely (the reply will land in the bubble, not the hero).
+    // suppressed entirely (the reply lands in the bubble; there is no hero).
     await findByTestId('conversation-thread');
     await findByTestId('thread-typing');
     expect(getByText('why did it drift?')).toBeTruthy();
     expect(queryByTestId('final-response')).toBeNull();
+    // Both live bubbles are already stamped, from the client's own clock: the
+    // server has persisted nothing yet, so waiting for its `created_at` would
+    // make the time appear out of nowhere on the very bubble the operator is
+    // watching, at the moment the reply lands (design §2).
+    expect(document.querySelectorAll('[data-testid="turn-time"]')).toHaveLength(2);
 
     // Release the reply → it fills that same bubble, the typing indicator goes
     // away, and the turn settles into the thread. The persisted crew bubble's
@@ -372,10 +397,8 @@ describe('App — a chat turn settles into the thread', () => {
     );
     expect(getByText('because someone set it in the console')).toBeTruthy();
     expect(queryByTestId('thread-typing')).toBeNull();
-    // The hero stayed out of the way throughout — present again post-settle but
-    // hidden (its reply was cleared into the thread).
-    const hero = queryByTestId('final-response');
-    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
+    // …in the thread, and nowhere else: no hero to clear the reply out of.
+    expect(queryByTestId('final-response')).toBeNull();
   });
 });
 
@@ -460,8 +483,7 @@ describe('App — SSE chat turn releases the composer at the done frame', () => 
     expect(getByTestId('reasoning-disclosure')).toBeTruthy();
     expect(getByTestId('reasoning-stream-error')).toBeTruthy();
     expect(getByTestId('thread-turn-error')).toBeTruthy();
-    const hero = queryByTestId('final-response');
-    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
+    expect(queryByTestId('final-response')).toBeNull();
   });
 
   it('paused refusal over SSE renders as an ephemeral turn with no reasoning line', async () => {
@@ -499,8 +521,7 @@ describe('App — SSE chat turn releases the composer at the done frame', () => 
       expect(getByTestId('conversation-thread').textContent).toContain('paused');
     });
     expect(queryByTestId('reasoning-disclosure')).toBeNull();
-    const hero = queryByTestId('final-response');
-    expect(hero === null || hero.hasAttribute('hidden')).toBe(true);
+    expect(queryByTestId('final-response')).toBeNull();
     expect(new URLSearchParams(window.location.search).get('conversation')).toBeNull();
   });
 
@@ -684,15 +705,37 @@ function stubResumeFetchWithTrace(graph: unknown = GRAPH, decisions: unknown[] =
   );
 }
 
-describe('App — composer New chat + crew lock', () => {
-  it('hides the composer New chat button on a fresh boot', async () => {
+describe('App — New chat + crew lock', () => {
+  it('offers New chat from the rail on a fresh boot, when there is no thread to leave', async () => {
+    // The control moved out of the composer (ds-jns PR 3) and stopped being
+    // conditional in the same move. Both halves are asserted here, because the
+    // second is what the composer version got wrong: it appeared only once
+    // there was something to clear, so the operator had to learn where it
+    // WOULD be before they could aim at it.
     stubResumeFetch();
     const { findByTestId, queryByTestId } = render(App);
     await findByTestId('chat-prompt');
+    await findByTestId('rail-new-chat');
     expect(queryByTestId('composer-new-chat')).toBeNull();
   });
 
-  it('resuming a thread shows New chat and keeps sending to that thread\'s crew', async () => {
+  it('an open thread carries the conversation and nothing else', async () => {
+    // The state that USED to render the estate diagram and the capability card:
+    // a fresh chat hid them behind the empty state, so a test that only checked
+    // the front door would have passed with both mounts still in the tree.
+    // Neither belongs to a conversation — the desk owns the estate, the modal
+    // owns the cage — and Task 3.3 deleted both mounts.
+    stubResumeFetch();
+    const { findByTestId, queryByTestId } = render(App);
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    expect(queryByTestId('infra-panel')).toBeNull();
+    expect(queryByTestId('capability-card')).toBeNull();
+    // …and no leftover route to them either.
+    expect(queryByTestId('capability-link')).toBeNull();
+  });
+
+  it('keeps sending to the resumed thread\'s crew', async () => {
     // The crew lock survived the picker's removal — it just stopped being
     // something the operator has to see and work around. There is nothing to
     // grey out any more, so the lock is observable only in where the next
@@ -701,20 +744,18 @@ describe('App — composer New chat + crew lock', () => {
     const { findByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await findByTestId('composer-new-chat');
     await sendPrompt(container);
     await waitFor(() => expect(lastChatPostWorkload()).toBe('drift'));
   });
 
-  it('New chat drops the thread, returns the composer to Explore, and hides itself', async () => {
+  it('New chat drops the thread and returns the composer to Explore', async () => {
     stubResumeFetch();
     const { findByTestId, queryByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() => {
       expect(queryByTestId('conversation-thread')).toBeNull();
-      expect(queryByTestId('composer-new-chat')).toBeNull();
     });
     // A clean slate is a clean slate: the next prompt must not inherit the
     // abandoned thread's crew, it goes back to the routing crew.
@@ -723,11 +764,18 @@ describe('App — composer New chat + crew lock', () => {
   });
 
   it('an Adopt click on an open thread starts a clean slate before prefilling', async () => {
+    // Driven through the desk since Task 3.3 deleted the chat's copy of the
+    // diagram: resume a thread on chat, walk to the desk, adopt from there.
+    // That is the real route now, and it makes the claim STRICTER rather than
+    // weaker — the thread is not merely on screen when Adopt is clicked, it is
+    // on a different view, and it still has to be gone when the composer
+    // reappears.
     stubResumeFetch(ADOPT_GRAPH);
     const { findByTestId, queryByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('card-adopt-btn'));
+    await fireEvent.click(await findByTestId('nav-desk'));
+    await fireEvent.click(await findByTestId('estate-adopt-btn'));
     await waitFor(() => {
       // Thread dropped (clean slate), composer prefilled.
       expect(queryByTestId('conversation-thread')).toBeNull();
@@ -742,9 +790,17 @@ describe('App — composer New chat + crew lock', () => {
     // specific resource, so routing it through Explore would cost the operator
     // an extra turn and a confirmation to say what they already said. The
     // picker used to prove this with a checked radio; the wire proves it now.
+    //
+    // Driven from the DESK's estate section, which is where Adopt lives since
+    // Task 4.1 — and the only place it lives on a FRESH chat, because the chat
+    // view's copy of the diagram yields to the empty state (and PR 3 Task 3.3
+    // deletes it outright). Both buttons call the same handleAdopt, so the
+    // claim under test is unchanged; the door it is driven through is now the
+    // one an operator would actually find.
     stubResumeFetch(ADOPT_GRAPH);
+    history.replaceState(null, '', '/?view=desk');
     const { findByTestId, container } = render(App);
-    await fireEvent.click(await findByTestId('card-adopt-btn'));
+    await fireEvent.click(await findByTestId('estate-adopt-btn'));
     await waitFor(() => {
       const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
       expect(input.value).toContain('my-old-uploads');
@@ -754,11 +810,14 @@ describe('App — composer New chat + crew lock', () => {
   });
 
   it('an Investigate click starts a clean Provision draft and sends no /chat', async () => {
+    // Same relocation as the Adopt test above: Investigate lives in the desk's
+    // estate section now (ds-zld), not in a diagram above the transcript.
     stubResumeFetch(UNMATCHED_GRAPH);
     const { findByTestId, queryByTestId, container } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('infra-unmatched-investigate'));
+    await fireEvent.click(await findByTestId('nav-desk'));
+    await fireEvent.click(await findByTestId('estate-unmatched-investigate'));
     await waitFor(() => {
       // Fresh Provision draft (same handleAdopt bridge): thread dropped, composer
       // prefilled with the investigation prompt. The crew it targets is asserted
@@ -820,7 +879,7 @@ describe('App — ?conversation boot deep-link', () => {
     // The COMPOSER's New chat, not the replay banner's: with no replay on
     // screen there is no banner, and the composer's button is the exit the
     // operator actually has.
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
 
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
@@ -840,10 +899,11 @@ describe('App — ?conversation boot deep-link', () => {
     history.replaceState(null, '', `/?conversation=c1&reasoning=${HEX32}`);
     const { findByTestId, queryByTestId } = render(App);
     await findByTestId('conversation-thread');
-    // Expanded in place — the disclosure's detail is open, and the replay
-    // overlay that used to cover the thread is not there.
+    // Expanded IN PLACE: the thread is still on screen underneath, which is the
+    // whole difference from the page-level replay this replaced (and which
+    // ds-jns Task 3.3 has since deleted outright).
     await findByTestId('trace-detail');
-    expect(queryByTestId('historical-banner')).toBeNull();
+    expect(queryByTestId('conversation-thread')).toBeTruthy();
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
       expect(p.get('conversation')).toBe('c1');
@@ -901,7 +961,7 @@ describe('App — ?conversation boot deep-link', () => {
     const { findByTestId, queryByTestId } = render(App);
     await findByTestId('trace-detail');
 
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() =>
       expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull(),
     );
@@ -996,7 +1056,7 @@ describe('App — ?conversation boot deep-link', () => {
     });
   }
 
-  it('clears ?conversation but still opens the ?reasoning replay when the boot conversation 404s', async () => {
+  it('clears ?conversation and honours the ?reasoning half on the desk when the boot conversation 404s', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -1009,15 +1069,22 @@ describe('App — ?conversation boot deep-link', () => {
         return okJson({});
       }),
     );
+    // Half the link is unhonourable: there is no such thread. The other half
+    // still is — the reasoning exists and is readable as a desk record. That
+    // half used to open as a page-level replay inside the chat column; ds-jns
+    // retired that surface, so the operator is sent to the record instead of
+    // being left on an empty chat with a `?reasoning=` they can't cash in.
     history.replaceState(null, '', `/?conversation=bad&reasoning=${HEX32}`);
     const { findByTestId, queryByTestId } = render(App);
-    await findByTestId('historical-banner');
+    await findByTestId('decision-record');
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
       expect(p.get('conversation')).toBeNull();
       expect(p.get('reasoning')).toBe(HEX32);
+      expect(p.get('view')).toBeNull(); // desk is DEFAULT_VIEW — no param needed
     });
     expect(queryByTestId('conversation-thread')).toBeNull();
+    expect(queryByTestId('chat-form')).toBeNull();
   });
 
   it('does not open the boot reasoning replay on top if New chat interrupts the boot conversation fetch (the Codex race)', async () => {
@@ -1042,7 +1109,7 @@ describe('App — ?conversation boot deep-link', () => {
 
     // The boot conversation fetch is in flight — conversationId was already
     // set synchronously (before the awaited fetch), so New chat is showing.
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
 
     // Release the stalled boot fetch AFTER the interruption; let openConversation's
     // own runSeq guard (drops the stale detail) and the boot continuation's guard
@@ -1050,8 +1117,8 @@ describe('App — ?conversation boot deep-link', () => {
     releaseDetail(okJson({ conversation_id: 'c1', workload: 'explore', title: 'x', turns: [] }));
     await new Promise((r) => setTimeout(r, 20));
 
-    expect(queryByTestId('historical-banner')).toBeNull();
     expect(queryByTestId('conversation-thread')).toBeNull();
+    expect(queryByTestId('decision-record')).toBeNull();
     expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
   });
 
@@ -1060,14 +1127,22 @@ describe('App — ?conversation boot deep-link', () => {
   // had to survive together. It now leaves chat for the desk, where the decision
   // is listed — so the thread's param goes with the thread, and the record's
   // arrives in its place. One URL, one thing on screen.
-  it('the rail’s view-reasoning leaves the thread for the desk record', async () => {
+  it('leaving an open thread for a decision record swaps the URL as well as the screen', async () => {
+    // The route changed with ds-jns Task 3.3: this used to be one click on a
+    // decisions rail beside the chat. The rail is gone (the desk's ledger is
+    // the only decision browser now), so the walk is nav -> ledger row. What is
+    // under test is unchanged and is the part that was easy to get wrong: the
+    // two params describe two different surfaces, and BOTH have to end up
+    // matching what is on screen — a `?conversation=` left behind here would
+    // reopen a thread the operator navigated away from.
     stubResumeFetchWithTrace(GRAPH, [
       { decision_id: 'd1', action: 'rollback', trace_id: HEX32, created_at: '2026-07-28T09:00:00Z' },
     ]);
     const { findByTestId, queryByTestId } = render(App);
     await fireEvent.click(await findByTestId('conversation-open'));
     await findByTestId('conversation-thread');
-    await fireEvent.click(await findByTestId('open-trace-button'));
+    await fireEvent.click(await findByTestId('nav-desk'));
+    await fireEvent.click(await findByTestId('ledger-strip-row'));
     await findByTestId('approval-desk');
     await waitFor(() => {
       const p = new URLSearchParams(window.location.search);
@@ -1075,7 +1150,6 @@ describe('App — ?conversation boot deep-link', () => {
       expect(p.get('reasoning')).toBe(HEX32);
     });
     expect(queryByTestId('conversation-thread')).toBeNull();
-    expect(queryByTestId('historical-banner')).toBeNull();
     await findByTestId('decision-record');
   });
 
@@ -1165,7 +1239,7 @@ describe('App — ?conversation boot deep-link', () => {
 
     // Interrupt the pending resume with New chat — Send must re-enable now,
     // not stay disabled waiting for a resume that no longer matters.
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() => expect(sendBtn.disabled).toBe(false));
 
     // The stale detail landing afterwards (openConversation's own runSeq guard
@@ -1217,12 +1291,12 @@ describe('App — ?conversation boot deep-link', () => {
     const sendBtn = (await findByTestId('chat-submit')) as HTMLButtonElement;
     await waitFor(() => expect(sendBtn.disabled).toBe(true));
 
-    // Interrupt the pending resume by opening the decision's record from the
-    // rail. Since ds-jns that LEAVES chat for the desk — a bigger interruption
-    // than the replay was, and the same trap: the departure has to clear
-    // `resumingConversation`, because openConversation's own finally is gated
-    // on a runSeq the departure just superseded.
-    await fireEvent.click(await findByTestId('open-trace-button'));
+    // Interrupt the pending resume by LEAVING chat. That is the trap: the
+    // departure has to clear `resumingConversation` itself, because
+    // openConversation's own finally is gated on a runSeq the departure just
+    // superseded. (This used to be driven by opening a decision's record from
+    // the decisions rail; the rail is gone, the departure is the same one.)
+    await fireEvent.click(await findByTestId('nav-desk'));
     await findByTestId('approval-desk');
 
     // The stale resume detail landing after the departure must not corrupt
@@ -1460,7 +1534,7 @@ describe('App — ephemeral (non-persisted) exchanges', () => {
     await findByTestId('chat-prompt');
     await sendPrompt(container, 'anything');
     await findByTestId('thread-turn-error');
-    await fireEvent.click(await findByTestId('composer-new-chat'));
+    await fireEvent.click(await findByTestId('rail-new-chat'));
     await waitFor(() => expect(queryByTestId('conversation-thread')).toBeNull());
   });
 
@@ -1581,8 +1655,8 @@ describe('App — a past decision still shows its reasoning after a failed excha
     await sendPrompt(container, 'anything');
     await findByTestId('thread-turn-error');
 
-    await fireEvent.click(await findByTestId('open-trace-button'));
-    await findByTestId('approval-desk');
+    await fireEvent.click(await findByTestId('nav-desk'));
+    await fireEvent.click(await findByTestId('ledger-strip-row'));
     await waitFor(() => {
       expect(getByTestId('decision-record-prose').textContent).toContain(
         'PORT drifted on the agent service',

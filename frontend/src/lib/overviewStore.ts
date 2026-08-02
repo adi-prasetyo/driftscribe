@@ -20,7 +20,7 @@
 //
 // Scope, precisely: only the `graph` and `pendingApprovals` slices are
 // desk-specific. `decisions` is consumed APP-WIDE and is NOT safe to
-// treat as view-scoped — App.svelte renders <DecisionsRail> outside the view
+// treat as view-scoped — the decisions lane feeds surfaces outside the view
 // branch (visible on chat too), and, less obviously, the decisions payload
 // drives noteApplied() -> appliedEpoch, which the CHAT view's <InfraDiagram>
 // reads to trigger its post-apply CAI-lag ride-out. So this store is already

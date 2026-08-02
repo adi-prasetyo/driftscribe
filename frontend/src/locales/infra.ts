@@ -18,8 +18,6 @@ export const infra = {
     'infra.badge.inSyncTitle': 'In supported resource types',
     'infra.badge.outOfScopeTitle': "These resources are in types DriftScribe doesn't manage",
     'infra.badge.outOfScope': 'out of scope',
-    'infra.badge.unmatchedTitle': 'Declared in IaC, not found in the latest inventory',
-    'infra.badge.unmatchedCount': '{n} IaC unmatched',
 
     'infra.count.drift': '{n} drift',
     'infra.label.inSync': 'in sync',
@@ -76,7 +74,11 @@ export const infra = {
     'infra.pending.title': 'Open infra changes ({n})',
     'infra.pending.prLink': 'PR #{pr} →',
 
-    'infra.unmatched.title': 'Declared in IaC, not found live',
+    // These four now serve the DESK's estate section, not InfraDiagram — the
+    // group moved there in ds-zld and the panel's copy is gone. They keep their
+    // `infra.` prefix because the words are about the infra graph, not about
+    // whichever surface renders them; the group's own heading is
+    // `desk.estate.unmatchedGroup`, which carries the count.
     'infra.unmatched.lead':
       'These declarations did not match the latest Cloud Asset Inventory snapshot. ' +
       'Index lag or an unapplied IaC change can cause this.',
@@ -86,7 +88,7 @@ export const infra = {
       'Ask Provision to investigate this declaration (opens a draft, sends nothing)',
     'infra.unmatched.trailer': '+{n} more declarations not shown',
 
-    'infra.disabledHint': 'Unavailable while the chat is busy or reviewing past reasoning.',
+    'infra.disabledHint': 'Unavailable while the chat is busy.',
 
     'infra.hero.noSupportedResources': 'No resources in supported types yet.',
     'infra.hero.noResourcesIndexed': 'No resources indexed yet.',
@@ -230,8 +232,6 @@ export const infra = {
     'infra.badge.inSyncTitle': '対象リソース内で同期済み',
     'infra.badge.outOfScopeTitle': 'DriftScribe の管理対象外のリソース種別です',
     'infra.badge.outOfScope': '対象外',
-    'infra.badge.unmatchedTitle': 'IaC には定義されていますが、最新のインベントリには見つかりません',
-    'infra.badge.unmatchedCount': '実環境で未検出の IaC 定義：{n}件',
 
     'infra.count.drift': '{n}件のドリフト',
     'infra.label.inSync': '同期済み',
@@ -288,7 +288,6 @@ export const infra = {
     'infra.pending.title': '開いているインフラの変更（{n}件）',
     'infra.pending.prLink': 'PR #{pr} →',
 
-    'infra.unmatched.title': 'IaC に定義済み・実環境で未検出',
     'infra.unmatched.lead':
       'これらの定義は、最新の Cloud Asset Inventory のスナップショットと一致しませんでした。' +
       'インデックスの遅延や、まだ適用されていない IaC の変更が原因である可能性があります。',
@@ -298,7 +297,7 @@ export const infra = {
       'Provision にこの定義の調査を依頼します（下書きを開くだけで送信しません）',
     'infra.unmatched.trailer': 'ほかに {n}件の定義があります（表示されていません）',
 
-    'infra.disabledHint': 'チャットが処理中、または過去の実行を表示している間は利用できません。',
+    'infra.disabledHint': 'チャットが処理中の間は利用できません。',
 
     'infra.hero.noSupportedResources': '対応する種類のリソースはまだありません。',
     'infra.hero.noResourcesIndexed': 'まだリソースがインデックスされていません。',

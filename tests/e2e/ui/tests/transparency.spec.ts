@@ -17,32 +17,23 @@ test.describe('transparency UI', () => {
     // Phase 22: the UI now sends `Accept: text/event-stream`, so this
     // exercises the SSE streaming path against the live agent — timeline
     // rows populate live as the agent emits them (no ~15s Cloud Logging
-    // poll lag), and the final-response card lands on the stream's `done`
+    // poll lag), and the reply lands in the thread on the stream's `done`
     // frame. The assertions below are transport-agnostic: they hold for
     // both the streaming path and the legacy JSON+poll fallback.
     await page.locator('[data-testid="chat-prompt"]').fill('Check payment-demo-e2e for drift');
     await page.locator('[data-testid="chat-submit"]').click();
 
-    // The three reasoning panels are <details> elements (transparency.html:564-577).
-    // Only #group-coordinator opens by default; #group-tools and #group-mcp are
-    // collapsed. The outer panels always render; the inner `data-group` divs
-    // are hidden under a collapsed parent until the user expands them.
+    // Chat-native: the reply lands in the thread's crew bubble, and the crew turn
+    // carries its reasoning INLINE — expanding that disclosure is what proves the
+    // trace is reachable from the message.
     //
-    // We assert the three outer panels render. For tools we additionally open
-    // the <details> and verify the inner event row — a drift-check chat
-    // reliably calls read_live_env_tool. We do NOT open MCP because the chat
-    // path is not guaranteed to emit MCP traffic for this prompt; asserting
-    // its inner content would be flaky.
-    await expect(page.locator('#group-coordinator')).toBeVisible({ timeout: 45_000 });
-    await expect(page.locator('#group-tools')).toBeVisible();
-    await expect(page.locator('#group-mcp')).toBeVisible();
-
-    await page.locator('#group-tools').evaluate((el) => { (el as HTMLDetailsElement).open = true; });
-    await expect(page.locator('[data-group="tools"]')).toBeVisible();
-
-    // Chat-native: the reply lands in the thread's crew bubble, not the standalone
-    // hero. Since ds-jns the crew turn carries its reasoning INLINE — expanding
-    // that disclosure is what proves the trace is reachable from the message.
+    // Until ds-jns Task 3.3 this first asserted three page-level reasoning
+    // panels (#group-coordinator / #group-tools / #group-mcp, one per event
+    // kind) and opened the tools one. Those are deleted: reasoning hangs off the
+    // turn that produced it and reads as ONE interleaved list, so the equivalent
+    // assertion is the disclosure and the rows inside it, below. Deliberately no
+    // per-KIND row assertion here — a drift-check chat reliably calls a tool but
+    // is not guaranteed to emit MCP traffic, and pinning a kind would be flaky.
     await expect(page.locator('[data-testid="conversation-thread"]')).toBeVisible({ timeout: 60_000 });
 
     // The disclosure alone is NOT a "the reply arrived and persisted" signal
@@ -65,7 +56,7 @@ test.describe('transparency UI', () => {
     ).toBeVisible({ timeout: 30_000 });
   });
 
-  test('past-decisions pane renders with at least one item (seeded)', async ({ page, request }) => {
+  test('the desk ledger renders at least one decision (seeded)', async ({ page, request }) => {
     // Seed a decision via /recheck so the pane is non-empty independent of
     // whether the Python E2E job ran. `?force=true` derives a brand-new
     // event_key (agent/main.py:1049-1052) so the seed cannot collide with a
@@ -84,14 +75,16 @@ test.describe('transparency UI', () => {
     const seedBody = await seed.json();
     expect(seedBody.decision_id).toBeTruthy();
 
-    await page.reload();
+    // The desk, which is where decisions are listed since ds-jns Task 3.3
+    // deleted the chat's decisions rail. Bare URL: the desk is DEFAULT_VIEW.
+    await page.goto(`${process.env.DRIFTSCRIBE_E2E_URL}/`);
 
-    await expect(page.locator('[data-testid="past-decisions-pane"]')).toBeVisible();
-    await expect(page.locator('[data-testid="past-decision-item"]').first())
+    await expect(page.locator('[data-testid="approval-desk"]')).toBeVisible();
+    await expect(page.locator('[data-testid="ledger-strip-row"]').first())
       .toBeVisible({ timeout: 15_000 });
   });
 
-  test('open-trace button opens historical mode', async ({ page, request }) => {
+  test('a ledger row opens that decision as a record', async ({ page, request }) => {
     // Seed (same reason + force=true rationale as the previous test).
     const seed = await request.post(
       `${process.env.DRIFTSCRIBE_E2E_URL}/recheck?force=true`,
@@ -104,11 +97,13 @@ test.describe('transparency UI', () => {
     const seedBody = await seed.json();
     expect(seedBody.decision_id).toBeTruthy();
 
-    await page.reload();
+    await page.goto(`${process.env.DRIFTSCRIBE_E2E_URL}/`);
 
-    // Click the explicit button — the row itself may also be clickable, but the
-    // button is the stable hook.
-    await page.locator('[data-testid="open-trace-button"]').first().click();
-    await expect(page.locator('[data-testid="historical-banner"]')).toBeVisible({ timeout: 10_000 });
+    // The row IS the affordance now — it is a <button> (see the ledger-row
+    // smoke, which pins that it still lays out as a row).
+    await page.locator('[data-testid="ledger-strip-row"]').first().click();
+    await expect(page.locator('[data-testid="decision-record"]')).toBeVisible({ timeout: 10_000 });
+    // A shareable link to exactly what is on screen.
+    await expect.poll(() => new URL(page.url()).searchParams.get('reasoning')).not.toBeNull();
   });
 });

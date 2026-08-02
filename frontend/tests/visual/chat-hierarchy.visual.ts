@@ -7,6 +7,14 @@ import { test, type Page, type Route } from '@playwright/test';
 // and after this it should read composer-first with two boxes (composer +
 // reasoning) and everything else a quiet disclosure.
 //
+// ds-jns PR 3 took that further, and for a FRESH chat the count is now ONE.
+// The empty new-chat state is a greeting, the composer, four example questions
+// and a link — nothing else. The estate diagram and the capability drawer that
+// used to open here are gone: the desk owns the estate (with the
+// unmatched-declarations group, ds-zld), and the drawer is a modal behind that
+// link. Task 3.3 deleted both mounts along with the page-level replay cluster,
+// so there is no longer a state of this view that shows more than one box.
+//
 //   npx playwright test --config tests/visual/playwright.visual.config.ts \
 //     chat-hierarchy.visual.ts
 
@@ -82,14 +90,16 @@ for (const locale of ['ja', 'en'] as const) {
     await seed(page, locale);
     await mock(page);
     await page.goto('/?view=chat');
-    await page.locator('#chat-form').waitFor();
+    await page.getByTestId('chat-empty-chips').waitFor();
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${SHOTS}/${locale}-chat-empty.png`, fullPage: true });
 
-    // Open the capability drawer: its body must sit on a well, not in a card.
-    await page.getByTestId('cap-summary').click();
+    // A chip fills the composer without sending, so the capture shows the state
+    // an operator lands in after one click: their question in the box, ready to
+    // edit, nothing on the wire.
+    await page.getByTestId('chat-empty-chip').first().click();
     await page.waitForTimeout(300);
-    await page.screenshot({ path: `${SHOTS}/${locale}-chat-cap-open.png`, fullPage: true });
+    await page.screenshot({ path: `${SHOTS}/${locale}-chat-empty-prefilled.png`, fullPage: true });
   });
 }
 
@@ -228,10 +238,14 @@ for (const locale of ['ja', 'en'] as const) {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${SHOTS}/${locale}-chat-disclosure-open.png`, fullPage: true });
 
+    // `li` scopes this to the ROWS. A bare `[data-testid^="trace-row-"]` also
+    // matches things INSIDE a row — `trace-row-tool-latency` is one — so the
+    // prefix alone turns "what order are the rows in" into "what order is
+    // everything in", and adding a detail to a row would read as a reordering.
     const kinds = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-testid="trace-detail"] [data-testid^="trace-row-"]')].map(
-        (n) => n.getAttribute('data-testid'),
-      ),
+      [
+        ...document.querySelectorAll('[data-testid="trace-detail"] li[data-testid^="trace-row-"]'),
+      ].map((n) => n.getAttribute('data-testid')),
     );
     const expected = ['trace-row-thought', 'trace-row-mcp', 'trace-row-tool'];
     if (JSON.stringify(kinds) !== JSON.stringify(expected)) {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import EstateView from '../../src/components/EstateView.svelte';
 import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
+import { investigateUnmatchedPrefill } from '../../src/lib/infra_graph';
 import type { Decision } from '../../src/lib/types';
 
 afterEach(cleanup);
@@ -230,6 +231,130 @@ describe('EstateView — adopt chip vs. PR-open chip', () => {
     expect(btn.disabled).toBe(true);
     await fireEvent.click(btn);
     expect(onAdopt).not.toHaveBeenCalled();
+  });
+});
+
+// The unmatched-declarations group, moved here from InfraDiagram's chat panel
+// (ds-zld). The band's own semantics were settled in #244 and are re-pinned
+// here rather than assumed: what carries the count, that a declaration is NOT a
+// live resource, and that Investigate hands the SAME string InfraDiagram did.
+describe('EstateView — declared in IaC, not found live', () => {
+  const DECL = {
+    id: 'u0',
+    asset_type: RUN,
+    type_label: 'Cloud Run service',
+    label: 'storefront-old',
+    address: 'google_cloud_run_v2_service.storefront_old',
+  };
+
+  function declGraph(over: Partial<InfraGraph> = {}, decls = [DECL], count = 1, truncated = 0) {
+    return graph({
+      unmatched_declarations: { count, truncated, entries: decls },
+      ...over,
+    });
+  }
+
+  it('renders a row per declaration, with its type and HCL address', () => {
+    const { getByTestId, getAllByTestId } = render(EstateView, {
+      props: baseProps({ graph: declGraph() }),
+    });
+    expect(getByTestId('estate-group-unmatched').textContent).toContain('1');
+    const rows = getAllByTestId('estate-unmatched-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('storefront-old');
+    expect(rows[0].textContent).toContain('google_cloud_run_v2_service.storefront_old');
+    expect(rows[0].textContent).toContain('Cloud Run service');
+    // Evidence, not proof — the lead saying so travelled with the rows.
+    expect(getByTestId('estate-unmatched-lead').textContent).toContain(
+      'did not match the latest Cloud Asset Inventory snapshot',
+    );
+  });
+
+  it('is absent for an old DTO with no unmatched_declarations field, and for an empty one', () => {
+    const { queryByTestId } = render(EstateView, { props: baseProps() });
+    expect(queryByTestId('estate-group-unmatched')).toBeNull();
+    expect(queryByTestId('estate-unmatched-row')).toBeNull();
+    cleanup();
+
+    const empty = render(EstateView, {
+      props: baseProps({
+        graph: graph({ unmatched_declarations: { count: 0, truncated: 0, entries: [] } }),
+      }),
+    });
+    expect(empty.queryByTestId('estate-group-unmatched')).toBeNull();
+  });
+
+  it('is NOT a resource row — it carries no status dot and never joins drift or managed', () => {
+    // The whole reason these live in their own group: the dot coding in this
+    // list means "live resource, managed or drifted", and a declaration with no
+    // resource is neither. A dot here would assert something about a thing that
+    // does not exist. The CELL is still there so the names line up (jsdom can't
+    // see that; the class is the proxy the visual spec measures).
+    const { getByTestId, queryAllByTestId } = render(EstateView, {
+      props: baseProps({ graph: declGraph() }),
+    });
+    const row = getByTestId('estate-unmatched-row');
+    expect(row.querySelector('.estate-view__dot')).toBeTruthy();
+    expect(row.querySelector('.estate-view__dot--none')).toBeTruthy();
+    // And it did not leak into the live-resource groups' row list.
+    for (const r of queryAllByTestId('estate-row')) {
+      expect(r.textContent).not.toContain('storefront-old');
+    }
+  });
+
+  it('Investigate fires onInvestigate with the same prefill InfraDiagram built', async () => {
+    // Byte-for-byte the shared builder's output, not a lookalike: this is the
+    // string that reaches Provision, and the move must not have reworded it.
+    const onInvestigate = vi.fn();
+    const onAdopt = vi.fn();
+    const g = declGraph();
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: g, onInvestigate, onAdopt }),
+    });
+    await fireEvent.click(getByTestId('estate-unmatched-investigate'));
+    expect(onInvestigate).toHaveBeenCalledTimes(1);
+    expect(onInvestigate.mock.calls[0][0]).toBe(investigateUnmatchedPrefill(DECL, g));
+    // A separate errand from Adopt, on a separate callback.
+    expect(onAdopt).not.toHaveBeenCalled();
+  });
+
+  it('respects adoptDisabled — Investigate is disabled and the click is a no-op', async () => {
+    const onInvestigate = vi.fn();
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: declGraph(), onInvestigate, adoptDisabled: true }),
+    });
+    const btn = getByTestId('estate-unmatched-investigate') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    await fireEvent.click(btn);
+    expect(onInvestigate).not.toHaveBeenCalled();
+  });
+
+  it('heading shows the TRUE count and the trailer reports what the cap hid', () => {
+    // Same discipline as driftHidden and systemManagedTotal: the count is the
+    // server's, the rows are a capped sample, and the difference is stated
+    // rather than silently dropped.
+    const { getByTestId } = render(EstateView, {
+      props: baseProps({ graph: declGraph({}, [DECL], 3, 2) }),
+    });
+    expect(getByTestId('estate-group-unmatched').textContent).toContain('3');
+    expect(getByTestId('estate-unmatched-more').textContent).toContain('2');
+  });
+
+  it('a degraded graph reports no declarations at all', () => {
+    // A degraded read's declaration list is exactly as untrustworthy as its
+    // resource list. This must not become the one figure that survives a failed
+    // fetch and reads as fact (ds-eh6).
+    // What delivers this is the group's POSITION — inside the same loaded-only
+    // branch every other group renders in — not a `degraded` term in the
+    // component's own derived. That distinction is the assertion: hoist this
+    // group out of that branch and this test goes red, which is precisely the
+    // mistake a later edit could make while the rows still "look" guarded.
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: declGraph({ degraded: true }) }),
+    });
+    expect(getByTestId('estate-degraded')).toBeTruthy();
+    expect(queryByTestId('estate-group-unmatched')).toBeNull();
+    expect(queryByTestId('estate-unmatched-row')).toBeNull();
   });
 });
 

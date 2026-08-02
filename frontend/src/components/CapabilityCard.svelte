@@ -1,13 +1,27 @@
 <script lang="ts">
-  // CapabilityCard — a collapsed "What this agent can — and cannot — do" panel
-  // that renders the agent's safety cage in plain language for ClickOps operators.
+  // CapabilityCard — "What this agent can — and cannot — do", the agent's safety
+  // cage in plain language for ClickOps operators.
+  //
+  // BODY ONLY. It used to be a collapsed <details> squatting above the chat
+  // transcript, lazily fetching on first open. ds-jns moved it behind a link on
+  // the empty chat's front door, and deleting that inline mount left the modal
+  // as its only consumer — so the disclosure went too. A modal opened BY a link
+  // that names what it will show must not contain a second thing to click.
   //
   // Design:
-  //  - Lazy fetch: nothing on mount; fetches GET /capabilities ONCE on first
-  //    open and caches for the component's lifetime (data is static per deploy).
+  //  - Fetches GET /capabilities on MOUNT. The host is expected to mount this
+  //    only while it is showing (Modal renders children under {#if open}), so a
+  //    reopen refetches rather than reusing a previous instance's cache. One
+  //    small GET on an explicit operator action, and it buys what a lifetime
+  //    cache would cost: a first open that failed comes back clean on the
+  //    second, without the operator having to find the Retry button.
   //  - Render order is anxiety-first: gates → denylist → workloads.
+  //  - Headings are h3/h4, not h2/h3: the host spends an h2 on its own title
+  //    (the Modal does), so h2 sections would be its SIBLINGS rather than its
+  //    contents. Page h1 → modal h2 → these. No skipped levels.
   //  - The `call` prop is the same token-aware fetch wrapper as InfraDiagram.
 
+  import { onMount } from 'svelte';
   import {
     groupRules,
     categoryHeading,
@@ -124,14 +138,12 @@
     if (!fetchError) fetched = true;
   }
 
-  function onToggle(e: Event): void {
-    const d = e.currentTarget as HTMLDetailsElement;
-    if (d.open && !fetched && !loading) {
-      void fetchCapabilities().then(() => {
-        if (!fetchError) fetched = true;
-      });
-    }
-  }
+  // Mount IS the open — see the header note. onMount rather than an $effect:
+  // this must run exactly once per instance, and an effect that writes the same
+  // state it would have to read to guard itself is a loop waiting to happen.
+  onMount(() => {
+    void fetchCapabilities();
+  });
 
   // Per-crew lazy prompt state — keyed by workload name.
   // A fetch in flight (promptLoading[name]) blocks duplicate calls; a prior
@@ -164,18 +176,19 @@
   const ruleGroups = $derived(groupRules(data?.denylist?.rules ?? []));
 </script>
 
-<!-- Not a .ds-card since ds-7ag.5: this drawer explains what the agent can and
-     cannot do, which is reference material, and as a boxed card it competed with
-     the composer and the reasoning timeline. Same demotion the tools/MCP groups
-     got (Group's `quiet` variant) — no box when closed, a hairline above the
-     label row, and the body on a well when open. The DOM contract is untouched:
-     capability-card / cap-summary and every inner testid stay put. -->
-<details class="cap-card" data-testid="capability-card" ontoggle={onToggle}>
-  <summary class="cap-summary" data-testid="cap-summary">
-    <span class="cap-summary__title ds-label"><Icon name="shield" size={14} extraClass="cap-eyebrow-icon" />{$t('capability.card.title')}</span>
-    <span class="cap-summary__hint">{$t('capability.card.hint')}</span>
-  </summary>
+<!-- Not a .ds-card since ds-7ag.5: this explains what the agent can and cannot
+     do, which is reference material, and as a boxed card it competed with the
+     composer and the reasoning timeline. The host now supplies the frame (the
+     Modal's surface, border, radius and padding), so there is no box here at
+     all — a well drawn a few pixels inside the dialog's own would be exactly
+     the boxed-in-a-box look .ds-card was demoted for.
+     `capability-card` stays as the root hook: consumers asking "is the panel
+     up?" have always asked it that way. -->
+<div class="cap-card" data-testid="capability-card">
+  {@render capBody()}
+</div>
 
+{#snippet capBody()}
   <div class="cap-body">
     {#if loading && !data}
       <p class="ds-subtle cap-loading">{$t('common.loading')}</p>
@@ -190,11 +203,9 @@
         >{$t('common.retry')}</button>
       </div>
     {:else if data}
-      <!-- Heading hierarchy: the page has one h1 (App header); these panel
-           sections are h2, their sub-groups h3 — no skipped levels. -->
       <!-- 1. Gates — anxiety-first: operator wants to know what requires their approval -->
       <section class="cap-section" data-testid="cap-gates" aria-labelledby="cap-gates-heading">
-        <h2 class="cap-section__heading" id="cap-gates-heading">{$t('capability.gates.heading')}</h2>
+        <h3 class="cap-section__heading" id="cap-gates-heading">{$t('capability.gates.heading')}</h3>
         {#each data.human_gates as gate (gate.id)}
           <div class="cap-gate">
             <p class="cap-gate__title"><strong>{gateTitle(gate, $t)}</strong></p>
@@ -205,11 +216,11 @@
 
       <!-- 2. Denylist — blocked outright, approval cannot override -->
       <section class="cap-section" data-testid="cap-denylist" aria-labelledby="cap-denylist-heading">
-        <h2 class="cap-section__heading" id="cap-denylist-heading">{$t('capability.denylist.heading')}</h2>
+        <h3 class="cap-section__heading" id="cap-denylist-heading">{$t('capability.denylist.heading')}</h3>
         <p class="ds-subtle cap-denylist__summary">{data.denylist.summary}</p>
         {#each ruleGroups as group (group.category)}
           <div class="cap-rule-group">
-            <h3 class="cap-rule-group__heading">{categoryHeading(group.category, $t)}</h3>
+            <h4 class="cap-rule-group__heading">{categoryHeading(group.category, $t)}</h4>
             <ul class="cap-rule-list">
               {#each group.rules as rule (rule.id)}
                 <li class="cap-rule">
@@ -241,7 +252,7 @@
 
       <!-- 3. Workloads — what each workload can use -->
       <section class="cap-section" data-testid="cap-workloads" aria-labelledby="cap-workloads-heading">
-        <h2 class="cap-section__heading" id="cap-workloads-heading">{$t('capability.workloads.heading')}</h2>
+        <h3 class="cap-section__heading" id="cap-workloads-heading">{$t('capability.workloads.heading')}</h3>
         {#each data.workloads as wl (wl.name)}
           <details class="cap-workload">
             <summary
@@ -358,62 +369,19 @@
       </footer>
     {/if}
   </div>
-</details>
+{/snippet}
 
 <style>
-  /* Quiet disclosure, mirroring Group's `quiet` variant (ds-7ag.5) — see the
-     note on the markup. The margin keeps the vertical rhythm .ds-card used to
-     supply. */
   .cap-card {
-    padding: 0; /* summary + body own their padding */
-    margin: var(--ds-sp-5) 0;
+    padding: 0;
+    margin: 0;
   }
 
-  .cap-summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--ds-sp-3);
-    padding: var(--ds-sp-3) 0;
-    border-top: 1px solid var(--ds-border);
-    cursor: pointer;
-    list-style: none;
-  }
-  .cap-summary::-webkit-details-marker {
-    display: none;
-  }
-  /* Eyebrow tint: title text bumped to fg-soft, icon stays at muted (§6) */
-  .cap-summary__title {
-    color: var(--ds-fg-soft);
-    display: inline-flex;
-    align-items: center;
-    gap: var(--ds-sp-2);
-  }
-  .cap-summary__title :global(.cap-eyebrow-icon) {
-    color: var(--ds-muted);
-  }
-  .cap-summary__title::before {
-    content: '▸';
-    display: inline-block;
-    margin-right: var(--ds-sp-2);
-    color: var(--ds-faint);
-    transition: transform var(--ds-dur-fast) var(--ds-ease);
-  }
-  .cap-card[open] .cap-summary__title::before {
-    transform: rotate(90deg);
-  }
-  .cap-summary__hint {
-    font-size: var(--ds-fs-1);
-    color: var(--ds-muted);
-    font-style: italic;
-  }
-
-  /* Open content keeps its inner layout, on a --ds-surface-2 well instead of
-     inside a bordered card. */
+  /* No padding, no well, no radius: the host's frame is the only frame. The
+     inner section layout below is untouched — it is the surface around it that
+     went away, not the arrangement inside. */
   .cap-body {
-    padding: var(--ds-sp-4) var(--ds-sp-5) var(--ds-sp-5);
-    background: var(--ds-surface-2);
-    border-radius: var(--ds-radius);
+    padding: 0;
   }
 
   .cap-loading {

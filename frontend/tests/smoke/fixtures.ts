@@ -30,23 +30,24 @@ export const test = base.extend({
 export const TESTIDS = {
   chatPrompt: 'chat-prompt',
   chatSubmit: 'chat-submit',
-  finalResponse: 'final-response',
-  replyPending: 'reply-pending',
-  pastDecisionsPane: 'past-decisions-pane',
-  pastDecisionItem: 'past-decision-item',
-  openTraceButton: 'open-trace-button',
-  historicalBanner: 'historical-banner',
-  infraPanel: 'infra-panel',
-  infraToggle: 'infra-toggle',
-  infraCards: 'infra-cards',
-  infraOther: 'infra-other',
-  infraOtherCards: 'infra-other-cards',
-  infraDriftBadge: 'infra-drift-badge',
-  infraUnmatched: 'infra-unmatched',
-  infraUnmatchedInvestigate: 'infra-unmatched-investigate',
-  infraUnmatchedBadge: 'infra-unmatched-badge',
-  infraRefresh: 'infra-refresh',
+  // The chat column's replay cluster (hero, pending shimmer, decisions rail,
+  // its view-reasoning button, the "reading a past run" banner) was deleted in
+  // ds-jns Task 3.3. Every route to a past decision ends at the desk's ledger
+  // now, and a live reply lands in the thread's own crew bubble.
   conversationsPane: 'conversations-pane',
+  ledgerRow: 'ledger-strip-row',
+  decisionRecord: 'decision-record',
+  // The estate is a section of the DESK since ds-cmc, and since ds-jns Task 3.3
+  // it is the only resource inventory an operator can reach: InfraDiagram's
+  // panel had one mount left in the chat transcript, and that is gone. The
+  // `infra*` ids it used to own went with it.
+  estateView: 'estate-view',
+  estateGroupDrift: 'estate-group-drift',
+  estateRow: 'estate-row',
+  estateOther: 'estate-other',
+  estateGroupUnmatched: 'estate-group-unmatched',
+  estateUnmatchedRow: 'estate-unmatched-row',
+  estateUnmatchedInvestigate: 'estate-unmatched-investigate',
   conversationOpen: 'conversation-open',
   conversationThread: 'conversation-thread',
   threadTyping: 'thread-typing',
@@ -310,6 +311,26 @@ export function decisionsResponse(origin: string) {
         action: 'drift_issue',
         created_at: '2026-06-08T01:01:00+00:00',
         github: { url: 'javascript:alert(document.cookie)', dry_run: false },
+      },
+      {
+        // A decision that did LESS than its action name implies, twice over:
+        // the coordinator was in Observe (so nothing ran) and its GitHub side
+        // effect was a dry run (so nothing was created). Both tokens are
+        // honesty-class — a row reading "filed an issue" for an issue that was
+        // never filed is the one failure this product exists not to have — and
+        // between ds-jns deleting the decisions rail and re-homing them onto
+        // the record, NOTHING rendered either field.
+        decision_id: 'd-drift-quiet',
+        trace_id: 'cc11bb22cc33dd44ee55ff6600112233',
+        action: 'drift_issue',
+        created_at: '2026-06-08T01:02:00+00:00',
+        rationale: 'EXTRA drifted on payment-demo; an issue would name the two variables.',
+        suppressed_by_autonomy: true,
+        autonomy_mode: 'observe',
+        // No `url`, deliberately: a dry run created nothing, so there is no
+        // issue to link. That is the shape the coordinator actually persists,
+        // and it keeps this row out of the github-link spec's population.
+        github: { dry_run: true },
       },
     ],
   };

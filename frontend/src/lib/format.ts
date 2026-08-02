@@ -108,8 +108,8 @@ export function iacStatusLabel(status: string | null | undefined, t: TranslateFn
 /**
  * Plain-language help for the iac_apply statuses a non-engineer operator can't
  * decode from the label alone. Surfaced as the HelpHint tooltip/accessible
- * description next to the status token (DecisionsRail face-meta + lifecycle
- * steps). The self-evident status `applied` and unknown values return null →
+ * description next to the status token, on whichever surface renders one.
+ * The self-evident status `applied` and unknown values return null →
  * no help affordance is rendered. Keyed on the raw backend enum, the
  * same input iacStatusLabel takes.
  */
@@ -345,9 +345,9 @@ export function decisionActionHelp(action: string | null | undefined, t: Transla
 /**
  * Render an ISO timestamp as a host-timezone `HH:mm` clock string, for the
  * ledger strip's per-row time column (lib/ledger.ts's `LedgerRow`, Task 3.4).
- * Deliberately NOT pinned to Asia/Tokyo: it renders directly beside
- * DecisionsRail's `fmtCreatedAt` and this module's own `fmtWhen` below,
- * neither of which pins a zone either — pinning JST here alone would print a
+ * Deliberately NOT pinned to Asia/Tokyo: it renders directly beside this
+ * module's own `fmtStamp` and `fmtWhen`, neither of which pins a zone
+ * either — pinning JST here alone would print a
  * DIFFERENT clock time than the timestamp sitting right next to it for the
  * very same decision, which reads as a bug, not a feature. Same fallbacks as
  * `fmtWhen`: unparseable → the raw value, absent → `''`.
@@ -371,6 +371,47 @@ export function fmtClock(iso: string, l?: Locale): string {
   if (Number.isNaN(parsed)) return iso;
   try {
     return new Intl.DateTimeFormat(l ? localeTag(l) : undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).format(parsed);
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * Compact absolute stamp — `Aug 1, 14:32`. Used by a conversation turn that
+ * opens a new calendar day inside its thread (ConversationThread renders
+ * `fmtClock` alone for the rest of that day's run) and by the conversation
+ * rail's card timestamps. No year: these surfaces span hours or days, not decades.
+ *
+ * Absorbed FOUR byte-identical copies of this shape that had accumulated in
+ * components — `fmtTime` (ConversationsRail), `fmtCreatedAt` (the decisions
+ * rail, since deleted), and `fmtUpdatedAt` twice over (PauseBanner,
+ * AutonomyPill) — none of which
+ * pinned `hourCycle`. That was survivable while nothing
+ * else on the chat view showed a time, and stopped being so the moment the
+ * thread started showing one (ds-jns PR 3): `localeTag('en')` is `'en-US'`,
+ * 12-hour by default, so the rail card read `Jul 28, 02:32 PM` while the turn
+ * it links to read `14:32` — one instant, two clock conventions, both on
+ * screen at once. Exactly the skew `fmtWhen` documents from the desk, and
+ * caught the same way: by looking at the rendered page.
+ *
+ * Pinning h23 here rather than un-pinning it in `fmtClock`/`fmtWhen` settles
+ * all four formatters on one convention.
+ *
+ * `iso` is widened to `string | undefined` for the rails, whose timestamps are
+ * genuinely optional; absent → `''`, unparseable → the raw value.
+ */
+export function fmtStamp(iso: string | undefined, l?: Locale): string {
+  if (!iso) return '';
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return iso;
+  try {
+    return new Intl.DateTimeFormat(l ? localeTag(l) : undefined, {
+      month: 'short',
+      day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
       hourCycle: 'h23',

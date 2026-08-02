@@ -248,6 +248,12 @@ export const desk = {
     'desk.estate.loading': 'Loading the estate…',
     'desk.estate.degraded': 'The estate map is temporarily unavailable.',
     'desk.estate.driftGroup': 'Drift — not managed by IaC ({n})',
+    // The drift group's mirror image: declared in IaC, no live resource. The
+    // heading carries the TRUE server-side count, which can exceed the rows
+    // shown (the trailer below reports the difference). Its lead line and
+    // Investigate button reuse the `infra.unmatched.*` copy this group was
+    // built from in InfraDiagram — same words, new home (ds-zld).
+    'desk.estate.unmatchedGroup': 'Declared in IaC, not found live ({n})',
     'desk.estate.managedGroup': 'Managed by IaC ({n})',
     'desk.estate.untrackedGroup': 'Not managed, not adoptable ({n})',
     'desk.estate.adoptButton': 'Open an adoption PR',
@@ -384,6 +390,7 @@ export const desk = {
     'desk.estate.loading': 'インフラ情報を読み込み中…',
     'desk.estate.degraded': 'インフラ図は一時的に取得できません。',
     'desk.estate.driftGroup': 'ドリフト — IaC 未管理 {n} 件',
+    'desk.estate.unmatchedGroup': 'IaC に定義済み・実環境で未検出 {n} 件',
     'desk.estate.managedGroup': '管理下 — {n} 件',
     'desk.estate.untrackedGroup': '未管理（取り込み対象外） {n} 件',
     'desk.estate.adoptButton': '取り込み PR を作成',

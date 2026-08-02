@@ -13,18 +13,31 @@
   import HelpHint from './HelpHint.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import { t, locale, localeTag, plural, type MessageKey, type TranslateFn } from '../lib/i18n';
+  import { fmtStamp } from '../lib/format';
+  import { t, locale, plural, type MessageKey, type TranslateFn } from '../lib/i18n';
   import type { Conversation } from '../lib/types';
 
   let {
     conversations,
     activeConversationId,
     onOpen,
+    onNewChat,
     max = 5,
   }: {
     conversations: Conversation[];
     activeConversationId: string | null;
     onOpen: (conversationId: string) => void;
+    /** Clean slate: drop the open thread and every live-run surface with it.
+     *  Lives here rather than in the composer (ds-jns PR 3) because this rail
+     *  is where threads are — starting one and reopening one are the same kind
+     *  of act, and the composer went back to being only an input.
+     *
+     *  UNCONDITIONAL, unlike the composer button it replaces, which appeared
+     *  only when a clean slate would clear something. A control that comes and
+     *  goes has to be hunted for; one that is always in the same place can be
+     *  aimed at without looking. On an already-empty chat it is simply a no-op,
+     *  which is the cheapest possible cost for that. */
+    onNewChat: () => void;
     /** Cap the rail to the newest `max` chats; the rest live in the search
      *  modal. The active chat is pinned even when it falls outside the cap. */
     max?: number;
@@ -62,25 +75,6 @@
     yesterday: 'conversations.bucket.yesterday',
     older: 'conversations.bucket.older',
   };
-
-  // Compact, readable wall-clock for a card. Mirrors DecisionsRail.fmtCreatedAt:
-  // falls back to the raw value when it doesn't parse, '' when absent. `tag` is
-  // the active locale's BCP-47 tag (never `undefined` — see i18n.ts localeTag).
-  function fmtTime(iso: string | undefined, tag: 'ja-JP' | 'en-US'): string {
-    if (!iso) return '';
-    const parsed = Date.parse(iso);
-    if (Number.isNaN(parsed)) return iso;
-    try {
-      return new Intl.DateTimeFormat(tag, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(parsed);
-    } catch {
-      return iso;
-    }
-  }
 
   // Messages the OPERATOR sent. The backend counts them (`user_turn_count`)
   // because the client no longer can: turns used to be strictly paired, so
@@ -127,7 +121,7 @@
       <span class="conv-body">
         <span class="conv-title">{c.title}</span>
         <span class="conv-meta">
-          {#if c.updated_at}<time datetime={c.updated_at}>{fmtTime(c.updated_at, localeTag($locale))}</time>{/if}
+          {#if c.updated_at}<time datetime={c.updated_at}>{fmtStamp(c.updated_at, $locale)}</time>{/if}
           {#if turnsLabel(c, $t)}<span class="conv-count">· {turnsLabel(c, $t)}</span>{/if}
         </span>
       </span>
@@ -142,15 +136,26 @@
     </h2>
     <!-- Always shown — it explains what the rail is and where the cross-crew
          "team memory" boundary sits. Mirrors DecisionsRail's header hint; the
-         flex-wrap header + HelpHint's flex-basis:100% panel wrap it cleanly.
-         The clean-slate "New chat" action moved to the composer (next to the
-         crew picker), so it sits with the crew-lock it releases. -->
+         flex-wrap header + HelpHint's flex-basis:100% panel wrap it cleanly. -->
     <HelpHint
       testid="conversations-help"
       ariaLabel={$t('conversations.rail.helpAriaLabel')}
       text={$t('conversations.rail.helpText')}
     />
   </div>
+
+  <!-- Above the list, not below it: this is the one control here that makes a
+       thread rather than reopening one, and it must not drift down the column
+       as the history grows. Deliberately NOT disabled while a reply streams —
+       it doubles as the escape hatch from a run the operator no longer wants
+       (App's newChat bumps runSeq), exactly as the composer button it replaces
+       did. -->
+  <button
+    class="rail-new-chat"
+    data-testid="rail-new-chat"
+    type="button"
+    onclick={onNewChat}
+  ><Icon name="plus" size={14} />{$t('conversations.rail.newChat')}</button>
 
   {#if conversations.length === 0}
     <p class="empty ds-subtle">{$t('conversations.rail.empty')}</p>
@@ -237,6 +242,41 @@
     align-items: center;
     color: var(--ds-muted);
     flex-shrink: 0;
+  }
+
+  /* A full-width outlined row rather than the borderless pill its composer
+     predecessor wore. There it sat next to Send and had to lose that contest;
+     here it is the only action above the list, and reading as the list's own
+     header action is exactly right. */
+  .rail-new-chat {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4em;
+    width: 100%;
+    padding: var(--ds-sp-2) var(--ds-sp-3);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius);
+    background: var(--ds-surface);
+    color: var(--ds-fg-soft);
+    font: inherit;
+    font-size: var(--ds-fs-1);
+    font-weight: var(--ds-fw-semibold);
+    line-height: 1.3;
+    cursor: pointer;
+    transition:
+      background-color var(--ds-dur) var(--ds-ease),
+      border-color var(--ds-dur) var(--ds-ease),
+      color var(--ds-dur) var(--ds-ease);
+  }
+  .rail-new-chat:hover {
+    background: var(--ds-surface-2);
+    border-color: var(--ds-border-strong);
+    color: var(--ds-fg);
+  }
+  .rail-new-chat:active {
+    transform: translateY(1px);
   }
 
   .empty {

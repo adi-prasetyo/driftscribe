@@ -140,7 +140,20 @@ export function crewName(workload: string | undefined | null): string {
  */
 export interface ChatPrefill {
   text: string;
-  workload: Workload;
+  /**
+   * The crew this prefill is an instruction to use, when the click carried a
+   * real one: Adopt names a specific resource to bring under management, so it
+   * means Provision and nothing else.
+   *
+   * OMITTED means "text only, leave the crew alone" (ds-jns PR 3). The empty
+   * state's suggestion chips are that case — they are examples of what one can
+   * ask, not routing decisions, and a fresh chat deliberately goes to Explore
+   * so a visitor never has to learn the crew taxonomy to ask a question. Absent
+   * rather than `'explore'` because those are different claims: one leaves the
+   * composer where it already was, the other MOVES it, which on a resumed
+   * thread would silently break the crew lock.
+   */
+  workload?: Workload;
   epoch: number;
 }
 

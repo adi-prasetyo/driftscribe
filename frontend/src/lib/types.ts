@@ -112,8 +112,9 @@ export interface EnvDiff {
   contract_status?: ContractStatus | string;
 }
 
-/** One row in the past-decisions rail (GET /decisions). Open shape — only the
- *  fields the rail renders are typed; the rest flow through the index sig. */
+/** One decision (GET /decisions), as listed on the desk's ledger and opened
+ *  as a record. Open shape — only the fields a surface renders are typed; the
+ *  rest flow through the index sig. */
 export interface Decision extends Record<string, unknown> {
   decision_id: string;
   trace_id?: string;

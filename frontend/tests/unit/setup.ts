@@ -117,3 +117,29 @@ if (typeof HTMLDialogElement !== 'undefined') {
     this.dispatchEvent(new Event('close'));
   };
 }
+
+// jsdom implements window.scrollTo but NOT Element.prototype.scrollTo — calling
+// it is a TypeError, not a silent no-op. The chat thread's stickToBottom action
+// calls it from a MutationObserver callback, so without this stub every test
+// that mounts the chat view fails with an UNHANDLED exception (thrown outside
+// any test's call stack, which reports as a suite-level error rather than a
+// clean assertion failure). Mirrors the animate/matchMedia/dialog stubs above.
+//
+// Writing through to scrollTop keeps the stub honest about what the real API
+// does; jsdom has no layout, so it clamps to 0 and nothing can read a scroll
+// position back. Tests that need to observe a follow spy on scrollTo itself.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollTo) {
+  Element.prototype.scrollTo = function scrollTo(
+    this: Element,
+    xOrOptions?: number | ScrollToOptions,
+    y?: number,
+  ): void {
+    if (typeof xOrOptions === 'object' && xOrOptions !== null) {
+      if (typeof xOrOptions.top === 'number') this.scrollTop = xOrOptions.top;
+      if (typeof xOrOptions.left === 'number') this.scrollLeft = xOrOptions.left;
+      return;
+    }
+    if (typeof xOrOptions === 'number') this.scrollLeft = xOrOptions;
+    if (typeof y === 'number') this.scrollTop = y;
+  };
+}

@@ -21,8 +21,17 @@
   import type { Decision } from '../lib/types';
   import { crewName } from '../lib/workloads';
   import { decisionActionLabel, fmtWhen } from '../lib/format';
+  import {
+    decisionGithubLink,
+    decisionGithubDryRun,
+    iacPrHref,
+    iacApprovalHref,
+    iacApproveLabel,
+    iacApprovalCtaState,
+  } from '../lib/approval';
+  import { modeLabel, type AutonomyMode } from '../lib/autonomy';
   import { prefersReducedMotion } from '../lib/motion';
-  import { t, locale } from '../lib/i18n';
+  import { t, locale, type MessageKey } from '../lib/i18n';
   import CrewGlyph from './CrewGlyph.svelte';
   import TraceDetail from './TraceDetail.svelte';
 
@@ -113,6 +122,21 @@
   }
   const crew = $derived(firstWorkload(entry.events));
 
+  /** Always empty, and provably equivalent to the real thing HERE.
+   *
+   *  The set only distinguishes IMPLICIT supersession — a newer terminal row
+   *  for this generation — from `apply`/`continue`. Those two are demoted above,
+   *  and implicit supersession has no PR number to name, so it renders the same
+   *  neutral page label. Three inputs, one output.
+   *
+   *  This card carried a `decisions` prop for exactly that computation until
+   *  the demotion made it unable to change anything (Codex review round 5).
+   *  Threading a snapshot through two call sites to feed a lookup whose result
+   *  cannot reach a pixel is worse than not having it: the next reader has to
+   *  work out that it is inert. The EXPLICIT "Superseded by PR #N" label is
+   *  unaffected — it reads `doc.superseded_by_pr` and never consulted this. */
+  const NO_SUPERSEDED: ReadonlySet<string> = new Set();
+
   const str = (v: unknown): string => (typeof v === 'string' && v !== '' ? v : '');
   const action = $derived(decisionActionLabel(doc?.action, $t));
   // fmtWhen, the same helper DecisionSummary's "When" row uses below — one
@@ -137,6 +161,109 @@
    *  (`rendered_body` is Markdown source and renders as its own text — the same
    *  thing FinalResponse did with it). */
   const prose = $derived(str(doc?.rationale) || str(doc?.rendered_body) || null);
+
+  /** The GitHub artifact this decision produced, if any.
+   *
+   *  Also carried over rather than invented: the decisions rail rendered this
+   *  link, and deleting the rail (ds-jns Task 3.3) left it with no renderer at
+   *  all — an Anchor drift_issue would have named an issue nowhere reachable.
+   *  The record is where a decision's detail lives now, so it lands here. The
+   *  action allowlist + host allowlist that gate it moved into lib/approval.ts
+   *  intact; see decisionGithubLink for why both halves are load-bearing. */
+  /** The GitHub artifact, from whichever of the two gates owns this action.
+   *
+   *  They stay separate rather than merging into one allowlist because the two
+   *  urls have different provenance: `decisionGithubLink` reads a url the
+   *  ACTING crew wrote onto the decision, while an `iac_apply`'s comes from the
+   *  coordinator deriving it at serve time off the trusted config repo. Both
+   *  end at `safeGithubHref`.
+   *
+   *  The iac arm exists because a COMPLETED iac_apply had nowhere else to link:
+   *  DecisionSummary prints its PR as plain `#47`, and the desk's pending hero
+   *  only ever offers the one that still needs an operator. A record of work
+   *  already done is precisely the case neither covers. */
+  /** The app's OWN record of an infra change: the plan it applied, who
+   *  approved it, and — when it failed — why.
+   *
+   *  Restored from the deleted decisions rail (Codex review round 2). The
+   *  GitHub link above reaches the PR; this reaches `/iac-approvals/<n>`, which
+   *  is where the plan, the approval history and the failure details live.
+   *
+   *  The label is state-aware, with ONE deliberate demotion: this card never
+   *  renders `apply` or `continue`, the two ACTIONABLE states. It offers the
+   *  neutral page label in their place.
+   *
+   *  Those two are the only states derived from an ABSENCE — "no newer terminal
+   *  row was found, so this change is still yours to apply" — and this card
+   *  cannot support that claim (Codex review round 4). `/decisions` is
+   *  `limit=50`, so an old record and its newer terminal sibling can BOTH be
+   *  outside the window, which is durable rather than a polling lag; and a
+   *  failed refresh retains the previous array, so the list can be confidently
+   *  wrong. Either way the helper finds nothing and "Apply this change →" is
+   *  offered for work that already ended.
+   *
+   *  Demotion rather than suppression, because the division is real: a RECORD
+   *  says what happened, and the desk's pending hero says what to do next. The
+   *  hero's SELECTION is sound — it only ever picks a decision FROM the
+   *  snapshot it reasons over, so its absence claim is over a list that
+   *  contains the row. Its FRESHNESS is not, yet: on a failed `/decisions`
+   *  refresh the store retains the previous array and `deskModel` reaches the
+   *  decisions-derived IaC rule before it consults `degraded`, so a row whose
+   *  terminal outcome landed meanwhile can still be offered (ds-smr — filed,
+   *  and not this component's to fix). That is a reason to fix the hero, not a
+   *  reason for this card to start making the claim too.
+   *
+   *  Every remaining state is either read off the decision's own fields
+   *  (`history`, `failure`, explicit `superseded`) or is the neutral page
+   *  label, and those are safe under a bounded or stale list — which is why
+   *  this card needs no snapshot at all (see NO_SUPERSEDED).
+   *
+   *  Follows the rail's href rule: a superseded row links to the PR that
+   *  superseded it, not to its own dead page. */
+  const iacApproval = $derived.by((): { href: string; label: string } | null => {
+    if (!doc || doc.action !== 'iac_apply') return null;
+    const sup = doc.superseded_by_pr;
+    const target =
+      typeof sup === 'number' && Number.isInteger(sup) && sup > 0 ? sup : doc.pr_number;
+    const href = iacApprovalHref(target, $locale);
+    if (href === null) return null;
+    const kind = iacApprovalCtaState(doc, NO_SUPERSEDED).kind;
+    const label =
+      kind === 'apply' || kind === 'continue'
+        ? $t('shared.approve.goToPage')
+        : iacApproveLabel(doc, NO_SUPERSEDED, $t);
+    return { href, label };
+  });
+
+  const github = $derived.by((): { href: string; labelKey: MessageKey } | null => {
+    if (!doc) return null;
+    const own = decisionGithubLink(doc);
+    if (own !== null) return own;
+    const iac = iacPrHref(doc);
+    return iac === null ? null : { href: iac, labelKey: 'decisions.row.githubLink.viewPr' };
+  });
+
+  /** Two tokens that say a decision did LESS than its headline implies. Both
+   *  rendered only in the deleted decisions rail; nothing read the fields at
+   *  all between that deletion and this. They are the highest-stakes thing on
+   *  the card — a row that reads "filed issue #99" for an issue that was never
+   *  filed, or that shows an action the operator's own dial actually stopped,
+   *  is the one failure this whole product is built not to have.
+   *
+   *  Deliberately NOT folded into DecisionSummary's field table: that table is
+   *  what the decision RECORDS, and these two are statements about whether it
+   *  happened. */
+  const dryRun = $derived(doc ? decisionGithubDryRun(doc) : false);
+  const suppressedMode = $derived.by((): string | null => {
+    if (doc?.suppressed_by_autonomy !== true) return null;
+    const m = doc.autonomy_mode;
+    // The backend only suppresses in observe today, but all three dial modes
+    // localize through the shared label; an unrecognized future value falls
+    // back to its raw string rather than rendering a catalog key.
+    return m === 'observe' || m === 'propose' || m === 'propose_apply'
+      ? modeLabel(m as AutonomyMode, $t)
+      : (m ?? '');
+  });
 
   // "The trace loaded and nothing is attached to it" — a different fact from
   // "it wouldn't load", which TraceDetail's own error line already states, and
@@ -191,11 +318,45 @@
     </header>
   {/if}
 
+  {#if suppressedMode !== null || dryRun}
+    <p class="record__caveats">
+      {#if suppressedMode !== null}
+        <span class="ds-pill ds-pill--muted" data-testid="decision-autonomy-suppressed"
+          >{$t('decisions.autonomy.suppressed', { mode: suppressedMode })}</span>
+      {/if}
+      {#if dryRun}
+        <span class="ds-pill ds-pill--muted" data-testid="decision-dry-run"
+          >{$t('decisions.dryRun.pill')}</span>
+      {/if}
+    </p>
+  {/if}
+
   {#if prose !== null}
     <div class="record__prose" data-testid="decision-record-prose">
       <p class="ds-label record__prose-label">{$t('desk.record.prose')}</p>
       <div class="record__prose-body">{prose}</div>
     </div>
+  {/if}
+
+  {#if iacApproval !== null || github !== null}
+    <p class="record__github">
+      {#if iacApproval !== null}
+        <a
+          class="record__github-link"
+          data-testid="iac-approve-link"
+          href={iacApproval.href}
+          target="_blank"
+          rel="noopener">{iacApproval.label}</a>
+      {/if}
+      {#if github !== null}
+      <a
+        class="record__github-link"
+        data-testid="decision-github-link"
+        href={github.href}
+        target="_blank"
+        rel="noopener noreferrer">{$t(github.labelKey)}</a>
+      {/if}
+    </p>
   {/if}
 
   <!-- `decision={doc}`: the panel must reason about the SAME decision the header
@@ -262,6 +423,25 @@
     color: var(--ds-fg);
     font-size: var(--ds-fs-2);
     line-height: var(--ds-lh-body);
+  }
+
+  .record__github {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ds-sp-3);
+    margin: 0;
+  }
+  /* Directly under the header, above everything the decision claims — these
+     qualify the whole card, so they must be read before it, not after. */
+  .record__caveats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ds-sp-2);
+    margin: 0;
+  }
+  .record__github-link {
+    font-size: var(--ds-fs-1);
+    color: var(--ds-navy);
   }
 
   /* Both trailing lines share TraceDetail's quiet register — they are

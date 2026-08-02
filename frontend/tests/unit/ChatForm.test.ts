@@ -47,6 +47,30 @@ describe('ChatForm — prefill', () => {
     expect(await submittedWorkload(onSubmit, input)).toBe('provision');
   });
 
+  it('a prefill with NO workload leaves the composer on the crew it was already on', async () => {
+    // Suggestion chips (ds-jns PR 3) prefill text and nothing else. The crew
+    // they must not touch is the thread's: a resumed thread is crew-LOCKED, and
+    // a prefill that quietly wrote 'explore' over that lock would send the next
+    // turn to the wrong crew and earn a 409 from the server.
+    //
+    // Started on Provision deliberately — on the Explore default, "left alone"
+    // and "overwritten with the default" are the same observation, which is the
+    // shape of test that would have let this ship.
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: {
+        onSubmit,
+        workload: 'provision',
+        prefill: { text: 'What is running in this project right now?', epoch: 1 },
+      },
+    });
+    const input = getByTestId('chat-prompt') as HTMLInputElement;
+    await waitFor(() =>
+      expect(input.value).toBe('What is running in this project right now?'),
+    );
+    expect(await submittedWorkload(onSubmit, input)).toBe('provision');
+  });
+
   it('re-applies when the epoch bumps with new text (overwrites the draft)', async () => {
     const onSubmit = vi.fn();
     const { getByTestId, rerender } = render(ChatForm, {
@@ -217,30 +241,15 @@ describe('ChatForm — no crew picker (single-door handoff)', () => {
   });
 });
 
-describe('ChatForm — composer New chat button', () => {
-  it('is hidden by default (fresh composer)', () => {
-    const { queryByTestId } = render(ChatForm, { props: { onSubmit: () => {} } });
-    expect(queryByTestId('composer-new-chat')).toBeNull();
+describe('ChatForm — the composer is only the box you type in', () => {
+  it('offers no thread management of its own', () => {
+    // New chat moved to the conversations rail (ds-jns PR 3), where the threads
+    // it starts and reopens live. Asserting the OLD testid is gone would pass
+    // just as well if the button had been renamed in place, so this asserts the
+    // shape instead: the form carries exactly one button, and it sends.
+    const { container } = render(ChatForm, { props: { onSubmit: noop } });
+    const buttons = [...container.querySelectorAll('button')];
+    expect(buttons.map((b) => b.getAttribute('data-testid'))).toEqual(['chat-submit']);
+    expect(container.querySelector('[data-testid="composer-new-chat"]')).toBeNull();
   });
-
-  it('renders when showNewChat and fires onNewChat on click', async () => {
-    const onNewChat = vi.fn();
-    const { getByTestId } = render(ChatForm, {
-      props: { onSubmit: () => {}, showNewChat: true, onNewChat },
-    });
-    await fireEvent.click(getByTestId('composer-new-chat'));
-    expect(onNewChat).toHaveBeenCalledTimes(1);
-  });
-
-  it('stays clickable while the form is disabled (mid-stream cancel path)', async () => {
-    const onNewChat = vi.fn();
-    const { getByTestId } = render(ChatForm, {
-      props: { onSubmit: () => {}, disabled: true, showNewChat: true, onNewChat },
-    });
-    const btn = getByTestId('composer-new-chat') as HTMLButtonElement;
-    expect(btn.disabled).toBe(false);
-    await fireEvent.click(btn);
-    expect(onNewChat).toHaveBeenCalledTimes(1);
-  });
-
 });

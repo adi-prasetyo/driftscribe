@@ -288,3 +288,158 @@ describe('TraceDetail — copyable deep link', () => {
     expect(getByTestId('trace-copy-link').textContent).toContain('Copy link');
   });
 });
+
+// The inline HITL gate. Carried over from the deleted page-level Timeline,
+// which was its only renderer — so between that deletion and this, an operator
+// who asked a crew to roll something back got the approval URL as a substring
+// of a JSON preview and nothing to click.
+//
+// The security guard itself lives in ApprovalCta (and is pinned in its own
+// suite against every hostile URL shape). What is pinned HERE is that this
+// component ASKS: on the right tool, and not on any other.
+describe('TraceDetail — a rollback proposal offers its approval inline', () => {
+  const APPROVAL = 'http://localhost:3000/approvals/ap-7?t=tok';
+
+  function rollbackPair(toolName: string, preview: unknown) {
+    return [
+      ev({ event: 'tool_call', tool_name: toolName, insert_id: 'c1' }),
+      ev({
+        event: 'tool_result',
+        tool_name: toolName,
+        result_ok: true,
+        result_preview: JSON.stringify(preview),
+        insert_id: 'r1',
+      }),
+    ];
+  }
+
+  it('turns the proposal payload into a same-origin Approve link', () => {
+    const { getByRole } = mount(
+      entry({ events: rollbackPair('propose_rollback_tool', { approval_url: APPROVAL }) }),
+    );
+    const link = getByRole('link', { name: /approve/i }) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toContain('/approvals/ap-7');
+  });
+
+  it('offers nothing on a different tool carrying the same payload', () => {
+    // The gate is the TOOL, not the shape of the payload: any tool could
+    // return a field called approval_url, and only the rollback proposal means
+    // "an operator must now approve this".
+    const { queryByRole } = mount(
+      entry({ events: rollbackPair('drift_read_live_env', { approval_url: APPROVAL }) }),
+    );
+    expect(queryByRole('link', { name: /approve/i })).toBeNull();
+  });
+
+  it('still offers it when the result arrived with no matching call', () => {
+    // interleaveTimeline pairs FIFO per tool_name and leaves an ORPHAN result
+    // at its own position with `call` unset — a real shape on a trace whose
+    // call event was lost or arrived only via backfill. The CTA reads the
+    // RESULT, so it must survive that; gating on the pair would have made the
+    // approval vanish exactly when the trace was already incomplete.
+    const { getByRole } = mount(
+      entry({
+        events: [
+          ev({
+            event: 'tool_result',
+            tool_name: 'propose_rollback_tool',
+            result_ok: true,
+            result_preview: JSON.stringify({ approval_url: APPROVAL }),
+            insert_id: 'r-orphan',
+          }),
+        ],
+      }),
+    );
+    expect((getByRole('link', { name: /approve/i }) as HTMLAnchorElement).getAttribute('href')).toContain(
+      '/approvals/ap-7',
+    );
+  });
+
+  it('offers nothing when the proposal carried no approval url', () => {
+    const { queryByRole } = mount(
+      entry({ events: rollbackPair('propose_rollback_tool', { ok: true }) }),
+    );
+    expect(queryByRole('link', { name: /approve/i })).toBeNull();
+  });
+});
+
+// Run accounting: what the run SPENT and what its grounding actually returned.
+// Both rendered only in the deleted page-level Timeline. `interleaveTimeline`
+// drops llm_usage from the row list on purpose (accounting is not a step in the
+// story), which is exactly why the total has to be rendered somewhere else —
+// and between deleting Timeline and this, it was rendered nowhere.
+describe('TraceDetail — what the run spent and what it consulted', () => {
+  it('sums llm_usage across steps into one footer total', () => {
+    // Per-STEP events, not one per run: a multi-step run emits several, and
+    // showing the last one would understate the cost of every run that took
+    // more than one turn through the model.
+    const { getByTestId } = mount(
+      entry({
+        events: [
+          ev({ event: 'llm_usage', total_token_count: 300, insert_id: 'u1' }),
+          ev({ event: 'llm_thought', thought_text: 'weighing it', insert_id: 't1' }),
+          ev({ event: 'llm_usage', total_token_count: 504, insert_id: 'u2' }),
+        ],
+      }),
+    );
+    expect(getByTestId('trace-tokens').textContent).toContain('804');
+  });
+
+  it('says nothing rather than "0" when the run spent nothing measurable', () => {
+    // A directly-recorded iac_apply has no reasoning run behind it at all.
+    // "0 tokens spent" would read as a measurement; there was no measurement.
+    const a = mount(entry({ events: [ev({ event: 'llm_thought', thought_text: 'x' })] }));
+    expect(a.queryByTestId('trace-tokens')).toBeNull();
+    cleanup();
+    const b = mount(entry({ events: [ev({ event: 'llm_usage', total_token_count: 0 })] }));
+    expect(b.queryByTestId('trace-tokens')).toBeNull();
+  });
+
+  it('reads a tool call\'s own latency when no result came back', () => {
+    // The row where the number is most wanted: an in-flight or replayed call
+    // with no result yet. Reading the RESULT alone left it blank exactly there
+    // (Codex review round 3) — the deleted Timeline fell back to the call.
+    const { getByTestId } = mount(
+      entry({
+        events: [
+          ev({ event: 'tool_call', tool_name: 'read_live_env_tool', latency_ms: 1840, insert_id: 'c9' }),
+        ],
+      }),
+    );
+    expect(getByTestId('trace-row-tool-latency').textContent).toContain('1840');
+  });
+
+  it('prefers the RESULT\'s latency once one arrives', () => {
+    // Both can carry it. The result's is the settled measurement; the call's is
+    // whatever was known when it was dispatched.
+    const { getByTestId } = mount(
+      entry({
+        events: [
+          ev({ event: 'tool_call', tool_name: 't', latency_ms: 10, insert_id: 'c1' }),
+          ev({ event: 'tool_result', tool_name: 't', result_ok: true, latency_ms: 990, insert_id: 'r1' }),
+        ],
+      }),
+    );
+    const lat = getByTestId('trace-row-tool-latency').textContent ?? '';
+    expect(lat).toContain('990');
+    expect(lat).not.toContain('10 ');
+  });
+
+  it('says how many documents an MCP call came back with, and omits an empty one', () => {
+    const { getAllByTestId, getByTestId } = mount(
+      entry({
+        events: [
+          ev({ event: 'mcp_call', mcp_server: 'developer_knowledge', doc_count: 7, latency_ms: 120, insert_id: 'm1' }),
+          ev({ event: 'mcp_call', mcp_server: 'developer_knowledge', doc_count: 0, latency_ms: 90, insert_id: 'm2' }),
+        ],
+      }),
+    );
+    expect(getAllByTestId('trace-row-mcp')).toHaveLength(2);
+    // Only the call that actually returned something claims to have.
+    const docs = getAllByTestId('trace-row-mcp-docs');
+    expect(docs).toHaveLength(1);
+    expect(docs[0].textContent).toContain('7');
+    // …and the latency of the empty one still renders, so the row is not blank.
+    expect(getByTestId('trace-detail').textContent).toContain('90');
+  });
+});

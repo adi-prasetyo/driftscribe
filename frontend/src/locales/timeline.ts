@@ -8,26 +8,15 @@
 // unit-test suite (pinned to EN via tests/unit/setup.ts) keeps passing.
 export const timeline = {
   en: {
-    'timeline.group.coordinator': 'Coordinator reasoning',
-    'timeline.group.tools': 'Tools & workers',
-    'timeline.group.mcp': 'MCP traffic',
 
     // Self-documents why responses can feel slow (hover-help on the
     // coordinator group). See Timeline.svelte's COORDINATOR_HINT.
-    'timeline.coordinatorHint':
-      "Gemini's reasoning summaries are only returned by Vertex AI's 'global' " +
-      'region, so this deployment routes inference there. Expect a little ' +
-      'extra latency per turn. Under heavy load Vertex can also omit the ' +
-      'summaries entirely, even though the coordinator still reasons; when ' +
-      'that happens, a note appears here with the thinking-token count.',
 
     // The reasoning group's own empty line (plan Task 11). The generic
     // "No coordinator reasoning yet." reports an absence; on the page's primary
     // group that wastes the chance to say what produces one. Tools/MCP keep the
     // generic copy — they are demoted drawers now, and guidance there would just
     // be more text to read.
-    'timeline.empty.reasoningHint':
-      "Send a question and the coordinator's reasoning will stream here.",
     // Historical-empty state: two honest variants (directly-recorded vs. a
     // reasoning run whose trace just couldn't be loaded).
     'timeline.empty.directlyRecorded':
@@ -50,11 +39,7 @@ export const timeline = {
     // Timeline's per-call tool_call/tool_result badge (same English word,
     // one canonical translation per the glossary).
     'timeline.status.pending': 'pending',
-    'timeline.status.streaming': 'streaming',
-    'timeline.status.complete': 'complete',
-    'timeline.status.stalled': 'stalled · logs lagging',
     'timeline.status.error': 'error',
-    'timeline.status.historical': 'historical',
 
     // Timeline's tool-call pair chrome.
     'timeline.pair.ok': 'ok',
@@ -64,22 +49,13 @@ export const timeline = {
 
     // Coordinator group's llm_usage row — the small caption label ahead of
     // the fmtTokens value (format.ts's own "{n} tok" suffix is separate).
-    'timeline.usageLabel': 'tokens',
 
     // Tools/MCP subgroup meta.
-    'timeline.subgroup.calls.one': '{n} call',
-    'timeline.subgroup.calls.other': '{n} calls',
-    'timeline.subgroup.docs': '{n} docs',
     'timeline.latencyMs': '{ms} ms',
 
     // TraceBadge — copy-to-clipboard affordance.
-    'timeline.trace.copyTitle': 'click to copy trace id',
-    'timeline.trace.copy': 'copy',
-    'timeline.trace.copied': 'copied',
 
     // HistoricalBanner.
-    'timeline.historicalBanner.label': 'viewing past reasoning',
-    'timeline.historicalBanner.newChat': '← new chat',
 
     // labels.ts WORKER_LABELS, ported verbatim from the legacy single-file
     // renderer (agent/templates/transparency_legacy.html `_WORKER_LABELS`).
@@ -125,22 +101,18 @@ export const timeline = {
     'disclosure.copyTitle': 'Copy a link to this reasoning',
     'disclosure.traceLabel': 'Trace',
     // Fail-soft: the trace is complete, only the PR description is missing.
+    // Run accounting. Both rendered in the deleted page-level Timeline and
+    // nowhere else, so ds-jns Task 3.3 took them off the only surface named
+    // "transparency" — the tokens a run spent, and how much grounding its MCP
+    // calls actually consulted.
+    'disclosure.tokens': '{tokens} spent',
+    'disclosure.docs': '{n} docs',
     'disclosure.prBodyMissing': "The PR description couldn't be loaded.",
     'disclosure.mcpLabel': 'MCP',
   },
   ja: {
-    'timeline.group.coordinator': 'コーディネーターの推論',
-    'timeline.group.tools': 'ツールとワーカー',
-    'timeline.group.mcp': 'MCP 通信',
 
-    'timeline.coordinatorHint':
-      'Gemini の推論の要約は Vertex AI の「global」リージョンでのみ返されるため、' +
-      'このデプロイでは推論をそちらにルーティングしています。そのため、ターンごとに' +
-      '多少のレイテンシが発生します。負荷が高い場合、Vertex が要約を完全に省略する' +
-      'ことがありますが、その場合でもコーディネーターは推論を行っています。そのような' +
-      'ときは、思考トークン数とともにここに注記が表示されます。',
 
-    'timeline.empty.reasoningHint': '質問を送ると、コーディネーターの推論がここに流れます。',
     'timeline.empty.directlyRecorded':
       'この判断には推論タイムラインがありません。エージェントによる推論ではなく、' +
       '判断として直接記録されたものです。',
@@ -155,30 +127,17 @@ export const timeline = {
       '影響はありません。',
 
     'timeline.status.pending': '待機中',
-    'timeline.status.streaming': 'リアルタイム',
-    'timeline.status.complete': '完了',
-    'timeline.status.stalled': '遅延中・ログ反映待ち',
     'timeline.status.error': 'エラー',
-    'timeline.status.historical': '履歴',
 
-    'timeline.usageLabel': 'トークン数',
 
     'timeline.pair.ok': 'OK',
     'timeline.pair.toolArgs': 'ツール引数',
     'timeline.pair.resultPreview': '結果プレビュー',
     'timeline.pair.emptyPreview': '（空）',
 
-    'timeline.subgroup.calls.one': '{n}回の呼び出し',
-    'timeline.subgroup.calls.other': '{n}回の呼び出し',
-    'timeline.subgroup.docs': '{n}件のドキュメント',
     'timeline.latencyMs': '{ms} ms',
 
-    'timeline.trace.copyTitle': 'クリックしてトレース ID をコピー',
-    'timeline.trace.copy': 'コピー',
-    'timeline.trace.copied': 'コピー済み',
 
-    'timeline.historicalBanner.label': '過去の実行の推論を表示中',
-    'timeline.historicalBanner.newChat': '← 新規チャット',
 
     'timeline.worker.read_live_env_tool': 'リーダー（ドリフト）',
     'timeline.worker.patch_docs_tool': 'ドキュメント（ドリフト）',
@@ -208,6 +167,8 @@ export const timeline = {
     'disclosure.copied': 'コピーしました',
     'disclosure.copyTitle': 'この推論へのリンクをコピー',
     'disclosure.traceLabel': 'トレース',
+    'disclosure.tokens': '{tokens} 消費',
+    'disclosure.docs': 'ドキュメント {n} 件',
     'disclosure.prBodyMissing': 'PR の説明を読み込めませんでした。',
     'disclosure.mcpLabel': 'MCP',
   },

@@ -3,13 +3,13 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
 import CapabilityCard from '../../src/components/CapabilityCard.svelte';
 import type { Capabilities } from '../../src/lib/capabilities';
 
-// Component tests for CapabilityCard — the lazy-fetch, collapsed <details>
-// panel that shows the agent's safety cage.
+// Component tests for CapabilityCard — the agent's safety cage, rendered.
 //
-// jsdom keeps closed-<details> content in the DOM, so we can assert on the
-// body without opening the panel (for the "no fetch on mount" test). When we
-// need to simulate opening, we set detailsEl.open = true then dispatch a
-// 'toggle' event (jsdom does not reliably fire ontoggle from a summary click).
+// The card is BODY ONLY since ds-jns: no <details>, no summary, fetch on mount.
+// Tests therefore render and wait; there is nothing to open. The per-workload
+// prompt viewers below are still real disclosures, and those DO get the
+// `open = true` + dispatch('toggle') treatment (jsdom does not reliably fire
+// ontoggle from a summary click).
 
 afterEach(cleanup);
 
@@ -138,36 +138,44 @@ function makeCall(
 // ---------------------------------------------------------------------------
 
 describe('CapabilityCard', () => {
-  it('1. renders collapsed with no fetch performed', () => {
+  it('1. fetches /capabilities on mount, exactly once, and opens straight onto the answer', async () => {
+    // The inversion ds-jns bought. This panel used to be collapsed-until-asked,
+    // which is right for something squatting in a column and exactly wrong for
+    // something that only exists because a link was clicked: the operator has
+    // already asked, so a shut disclosure here would answer their click with a
+    // second thing to click.
+    //
+    // The mount is the ONLY fetch trigger, so it must be exactly one — an
+    // effect that re-ran would put a request behind every unrelated state
+    // change on the host.
     const paths: string[] = [];
-    const { getByTestId } = render(CapabilityCard, {
+    const { getByTestId, queryByTestId, container } = render(CapabilityCard, {
       props: { call: makeCall(paths) },
     });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    expect(el.open).toBe(false);
-    expect(paths).toHaveLength(0);
+    await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
+    expect(paths.filter((p) => p === '/capabilities')).toHaveLength(1);
+
+    // Chrome GONE, not merely pre-opened: a <details open> would still offer a
+    // summary whose only function is to undo the operator's own request.
+    expect(container.querySelector('details[data-testid="capability-card"]')).toBeNull();
+    expect(queryByTestId('capability-card')).toBeTruthy();
+    expect(queryByTestId('cap-summary')).toBeNull();
   });
 
-  it('2. opening fetches /capabilities exactly once; re-toggle does not refetch', async () => {
+  it('2. re-mounting refetches — a reopen is a fresh read, not a cached one', async () => {
+    // The host mounts this only while the modal is up, so "reopen" IS "remount".
+    // Deliberately not a lifetime cache: one small GET on an explicit operator
+    // action buys a first open that failed coming back clean on the second,
+    // without the operator having to find the Retry button.
     const paths: string[] = [];
-    const { getByTestId } = render(CapabilityCard, {
-      props: { call: makeCall(paths) },
-    });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
+    const { getByTestId } = render(CapabilityCard, { props: { call: makeCall(paths) } });
+    await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
+    expect(paths).toHaveLength(1);
 
-    // First open
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
-    await waitFor(() => expect(paths).toContain('/capabilities'));
-    expect(paths.filter(p => p === '/capabilities')).toHaveLength(1);
-
-    // Close and re-open — must NOT refetch
-    el.open = false;
-    await fireEvent(el, new Event('toggle'));
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
-    // Still only one fetch
-    expect(paths.filter(p => p === '/capabilities')).toHaveLength(1);
+    cleanup();
+    const again = render(CapabilityCard, { props: { call: makeCall(paths) } });
+    await waitFor(() => expect(again.getByTestId('cap-gates')).toBeTruthy());
+    expect(paths).toHaveLength(2);
   });
 
   it('3. renders all four sections with correct content from DTO fixture', async () => {
@@ -175,9 +183,6 @@ describe('CapabilityCard', () => {
     const { getByTestId, getByText } = render(CapabilityCard, {
       props: { call: makeCall(paths) },
     });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     // Gates section — both gate titles present
     await waitFor(() => {
@@ -221,9 +226,6 @@ describe('CapabilityCard', () => {
     const { getByTestId } = render(CapabilityCard, {
       props: { call: makeCall(paths) },
     });
-    const card = getByTestId('capability-card') as HTMLDetailsElement;
-    card.open = true;
-    await fireEvent(card, new Event('toggle'));
 
     const workloads = await waitFor(() => getByTestId('cap-workloads'));
     // One glyph per workload, keyed on the FROZEN symbolic value (wl.name),
@@ -248,9 +250,6 @@ describe('CapabilityCard', () => {
     const { getByTestId } = render(CapabilityCard, {
       props: { call: makeCall(paths) },
     });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     await waitFor(() => getByTestId('cap-workloads'));
     // The loop line lives in the BODY, not the summary (the summary has a
@@ -271,9 +270,6 @@ describe('CapabilityCard', () => {
     const { getByTestId } = render(CapabilityCard, {
       props: { call: makeCall(paths) },
     });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     await waitFor(() => {
       const workloads = getByTestId('cap-workloads');
@@ -307,9 +303,6 @@ describe('CapabilityCard', () => {
     };
 
     const { getByTestId } = render(CapabilityCard, { props: { call } });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     // Error row should appear
     await waitFor(() => {
@@ -333,9 +326,6 @@ describe('CapabilityCard', () => {
     const { getByRole } = render(CapabilityCard, {
       props: { call: makeCall(paths) },
     });
-    const el = document.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     await waitFor(() => {
       // Each of the three main sections must have a heading
@@ -368,9 +358,6 @@ describe('CapabilityCard', () => {
     };
 
     const { getByTestId } = render(CapabilityCard, { props: { call } });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     // Error row appears — the malformed body must not blank the panel
     await waitFor(() => {
@@ -406,9 +393,6 @@ describe('CapabilityCard', () => {
       }),
     );
     const { container } = render(CapabilityCard, { props: { call } });
-    const el = container.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     await waitFor(() => {
       const p = container.querySelector('.cap-denylist__adoptable');
@@ -422,9 +406,6 @@ describe('CapabilityCard', () => {
     // FIXTURE has no adoptable_resource_types — the {#if} block must be absent, not throw.
     const paths: string[] = [];
     const { container } = render(CapabilityCard, { props: { call: makeCall(paths) } });
-    const el = container.querySelector('[data-testid="capability-card"]') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
 
     await waitFor(() => {
       // The denylist section renders (the enforced_at line is always present)
@@ -451,9 +432,6 @@ describe('CapabilityCard — autonomy note (via prop)', () => {
     const { getByTestId } = render(CapabilityCard, {
       props: { call: async () => okJson(FIXTURE), autonomyNote: 'NOTE-TEXT-XYZ' },
     });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
     await waitFor(() =>
       expect(getByTestId('capability-autonomy-note').textContent).toContain('NOTE-TEXT-XYZ'),
     );
@@ -463,9 +441,6 @@ describe('CapabilityCard — autonomy note (via prop)', () => {
     const { getByTestId, queryByTestId } = render(CapabilityCard, {
       props: { call: async () => okJson(FIXTURE) },
     });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
     await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
     expect(queryByTestId('capability-autonomy-note')).toBeNull();
   });
@@ -478,9 +453,6 @@ describe('CapabilityCard — autonomy note (via prop)', () => {
         autonomyNote: 'X',
       },
     });
-    const el = getByTestId('capability-card') as HTMLDetailsElement;
-    el.open = true;
-    await fireEvent(el, new Event('toggle'));
     await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
     expect(paths).not.toContain('/autonomy');
   });
@@ -505,8 +477,6 @@ describe('CapabilityCard — per-crew prompt disclosure (Task 4)', () => {
       return new Response('not found', { status: 404 });
     };
     const { getByTestId } = render(CapabilityCard, { props: { call } });
-    const card = getByTestId('capability-card') as HTMLDetailsElement;
-    card.open = true; await fireEvent(card, new Event('toggle'));
     await waitFor(() => getByTestId('cap-workload-drift-summary'));
     const promptsDetails = getByTestId('cap-workload-drift-prompts') as HTMLDetailsElement;
     promptsDetails.open = true; await fireEvent(promptsDetails, new Event('toggle'));
@@ -531,8 +501,6 @@ describe('CapabilityCard — per-crew prompt disclosure (Task 4)', () => {
       return new Response('not found', { status: 404 });
     };
     const { getByTestId } = render(CapabilityCard, { props: { call } });
-    const card = getByTestId('capability-card') as HTMLDetailsElement;
-    card.open = true; await fireEvent(card, new Event('toggle'));
     await waitFor(() => getByTestId('cap-workload-explore-summary'));
     const promptsDetails = getByTestId('cap-workload-explore-prompts') as HTMLDetailsElement;
     promptsDetails.open = true; await fireEvent(promptsDetails, new Event('toggle'));
@@ -553,11 +521,53 @@ describe('CapabilityCard — per-crew prompt disclosure (Task 4)', () => {
       return new Response('boom', { status: 500 });   // prompts fetch fails
     };
     const { getByTestId } = render(CapabilityCard, { props: { call } });
-    const card = getByTestId('capability-card') as HTMLDetailsElement;
-    card.open = true; await fireEvent(card, new Event('toggle'));
     await waitFor(() => getByTestId('cap-workload-drift-summary'));
     const promptsDetails = getByTestId('cap-workload-drift-prompts') as HTMLDetailsElement;
     promptsDetails.open = true; await fireEvent(promptsDetails, new Event('toggle'));
     await waitFor(() => expect(promptsDetails.textContent?.toLowerCase()).toContain('unavailable'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two claims that come from having no disclosure of its own: the error path
+// has to be escapable without one, and the heading levels have to assume a host
+// that already spent an h2 above them.
+// ---------------------------------------------------------------------------
+
+describe('CapabilityCard — a body inside someone else\'s frame', () => {
+  it('still reaches Retry when the mount fetch fails', async () => {
+    // The error row IS the recovery path. There is no summary to close and
+    // reopen any more, so if Retry were unreachable a failed first open would
+    // be a dead dialog the operator can only shut.
+    let n = 0;
+    const paths: string[] = [];
+    const call = async (path: string): Promise<Response> => {
+      paths.push(path);
+      n += 1;
+      if (n === 1) return new Response('Server error', { status: 500 });
+      return new Response(JSON.stringify(FIXTURE), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const { getByTestId } = render(CapabilityCard, { props: { call } });
+
+    await waitFor(() => expect(getByTestId('cap-error')).toBeTruthy());
+    await fireEvent.click(getByTestId('cap-retry'));
+    await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
+    expect(paths).toHaveLength(2);
+  });
+
+  it('sits at h3/h4, because its host already spent an h2 on the title', async () => {
+    // The page's h1 is the app header, the Modal's own title is the h2, so
+    // sections that stayed h2 would read as the dialog's SIBLINGS rather than
+    // its contents — one flat list of five headings to anyone navigating by
+    // heading. Nothing skips a level in either direction.
+    const paths: string[] = [];
+    const { getByTestId } = render(CapabilityCard, { props: { call: makeCall(paths) } });
+    await waitFor(() => expect(getByTestId('cap-gates')).toBeTruthy());
+    expect(getByTestId('cap-gates').querySelector('.cap-section__heading')?.tagName).toBe('H3');
+    expect(getByTestId('cap-workloads').querySelector('.cap-section__heading')?.tagName).toBe('H3');
+    expect(getByTestId('cap-denylist').querySelector('.cap-rule-group__heading')?.tagName).toBe('H4');
   });
 });

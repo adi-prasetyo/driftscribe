@@ -11,7 +11,8 @@
 
   import { slide } from 'svelte/transition';
   import { motionMs } from '../lib/motion';
-  import { t, locale, localeTag } from '../lib/i18n';
+  import { fmtStamp } from '../lib/format';
+  import { t, locale } from '../lib/i18n';
   import Icon from './Icon.svelte';
   import type { PauseStore } from '../lib/pauseStore';
 
@@ -55,22 +56,6 @@
     if (!ok) postError = true;
   }
 
-  // Time formatting (mirrors PauseControl / DecisionsRail fmtCreatedAt).
-  function fmtUpdatedAt(iso: string | null, tag: 'ja-JP' | 'en-US'): string {
-    if (!iso) return '';
-    const parsed = Date.parse(iso);
-    if (Number.isNaN(parsed)) return iso;
-    try {
-      return new Intl.DateTimeFormat(tag, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(parsed);
-    } catch {
-      return iso;
-    }
-  }
 
   const confirmLabel = $derived(saving ? $t('capability.saving') : $t('capability.pauseBanner.confirmResume'));
 </script>
@@ -123,7 +108,7 @@
           <span class="pause-meta__actor">{st.actor}</span>
         {/if}
         {#if st.updatedAt}
-          <time class="pause-meta__time" datetime={st.updatedAt}>{fmtUpdatedAt(st.updatedAt, localeTag($locale))}</time>
+          <time class="pause-meta__time" datetime={st.updatedAt}>{fmtStamp(st.updatedAt ?? undefined, $locale)}</time>
         {/if}
         {#if st.reason}
           <span class="pause-meta__label">{$t('capability.reasonMetaLabel')}</span>

@@ -25,7 +25,8 @@
   import type { AutonomyStore } from '../lib/autonomyStore';
   import { announceHeaderPopoverOpen, HEADER_POPOVER_EVENT } from '../lib/headerPopover';
   import { motionMs } from '../lib/motion';
-  import { t, locale, localeTag } from '../lib/i18n';
+  import { fmtStamp } from '../lib/format';
+  import { t, locale } from '../lib/i18n';
   import Icon from './Icon.svelte';
 
   let { autonomy }: { autonomy: AutonomyStore } = $props();
@@ -239,21 +240,6 @@
     }
   }
 
-  function fmtUpdatedAt(iso: string | null, tag: 'ja-JP' | 'en-US'): string {
-    if (!iso) return '';
-    const parsed = Date.parse(iso);
-    if (Number.isNaN(parsed)) return iso;
-    try {
-      return new Intl.DateTimeFormat(tag, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(parsed);
-    } catch {
-      return iso;
-    }
-  }
 
   // Dismiss gated on !saving — never tear down mid-commit (a failed POST must be
   // able to set postError into the still-open panel).
@@ -398,7 +384,7 @@
               <span class="autonomy-meta__actor">{st.actor}</span>
             {/if}
             {#if st.updatedAt}
-              <time class="autonomy-meta__time" datetime={st.updatedAt}>{fmtUpdatedAt(st.updatedAt, localeTag($locale))}</time>
+              <time class="autonomy-meta__time" datetime={st.updatedAt}>{fmtStamp(st.updatedAt ?? undefined, $locale)}</time>
             {/if}
             {#if st.reason}
               <span class="autonomy-meta__label">{$t('capability.reasonMetaLabel')}</span>

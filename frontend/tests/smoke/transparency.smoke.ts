@@ -29,6 +29,36 @@ const ORIGIN = 'http://127.0.0.1:8765';
 // being every test's incidental starting point.
 const CHAT_URL = '/?view=chat';
 
+/**
+ * Chat, on an OPEN thread.
+ *
+ * A FRESH chat is the empty new-chat state (ds-jns PR 3): a greeting, the
+ * composer, and four example questions, with the whole transcript region
+ * unrendered. Anything that lives IN the transcript — the reasoning groups, the
+ * infrastructure panel — is therefore not on a bare `?view=chat` any more, so
+ * the specs that exercise those open a persisted thread first. Registration
+ * order matches the resume test below: the list glob first, the `/<id>` glob
+ * last so it wins for the detail request.
+ */
+async function gotoOpenThread(page: Page) {
+  await page.route('**/conversations**', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(conversationsListResponse()),
+    }),
+  );
+  await page.route('**/conversations/**', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(conversationDetailResponse()),
+    }),
+  );
+  await page.goto(`/?conversation=${CONVERSATION_ID}`);
+  await expect(page.locator(`[data-testid="${TESTIDS.conversationThread}"]`)).toBeVisible();
+}
+
 // Seed the operator token the way the deployed e2e does (sessionStorage), before
 // any page script runs.
 async function seedToken(page: Page, token = 'smoke-token') {
@@ -133,7 +163,7 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(page.getByTestId('instrument-band')).toBeVisible();
     // The chat shell must be genuinely absent, not merely hidden.
     await expect(page.locator('#chat-form')).toHaveCount(0);
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionsPane}"]`)).toHaveCount(0);
+    await expect(page.locator(`[data-testid="${TESTIDS.conversationsPane}"]`)).toHaveCount(0);
 
     // …and the header nav still reaches chat from there.
     await page.getByTestId('nav-chat').click();
@@ -309,15 +339,18 @@ test.describe('transparency UI (mock smoke)', () => {
 
     await expect(page.locator(`[data-testid="${TESTIDS.chatPrompt}"]`)).toBeVisible();
     await expect(page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`)).toBeVisible();
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionsPane}"]`)).toBeVisible();
-    // three reasoning groups are real <details>
-    await expect(page.locator('#group-coordinator')).toBeVisible();
-    await expect(page.locator('#group-tools')).toBeVisible();
-    await expect(page.locator('#group-mcp')).toBeVisible();
+    await expect(page.locator(`[data-testid="${TESTIDS.conversationsPane}"]`)).toBeVisible();
+    // The front door a fresh chat actually shows (ds-jns PR 3): greeting plus
+    // four example questions. This replaced the three empty reasoning groups
+    // that used to be asserted here — they live inside the transcript, which a
+    // fresh chat does not render, and they are checked with real content in the
+    // SSE test below rather than as empty <details> nobody has filled yet.
+    await expect(page.getByTestId('chat-empty-greeting')).toBeVisible();
+    await expect(page.getByTestId('chat-empty-chip')).toHaveCount(4);
     expect(bad, `static assets must load with no 4xx/5xx: ${bad.join(', ')}`).toHaveLength(0);
   });
 
-  test('chat SSE renders timeline + threaded reply; sends Accept + token; backfills mcp', async ({ page }) => {
+  test('chat SSE threads the reply and its reasoning; sends Accept + token; backfills mcp', async ({ page }) => {
     const state = freshState();
     await seedToken(page);
     await mockData(page, state);
@@ -327,30 +360,38 @@ test.describe('transparency UI (mock smoke)', () => {
     await page.locator(`[data-testid="${TESTIDS.chatSubmit}"]`).click();
 
     // The reply lands in the thread's crew bubble (chat-native), alongside the
-    // operator's own prompt bubble — NOT the standalone hero, which stays hidden.
+    // operator's own prompt bubble. There is no standalone hero any more — ds-jns
+    // Task 3.3 deleted it — so this is the only place the reply renders at all.
     const thread = page.locator(`[data-testid="${TESTIDS.conversationThread}"]`);
     await expect(thread).toBeVisible();
     await expect(thread).toContainText('Check payment-demo for drift');
     await expect(thread).toContainText('Found 3 drifted env vars.');
-    await expect(page.locator(`[data-testid="${TESTIDS.finalResponse}"]`)).toBeHidden();
 
     // the request advertised SSE + carried the token from sessionStorage
     expect(state.chatHeaders['accept'] ?? '').toContain('text/event-stream');
     expect(state.chatHeaders['x-driftscribe-token']).toBe('smoke-token');
 
-    // tools group: open and see the worker (read_live_env_tool → "Reader (drift)")
-    await page.locator('#group-tools').evaluate((el) => {
-      (el as HTMLDetailsElement).open = true;
-    });
-    await expect(page.locator('[data-group="tools"]')).toBeVisible();
-    await expect(page.locator('#group-tools')).toContainText('Reader (drift)');
+    // The reasoning hangs off the turn that produced it now, not off three
+    // page-level group accordions. Expanding it is what asks for the trace.
+    await page.getByTestId('reasoning-disclosure').click();
+    const detail = page.getByTestId('trace-detail');
+    await expect(detail).toBeVisible();
 
-    // mcp group: the side-channel mcp_call only arrives via the /trace backfill
-    await page.locator('#group-mcp').evaluate((el) => {
-      (el as HTMLDetailsElement).open = true;
-    });
-    await expect(page.locator('[data-group="mcp"]')).toBeVisible();
-    await expect(page.locator('#group-mcp')).toContainText('search_documents');
+    // One INTERLEAVED list, in run order, rather than three sibling panels
+    // binned by kind — which is the whole point of the disclosure: what the
+    // coordinator thought, then what it called, reads as one sequence.
+    await expect(detail.getByTestId('trace-row-thought')).toContainText(
+      'Comparing live env to the ops contract',
+    );
+    // The tool row names the WORKER, not the raw tool symbol
+    // (read_live_env_tool -> "Reader (drift)").
+    await expect(detail.getByTestId('trace-row-tool')).toContainText('Reader (drift)');
+    // …and the side-channel mcp_call, which the STREAM never carries — it only
+    // arrives via the /trace backfill, so its presence here proves the merge.
+    // Named by SERVER, not by the raw `search_documents` symbol: this surface
+    // says what was consulted, not which function was called (the tool-name
+    // grounding rule).
+    await expect(detail.getByTestId('trace-row-mcp')).toContainText('Developer Knowledge');
   });
 
   test('a thinking bubble streams in the thread until the reply lands, then fills in place', async ({ page }) => {
@@ -365,19 +406,18 @@ test.describe('transparency UI (mock smoke)', () => {
 
     // While the coordinator is working (request in flight, no reply yet) the
     // exchange is already in the thread: the prompt bubble + a live "thinking"
-    // crew bubble. The standalone hero stays out of the way.
+    // crew bubble.
     const thread = page.locator(`[data-testid="${TESTIDS.conversationThread}"]`);
     const typing = page.locator(`[data-testid="${TESTIDS.threadTyping}"]`);
-    const final = page.locator(`[data-testid="${TESTIDS.finalResponse}"]`);
     await expect(thread).toBeVisible();
     await expect(typing).toBeVisible();
-    await expect(final).toBeHidden();
 
     // Once the reply lands, the typing indicator is replaced by the prose in the
-    // SAME bubble — no separate hero, no position hop.
+    // SAME bubble — no position hop. The standalone hero this used to also
+    // assert against is gone (ds-jns Task 3.3), which is the stronger version
+    // of the same claim: there is no second place for a reply to appear.
     await expect(thread).toContainText('Found 3 drifted env vars.');
     await expect(typing).toBeHidden();
-    await expect(final).toBeHidden();
   });
 
   test('auth-required (401) shows the inline AuthPanel instead of window.prompt', async ({ page }) => {
@@ -398,57 +438,118 @@ test.describe('transparency UI (mock smoke)', () => {
   });
 
   test('malicious off-origin approval URL renders NO link', async ({ page }) => {
+    // Moved to the desk with the decisions themselves: ds-jns Task 3.3 deleted
+    // the chat's decisions rail, and the desk's pending hero is what offers an
+    // operator the Approve link now. The claim is unchanged and is the reason
+    // this test exists — a decision document is coordinator-shaped data, and an
+    // `approval_url` pointing off-origin must never become a clickable anchor.
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    await page.goto('/');
 
-    // five seeded decisions render (two rollbacks + one iac_apply + two drift_issue)
-    await expect(page.locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)).toHaveCount(5);
-    // the off-origin approval_url must NOT become an anchor
+    await expect(page.getByTestId('approval-desk')).toBeVisible();
+    // The seeded decisions reached the page (the ledger lists them)…
+    await expect(page.locator(`[data-testid="${TESTIDS.ledgerRow}"]`).first()).toBeVisible();
+    // …and the off-origin approval_url did not become an anchor ANYWHERE on it.
     await expect(page.locator('a[href*="evil.example"]')).toHaveCount(0);
-    // the same-origin one DOES render an Approve link
-    await expect(page.locator('a.past-approve-btn[href*="/approvals/ap-1"]')).toHaveCount(1);
+    // The same-origin one DOES render as a real link. Not pinned to a count:
+    // the desk offers it from more than one place (the pending hero and the
+    // ledger row for the same decision), and how many doors it has is a layout
+    // question, not the security claim under test.
+    await expect(page.locator('a[href*="/approvals/ap-1"]').first()).toBeVisible();
+  });
+
+  test('a suppressed / dry-run decision says so on the record, above its own rationale', async ({
+    page,
+  }) => {
+    // The record has to be able to contradict itself out loud. This decision's
+    // headline is "drift_issue" and its rationale reads like work happened;
+    // both are true of the REQUEST and false of the OUTCOME, because the dial
+    // was in Observe and the GitHub call was a dry run.
+    //
+    // Driven by deep link rather than by hunting a row: three seeded rows share
+    // the same "drift" ledger line, and this one is named by trace id.
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/?reasoning=cc11bb22cc33dd44ee55ff6600112233');
+
+    const record = page.getByTestId('decision-record');
+    await expect(record).toBeVisible();
+    await expect(record.getByTestId('decision-autonomy-suppressed')).toContainText('Observe');
+    await expect(record.getByTestId('decision-dry-run')).toContainText('dry run');
+
+    // Both read ABOVE the rationale they qualify. A "nothing was created" note
+    // placed under the paragraph claiming otherwise is a footnote on something
+    // the operator has already believed. Measured, not inferred from DOM order:
+    // this is exactly the kind of claim jsdom cannot make.
+    const [caveatBottom, proseTop] = await Promise.all([
+      record.getByTestId('decision-dry-run').evaluate((el) => el.getBoundingClientRect().bottom),
+      record
+        .getByTestId('decision-record-prose')
+        .evaluate((el) => el.getBoundingClientRect().top),
+    ]);
+    expect(caveatBottom).toBeLessThanOrEqual(proseTop);
   });
 
   test('decision github.url: valid github.com link renders, javascript: url does not', async ({ page }) => {
+    // Also re-homed by Task 3.3: the rail listed every decision at once and
+    // could show all their links side by side. A record shows ONE decision, so
+    // the two halves of this claim are now two openings — which is a better
+    // test of the gate anyway, since each row is judged on its own.
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    await page.goto('/');
 
-    // Exactly one safe github link — the valid github.com issue. The
-    // javascript: row is rejected by safeGithubHref and renders no anchor.
-    const ghLinks = page.getByTestId('decision-github-link');
-    await expect(ghLinks).toHaveCount(1);
-    await expect(ghLinks.first()).toHaveAttribute('href', 'https://github.com/acme/ops/issues/99');
-    await expect(ghLinks.first()).toHaveAttribute('rel', 'noopener noreferrer');
-    await expect(ghLinks.first()).toHaveAttribute('target', '_blank');
-    // Belt-and-suspenders: no anchor anywhere carries the javascript: payload.
+    const rows = page.locator(`[data-testid="${TESTIDS.ledgerRow}"]`).filter({ hasText: 'drift' });
+    await expect(rows.first()).toBeVisible();
+
+    // Three seeded drift_issue rows: one with a real github.com issue, one with
+    // a `javascript:` payload, and one dry run that created nothing and so
+    // carries no url at all. Open each and collect what its record offered,
+    // rather than indexing by position — the pass/fail must not depend on which
+    // way the ledger happens to sort rows a minute apart.
+    const hrefs: (string | null)[] = [];
+    const n = await rows.count();
+    expect(n, 'every drift_issue row must reach the ledger').toBe(3);
+    for (let i = 0; i < n; i++) {
+      await rows.nth(i).click();
+      await expect(page.getByTestId('decision-record')).toBeVisible();
+      const link = page.getByTestId('decision-github-link');
+      hrefs.push((await link.count()) === 1 ? await link.getAttribute('href') : null);
+      if ((await link.count()) === 1) {
+        await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+        await expect(link).toHaveAttribute('target', '_blank');
+      }
+      await rows.nth(i).click(); // collapse before opening the next
+    }
+    // Exactly one anchor, and it is the github.com one. The javascript: row is
+    // rejected by safeGithubHref and renders nothing at all.
+    expect(hrefs.filter(Boolean)).toEqual(['https://github.com/acme/ops/issues/99']);
+    // Belt: no anchor ANYWHERE on the page ever carried the payload.
     await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
   });
 
-  // ds-jns re-pointed the rail's view-reasoning: an iac_apply opens as a RECORD
-  // on the desk that lists it, not as a replay in the chat column. Everything
-  // this test was about survives the move — the curated decision fields, and
-  // the note explaining that an empty timeline here is expected rather than a
-  // failure to load — so the assertions follow the content to its new home.
+  // ds-jns re-pointed every route to a past decision at a RECORD on the desk
+  // that lists it, rather than a replay in the chat column — first the rail's
+  // view-reasoning (PR 2), then the rail itself (Task 3.3), which leaves the
+  // ledger row as the one door. Everything this test was about survives the
+  // move: the curated decision fields, and the note explaining that an empty
+  // timeline here is expected rather than a failure to load.
   test('historical iac_apply: desk record with the decision summary + "recorded directly" note', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    // Reached by DEEP LINK rather than by a ledger row, because that is the
+    // route this decision actually has: the strip caps its rows, and this
+    // iac_apply is older than the four the fixture puts above it. A
+    // `?reasoning=` naming a decision the list does not show is exactly what
+    // the desk's PINNED record exists for, so this doubles as its smoke.
+    await page.goto(`/?reasoning=${IAC_TRACE_ID}`);
 
-    // Open the iac_apply decision specifically (not .first(), which is a rollback).
-    await page
-      .locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)
-      .filter({ hasText: 'iac_apply' })
-      .locator(`[data-testid="${TESTIDS.openTraceButton}"]`)
-      .click();
-
-    // The desk, with the record open on it. No replay, no status pill: a record
-    // is not a run, so there is no lifecycle to label.
+    // The desk, with the record open on it. No status pill: a record is not a
+    // run, so there is no lifecycle to label.
     await expect(page.getByTestId('approval-desk')).toBeVisible();
     const record = page.getByTestId('decision-record');
     await expect(record).toBeVisible();
-    await expect(page.locator(`[data-testid="${TESTIDS.historicalBanner}"]`)).toHaveCount(0);
 
     // The DecisionSummary card renders the curated, safe fields.
     const summary = record.locator('[data-testid="decision-summary"]');
@@ -466,108 +567,125 @@ test.describe('transparency UI (mock smoke)', () => {
     await expect(record.getByTestId('decision-record-prose')).toHaveCount(0);
   });
 
-  test('infrastructure panel: glanceable drift badge, then expand renders the resource cards', async ({ page }) => {
-    await seedToken(page);
-    await mockData(page, freshState());
-    await page.goto(CHAT_URL);
-
-    // Collapsed panel shows a glanceable drift badge (data fetched on mount).
-    // Scope-aware: 1 drift in the adoptable Cloud Run type (NOT the secret, which
-    // is out of scope), so the badge reads "1 drift", not the raw total of 2.
-    const panel = page.locator(`[data-testid="${TESTIDS.infraPanel}"]`);
-    await expect(panel).toBeVisible();
-    const badge = page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`);
-    await expect(badge).toBeVisible();
-    await expect(badge).toHaveText(/1 drift/);
-
-    // Expand → the in-scope resource card grid renders (no Mermaid on the normal
-    // path). The adoptable Cloud Run services show by default.
-    await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
-    const cards = page.locator(`[data-testid="${TESTIDS.infraCards}"]`);
-    await expect(cards).toBeVisible();
-    await expect(cards.locator('svg')).toHaveCount(0);
-    await expect(cards).toContainText('payment-demo');
-    await expect(cards).toContainText('storefront');
-
-    // The muted context line keeps the full estate honest (3 indexed, 1 of which
-    // is a type DriftScribe doesn't manage).
-    await expect(panel).toContainText('3 total resources indexed');
-
-    // The non-adoptable secret folds into the "Other resources" disclosure, not
-    // the default grid; open it and confirm the counts-only card is in there.
-    const other = page.locator(`[data-testid="${TESTIDS.infraOther}"]`);
-    await expect(other).toBeVisible();
-    await expect(cards).not.toContainText('1 secret');
-    await other.locator('summary').click();
-    await expect(page.locator(`[data-testid="${TESTIDS.infraOtherCards}"]`)).toContainText('1 secret');
-  });
-
-  test('unmatched-declarations band: separate badge, Investigate prefills a Provision draft (no /chat on click), Adopt still present, layout holds', async ({
+  test('the estate section is the resource inventory: drift named, out-of-scope types accounted for, no diagram', async ({
     page,
   }) => {
+    // This used to drive InfraDiagram's collapsed panel in the chat transcript.
+    // ds-jns Task 3.3 deleted that mount, and it was the panel's last one on the
+    // normal (non-preview) path — the desk mounts InfraDiagram only under
+    // `?preview_pr=`, where it draws the Mermaid ghost map instead. So the
+    // claims move to the surface that carries them now.
+    //
+    // They are the SAME claims, deliberately: what drifted is named, the count
+    // is scope-aware rather than a raw total, resources in types DriftScribe
+    // does not manage are accounted for instead of quietly dropped, and nothing
+    // here costs a Mermaid import.
+    await seedToken(page);
+    await mockData(page, freshState());
+    await page.goto('/');
+
+    const estate = page.locator(`[data-testid="${TESTIDS.estateView}"]`);
+    await expect(estate).toBeVisible();
+
+    // Scope-aware: the fixture has totals.drift = 2, but one of those is the
+    // SECRET — a type DriftScribe doesn't manage. The drift group counts 1 and
+    // names it; a "2" here would be the raw total leaking through.
+    const driftGroup = page.locator(`[data-testid="${TESTIDS.estateGroupDrift}"]`);
+    await expect(driftGroup).toBeVisible();
+    await expect(driftGroup).toHaveText(/\b1\b/);
+    await expect(estate).toContainText('storefront');
+    // …and the managed one is still on the list, under its own group.
+    await expect(estate).toContainText('payment-demo');
+
+    // The out-of-scope secret is COUNTED, not listed and not forgotten — and
+    // its name never appears (the group is `sensitive`, carries no nodes).
+    await expect(page.locator(`[data-testid="${TESTIDS.estateOther}"]`)).toContainText('1');
+
+    // A plain DOM row list. Mermaid stays the PR-preview overlay's business,
+    // and a diagram here would be a regression nothing else would catch.
+    // Deliberately not `svg` count 0 — the Investigate chip carries an inline
+    // icon, so a blanket svg ban would be a rule about icons wearing the name
+    // of a rule about diagrams, and the next icon added would "break" it.
+    await expect(page.locator('[data-testid="infra-diagram"]')).toHaveCount(0);
+    await expect(estate.locator('svg:not([aria-hidden="true"])')).toHaveCount(0);
+  });
+
+  test('declared in IaC, not found live: Investigate prefills a Provision draft (no /chat on click), layout holds', async ({
+    page,
+  }) => {
+    // Moved to the desk with the group itself (ds-zld). The claims are the
+    // band's own, unchanged: the declaration is shown with its HCL address, the
+    // copy says it is evidence rather than proof, Investigate opens a Provision
+    // DRAFT and sends nothing, and the row survives narrow viewports on a card
+    // that would CLIP an overflow rather than scroll it.
     await seedToken(page);
     await mockData(page, freshState());
     let chatPosts = 0;
     page.on('request', (req) => {
       if (req.url().includes('/chat') && req.method() === 'POST') chatPosts++;
     });
-    await page.goto(CHAT_URL);
-
-    // The collapsed summary carries a SEPARATE "N IaC unmatched" badge, distinct
-    // from the drift badge (both present, never merged into one number).
-    await expect(page.locator(`[data-testid="${TESTIDS.infraUnmatchedBadge}"]`)).toHaveText(
-      /1 IaC unmatched/,
+    // mockData leaves /infra/pending-approvals unrouted, which the estate reads
+    // as "could not ask GitHub" and answers by SUPPRESSING Adopt (ds-eh6). This
+    // test wants both affordances on screen at once, so the lane has to be
+    // positively empty rather than unavailable.
+    await page.route('**/infra/pending-approvals**', (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ approvals: [] }),
+      }),
     );
-    await expect(page.locator(`[data-testid="${TESTIDS.infraDriftBadge}"]`)).toHaveText(/1 drift/);
+    await page.goto('/');
 
-    // Expand → the band AND the live unmanaged resource are both visible.
-    await page.locator(`[data-testid="${TESTIDS.infraToggle}"]`).click();
-    const band = page.locator(`[data-testid="${TESTIDS.infraUnmatched}"]`);
-    await expect(band).toBeVisible();
-    await expect(band).toContainText('storefront-old');
-    await expect(band).toContainText('google_cloud_run_v2_service.storefront_old');
-    await expect(band).toContainText('did not match the latest Cloud Asset Inventory snapshot');
-    const cards = page.locator(`[data-testid="${TESTIDS.infraCards}"]`);
-    await expect(cards).toContainText('storefront');
-    // The live drift resource keeps its normal Adopt button (band adds none).
-    await expect(page.locator('[data-testid="card-adopt-btn"]').first()).toBeVisible();
+    const estate = page.locator(`[data-testid="${TESTIDS.estateView}"]`);
+    await expect(estate).toBeVisible();
+    await expect(page.locator(`[data-testid="${TESTIDS.estateGroupUnmatched}"]`)).toBeVisible();
+    const row = page.locator(`[data-testid="${TESTIDS.estateUnmatchedRow}"]`);
+    await expect(row).toContainText('storefront-old');
+    await expect(row).toContainText('google_cloud_run_v2_service.storefront_old');
+    await expect(estate).toContainText('did not match the latest Cloud Asset Inventory snapshot');
 
-    // Layout holds at real viewports: the band + all its content (long names,
-    // mono HCL addresses, the Investigate button) fit within the viewport width
-    // and the grid stays visible. Scoped to the band on purpose — the app rail's
-    // own mobile-width behavior is a separate concern, not this feature's.
+    // The live drift resource keeps its own Adopt button: a declaration with no
+    // resource and a resource with no declaration are different findings, and
+    // this group must not have swallowed the other one.
+    await expect(page.locator('[data-testid="estate-adopt-btn"]').first()).toBeVisible();
+
+    // Layout holds at real viewports. Scoped to the estate card, NOT the
+    // document: `.estate-view` is `overflow: hidden`, so a control pushed past
+    // its right edge is clipped rather than scrolled to, and a page-level
+    // scrollWidth check would call this clean while Investigate sits half off
+    // the card (ds-cmc).
     for (const [name, vp] of [
       ['desktop', { width: 1280, height: 900 }],
-      ['mobile', { width: 390, height: 844 }],
+      ['tablet', { width: 768, height: 900 }],
+      ['phone', { width: 390, height: 844 }],
     ] as const) {
       await page.setViewportSize(vp);
-      await expect(band).toBeVisible();
-      await expect(cards).toBeVisible();
-      await page.screenshot({ path: `test-results/infra-unmatched-${name}.png`, fullPage: true });
-      // No band descendant (long name, mono HCL address, Investigate button) may
-      // extend past the band's OWN right edge — i.e. everything wraps within the
-      // space the band is given, adding no horizontal overflow of its own. Scoped
-      // to the band's box (not the viewport) because the desktop-first app shell's
-      // rail is already wider than a 390px viewport, which is a separate concern.
-      const bandOverflow = await band.evaluate((el) => {
-        const boxRight = el.getBoundingClientRect().right;
+      await expect(row.first()).toBeVisible();
+      const overflow = await estate.evaluate((el) => {
+        const right = el.getBoundingClientRect().right;
         return Math.max(
           0,
-          ...[...el.querySelectorAll('*')].map((c) => c.getBoundingClientRect().right - boxRight),
+          ...[...el.querySelectorAll('[data-testid="estate-unmatched-row"] *')].map(
+            (c) => c.getBoundingClientRect().right - right,
+          ),
         );
       });
-      expect(bandOverflow, `band content overflows the band box at ${name}`).toBeLessThanOrEqual(1);
+      expect(overflow, `declaration row overflows the estate card at ${name}`).toBeLessThanOrEqual(1);
     }
+    await page.setViewportSize({ width: 1280, height: 900 });
 
-    // Investigate → a fresh Provision draft, prefilled, NOT submitted.
-    await page.locator(`[data-testid="${TESTIDS.infraUnmatchedInvestigate}"]`).click();
+    // Investigate → a fresh Provision draft, prefilled, NOT submitted. It also
+    // has to WALK the operator to the composer: the button is on the desk and
+    // the composer is not, so a prefill without the navigation would drop the
+    // draft into a box nobody can see.
+    await page.locator(`[data-testid="${TESTIDS.estateUnmatchedInvestigate}"]`).click();
     const prompt = page.locator('#prompt-input');
     await expect(prompt).toHaveValue(/storefront-old/);
     await expect(prompt).toHaveValue(/do not assume a rename/);
-    // The click prefilled a draft only — no chat turn was sent.
     expect(chatPosts).toBe(0);
 
-    // ...and the draft is addressed to PROVISION. This used to read the checked
+    // …and the draft is addressed to PROVISION. This used to read the checked
     // radio, but the crew picker is gone (a thread opens on Explore and moves by
     // handoff), so the draft's crew is no longer rendered anywhere — Investigate
     // stays a deep link that carries explicit intent, and its intent is now
@@ -586,14 +704,17 @@ test.describe('transparency UI (mock smoke)', () => {
   // described a MODE the chat column entered. ds-jns replaced the mode with a
   // destination: the record opens on the desk, and the way back is the nav. No
   // disabled composer, because the composer is not on that page at all.
-  test('the rail’s view-reasoning opens the record on the desk; the nav comes back', async ({ page }) => {
+  test('a ledger row opens its record and puts it in the URL; the nav takes it back off', async ({ page }) => {
+    // The route, twice re-pointed and now one click: the decisions rail this
+    // used to start from is gone (Task 3.3) and the ledger is on the same page
+    // as the record it opens. The round trip is what matters — an operator has
+    // to be able to share what they are looking at, and to stop looking at it.
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
+    await page.goto('/');
 
-    await page.locator(`[data-testid="${TESTIDS.openTraceButton}"]`).first().click();
+    await page.locator(`[data-testid="${TESTIDS.ledgerRow}"]`).first().click();
     await expect(page.getByTestId('decision-record')).toBeVisible();
-    await expect(page.locator('#chat-form')).toHaveCount(0);
     await expect(page).toHaveURL(/reasoning=/);
 
     await page.getByTestId('nav-chat').click();
@@ -655,15 +776,13 @@ test.describe('transparency UI (mock smoke)', () => {
   test('drift decision: env-diff card shows non-secret values, redacts secret-named + credentialed-URL values, leaks no raw secret', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
-    await page.goto(CHAT_URL);
-
-    // Open d-drift-1 specifically. Filter by its exact github href so the
-    // selector is unambiguous even if another row later also renders a link.
-    await page
-      .locator(`[data-testid="${TESTIDS.pastDecisionItem}"]`)
-      .filter({ has: page.locator('a[data-testid="decision-github-link"][href="https://github.com/acme/ops/issues/99"]') })
-      .locator(`[data-testid="${TESTIDS.openTraceButton}"]`)
-      .click();
+    // d-drift-1's record, by deep link. Both seeded drift_issue rows render an
+    // identical ledger line (same time-and-action shape), so clicking "the
+    // drift row" is genuinely ambiguous — and this decision is named by trace
+    // id everywhere else in the fixture. Unlike the iac_apply deep link above,
+    // this decision IS in the listed rows, so it opens INLINE under its own row
+    // rather than pinned above the desk: the same URL, the two placements.
+    await page.goto(`/?reasoning=${DRIFT_CARD_TRACE_ID}`);
 
     const card = page.getByTestId('drift-diff-card');
     await expect(card).toBeVisible();
