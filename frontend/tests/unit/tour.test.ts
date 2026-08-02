@@ -889,13 +889,31 @@ describe('adoptStepState — an unvouched-for snapshot pauses the suggestion (ds
     expect(adoptStepState(t, adoptableGraph(), [], false, true).kind).toBe('none');
   });
 
-  // Ordering: an unreliable approvals lane is still reported as such. Both are
-  // "none", but the operator is told the right reason.
-  it('reports the approvals reason first when both lanes are unreliable', () => {
+  // Codex r4. Both yield `none`, so this is purely about which explanation the
+  // operator reads — and the two imply different next moves. An approvals
+  // outage clears by waiting; an untrusted snapshot needs the two sides to
+  // agree, which takes a deploy. The first cut reported the approvals line and
+  // told the operator to come back in a moment for a blocker that waiting
+  // cannot clear.
+  it('reports the DURABLE snapshot blocker when both lanes are unreliable', () => {
     const g = adoptableGraph();
     g.iac_snapshot_stale = true;
-    const s = adoptStepState(t, g, [], true);
-    expect(s.line).toBe(t('tour.adopt.approvalsUnknown'));
+    expect(adoptStepState(t, g, [], true).line).toBe(t('tour.adopt.snapshotUnverified'));
+  });
+
+  it('still reports the approvals lane when the snapshot itself is fine', () => {
+    expect(adoptStepState(t, adoptableGraph(), [], true).line).toBe(
+      t('tour.adopt.approvalsUnknown'),
+    );
+  });
+
+  // #258's pin is untouched: an ABSENT graph plus unreliable approvals still
+  // reports the approvals line. Freshness cannot be judged without a graph, so
+  // the new arm is explicitly gated on having one rather than hoisted above
+  // the null guard.
+  it('leaves the #258 ordering alone for a graph that never loaded', () => {
+    expect(adoptStepState(t, null, [], true).line).toBe(t('tour.adopt.approvalsUnknown'));
+    expect(adoptStepState(t, null, [], false).kind).toBe('unavailable');
   });
 
   // The invariant that makes the shared predicate worth having: whatever the

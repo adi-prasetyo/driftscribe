@@ -81,6 +81,10 @@ function graphBody(opts: { generatedAt: string | null; drift: number }) {
     project: 'driftscribe-hack-2026',
     caveat: null,
     iac_snapshot_sha: 'cafef00d',
+    // ds-1vn: a healthy deployment's snapshot matches. Explicit, not omitted —
+    // absent means "unverified", which draws a freshness notice and mutes the
+    // Adopt controls in frames that are not about freshness at all.
+    iac_snapshot_stale: false,
     degraded: false,
     degraded_reason: null,
     totals: { resources: 9 + opts.drift, managed: 9, drift: opts.drift },

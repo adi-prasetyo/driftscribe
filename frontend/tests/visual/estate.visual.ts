@@ -399,7 +399,13 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         // warning must not hide its own subject.
         if (fx.snapshotStale !== undefined && fx.snapshotStale !== false) {
           await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(0);
-          await expect(page.getByTestId('estate-adopt-stale')).toHaveCount(2);
+          // The chip names the reason it actually has (Codex r4): "out of step"
+          // only where a mismatch was established, "not verified" where nobody
+          // could check. Asserting the RIGHT testid is what stops the two
+          // collapsing back into one over-claiming string.
+          const chip =
+            fx.snapshotStale === true ? 'estate-adopt-stale' : 'estate-adopt-unverified';
+          await expect(page.getByTestId(chip)).toHaveCount(2);
         } else {
           await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(2);
           await expect(page.getByTestId('estate-adopt-stale')).toHaveCount(0);

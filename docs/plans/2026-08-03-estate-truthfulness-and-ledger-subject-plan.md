@@ -85,9 +85,11 @@ the *action*.
    (`validator.py:324` derives the real verdict and never rewrites the proposal;
    `main.py:1988` persists the LLM's value). So a genuine violation mislabelled
    `match` is filterable by the ledger. Survivable, and now documented at the call
-   site: the subtitle is identity, not a verdict, and `target_revision` is enforced
-   for every rollback (`validator.py:219`), so the worst case is a row naming the
-   revision instead of the variable — never the blank subject that caused the misread.
+   site: the subtitle is identity, not a verdict, and the `target_revision` fallback
+   is always present, so the worst case is a row naming the revision instead of the
+   variable — never the blank subject that caused the misread. (Round 3 corrected the
+   *reason*: that fallback is guaranteed by TWO guards, not by `validator.py:219`
+   alone — the chat path never runs the validator. See below.)
 
 4. **"Older" was not derivable from the evidence.** Hash inequality is symmetric, the
    prescribed deploy order (worker first) makes worker-newer routine, and
@@ -149,6 +151,40 @@ own threading.
 destroyed the round-3 changes in it. Recovered by rewriting them. Every other injection
 in this branch used a scratchpad copy — [[no-rm-move-aside]] applies to `git checkout`
 just as much as to `rm`.
+
+### Codex review round 4 (same thread) — four more; the widened rule widened a claim with it
+
+1. **Medium — `unverified` rows asserted a mismatch that was never established.** Round 3
+   widened the suppression to both non-fresh states and reused the STALE chip for both,
+   so an unverified row read "paused · snapshot out of step" (JA: "不一致") directly under
+   a notice saying only "could not confirm". Widening a suppression is not licence to
+   widen its claim. Two chips now, with distinct testids so they cannot recollapse.
+   The round-3 test checked the chip EXISTED and not what it said — which is exactly how
+   it passed.
+
+2. **Medium — leaving App→TourCard untested was a bad call, and I made it.** I argued the
+   marginal value was low because App feeds both children from the same source on
+   adjacent lines. Wrong twice: both props are OPTIONAL, so svelte-check accepts the
+   omission silently, and this is the precise seam whose absence let the round-3
+   high-severity defect through. The two-cycle App test now opens the tour after the
+   failed refresh and asserts no `tour-adopt-btn`.
+
+3. **Low — the tour reported the transient blocker over the durable one.** With both a
+   confirmed-stale snapshot and an unreliable approvals lane, it said "come back in a
+   moment" — advice that cannot clear the actual blocker, which needs a deploy. The
+   snapshot arm now runs first. Deliberately NOT hoisted above the null/degraded guard:
+   `approvalsStale` beating an absent graph is pinned from #258 and nothing here needed
+   to disturb it, so the new arm carries an explicit usability test instead.
+
+4. **Low — six visual/smoke graph fixtures were missed by the round-3 churn**, so frames
+   about wayfinding, the header and the chat shell were quietly rendering a freshness
+   notice and muted Adopt controls. Their assertions cover scrolling and folds, so the
+   gate stayed green while the frames drifted — the trap `wayfinding.visual.ts`'s own
+   header comment describes, one field over. All six now declare `iac_snapshot_stale`,
+   and the wayfinding rig asserts neither notice is present before it shoots.
+
+Plus two cleanups: this document's round-2 record still asserted the invariant round 3
+had corrected, and a stray blank line at EOF.
 
 ### What the work found that the plan did not anticipate
 

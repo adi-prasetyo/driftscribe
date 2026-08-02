@@ -273,10 +273,16 @@ export const desk = {
     // unreliable this cycle. Offering Adopt there would claim no adoption PR
     // exists, which is exactly what we failed to establish (Codex review #258).
     'desk.estate.adoptUnavailable': 'adoption status unknown',
-    // ds-1vn. Distinct from adoptUnavailable above: that one means "we could
-    // not ask GitHub whether a PR exists"; this one means "the declared set
-    // this row's drift status came from is not this deployment's".
+    // ds-1vn. Both distinct from adoptUnavailable above, which means "we could
+    // not ask GitHub whether a PR exists". These two are about the declared set
+    // this row's status came from — and they are SEPARATE strings because they
+    // assert different things (Codex r4). "Out of step" claims a mismatch was
+    // established; on the unverified path nothing was, and reusing the stale
+    // wording made the row contradict the notice above it, which says only
+    // "could not confirm". Widening a suppression is not licence to widen its
+    // claim.
     'desk.estate.adoptSnapshotStale': 'paused · snapshot out of step',
+    'desk.estate.adoptSnapshotUnverified': 'paused · snapshot not verified',
     'desk.estate.prPending': 'PR #{pr} awaiting review',
     'desk.estate.driftMore': '…{n} more drift',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
@@ -416,6 +422,7 @@ export const desk = {
     'desk.estate.adoptButton': '取り込み PR を作成',
     'desk.estate.adoptUnavailable': '取り込み状況を確認できません',
     'desk.estate.adoptSnapshotStale': '一時停止 ・ スナップショット不一致',
+    'desk.estate.adoptSnapshotUnverified': '一時停止 ・ スナップショット未確認',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',

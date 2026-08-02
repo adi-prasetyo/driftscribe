@@ -42,6 +42,10 @@ const GRAPH = {
   generated_at: '2026-07-30T02:00:00Z',
   project: 'driftscribe-hack-2026',
   caveat: '',
+  // ds-1vn: a healthy deployment's snapshot matches. Explicit, not omitted —
+  // absent means "unverified", which draws a freshness notice and mutes the
+  // Adopt controls in frames that are not about freshness at all.
+  iac_snapshot_stale: false,
   degraded: false,
   degraded_reason: null,
   totals: { resources: 735, managed: 9, drift: 6 },

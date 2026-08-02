@@ -1095,9 +1095,25 @@ describe('App — estate section (Task 4.1)', () => {
     await fireEvent.focus(window);
     await waitFor(() => expect(getByTestId('estate-snapshot-unverified')).toBeTruthy());
     expect(queryByTestId('estate-adopt-btn')).toBeNull();
-    expect(getByTestId('estate-adopt-stale')).toBeTruthy();
+    // 'unverified', not 'stale': a failed refresh is no evidence of a mismatch.
+    expect(getByTestId('estate-adopt-unverified')).toBeTruthy();
     // The row itself survives: a warning must not hide its own subject.
     expect(getByTestId('estate-row').textContent).toContain('shipping-topic');
+
+    // ...and the TOUR agrees (Codex r4). I first judged this seam not worth
+    // covering because App feeds both children `graphStale` from the same
+    // source on adjacent lines. That reasoning is wrong twice over: both props
+    // are OPTIONAL, so svelte-check accepts the omission silently, and this is
+    // the exact seam whose absence let a high-severity defect through in round
+    // 3 — the estate suppressing adoption while the tour beside it still
+    // recommended one. TourCard's own test supplies the prop itself and
+    // therefore cannot prove App forwards it.
+    await fireEvent.click(getByTestId('tour-banner-start'));
+    await fireEvent.click(getByTestId('tour-next')); // welcome → estate
+    await fireEvent.click(getByTestId('tour-next')); // estate → controls
+    await fireEvent.click(getByTestId('tour-next')); // controls → adopt
+    await waitFor(() => expect(getByTestId('tour-body')).toBeTruthy());
+    expect(queryByTestId('tour-adopt-btn')).toBeNull();
   });
 
   it('renders real drift rows sourced from the overview store', async () => {

@@ -217,8 +217,15 @@
                    Prior releases shipping without the check establish
                    compatibility, not safety. `adoptionTrusted` holds the rule
                    so the tour cannot disagree with this row. -->
-              <span class="estate-view__chip estate-view__chip--mute" data-testid="estate-adopt-stale">
-                {$t('desk.estate.adoptSnapshotStale')}
+              <span
+                class="estate-view__chip estate-view__chip--mute"
+                data-testid={freshness === 'stale'
+                  ? 'estate-adopt-stale'
+                  : 'estate-adopt-unverified'}
+              >
+                {freshness === 'stale'
+                  ? $t('desk.estate.adoptSnapshotStale')
+                  : $t('desk.estate.adoptSnapshotUnverified')}
               </span>
             {:else if row.adoptable && approvalsStale}
               <!-- The Adopt button is an ABSENCE claim: it appears exactly when

@@ -657,18 +657,45 @@ describe('EstateView — a stale snapshot suppresses adoption (ds-1vn r2)', () =
       props: baseProps({ graph: graph({ iac_snapshot_stale: null }) }),
     });
     expect(queryByTestId('estate-adopt-btn')).toBeNull();
-    expect(getByTestId('estate-adopt-stale')).toBeTruthy();
+    expect(getByTestId('estate-adopt-unverified')).toBeTruthy();
     expect(getByTestId('estate-snapshot-unverified')).toBeTruthy();
+  });
+
+  // Codex r4: the first cut of the widened rule reused the STALE chip for both
+  // states, so an unverified row said "out of step" — asserting a mismatch that
+  // was never established, while the notice above it said only "could not
+  // confirm". The earlier test checked the chip EXISTED and not what it
+  // claimed, which is how it passed. Widening a suppression is not licence to
+  // widen its claim.
+  it('an unverified row does not claim a mismatch was found', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: null }) }),
+    });
+    expect(queryByTestId('estate-adopt-stale')).toBeNull();
+    const chip = getByTestId('estate-adopt-unverified').textContent ?? '';
+    expect(chip).toContain('not verified');
+    expect(chip).not.toMatch(/out of step|mismatch/i);
+  });
+
+  it('a stale row DOES claim the mismatch, because that one was established', () => {
+    const { getByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: graph({ iac_snapshot_stale: true }) }),
+    });
+    expect(queryByTestId('estate-adopt-unverified')).toBeNull();
+    expect(getByTestId('estate-adopt-stale').textContent).toContain('out of step');
   });
 
   it('suppresses Adopt when a failed refresh retired the freshness claim', () => {
     // graphStale degrades a retained `false` to unverified — and the action
     // derived from that assurance must go with it. Leaving Adopt armed while
     // retiring the assurance is the exact split Codex r3 called out.
-    const { queryByTestId } = render(EstateView, {
+    const { queryByTestId, getByTestId } = render(EstateView, {
       props: baseProps({ graph: graph({ iac_snapshot_stale: false }), graphStale: true }),
     });
     expect(queryByTestId('estate-adopt-btn')).toBeNull();
+    // ...and says "not verified", not "out of step": a failed refresh is no
+    // evidence of a mismatch.
+    expect(getByTestId('estate-adopt-unverified')).toBeTruthy();
   });
 
   it('keeps Adopt when the snapshot matches', () => {

@@ -1070,4 +1070,3 @@ def test_an_l2_doc_written_before_the_field_existed_reads_as_unverified(monkeypa
     assert body["iac_snapshot_stale"] is None
     assert body["iac_snapshot_reason"] == "worker_hash_unavailable"
     assert body["degraded"] is False  # the cached estate is still served
-
