@@ -133,6 +133,27 @@ function splitLayers(value: string): string[] {
   return out.map((s) => s.trim()).filter(Boolean);
 }
 
+export type ShadowLayer = {
+  hex: string;
+  alpha: number;
+  offsetX: number;
+  offsetY: number;
+  blur: number;
+  spread: number;
+  inset: boolean;
+};
+
+/** The lengths of one layer, in `<offset-x> <offset-y> <blur> <spread>` order. */
+function layerGeometry(layer: string): Omit<ShadowLayer, 'hex' | 'alpha'> {
+  const withoutColor = layer
+    .replace(/rgba?\([^)]*\)/g, ' ')
+    .replace(/var\([^)]*\)/g, ' ')
+    .replace(/#[0-9a-fA-F]{3,8}\b/g, ' ');
+  const lengths = [...withoutColor.matchAll(/(-?[\d.]+)(px|rem|em)?\b/g)].map((m) => Number(m[1]));
+  const [offsetX = 0, offsetY = 0, blur = 0, spread = 0] = lengths;
+  return { offsetX, offsetY, blur, spread, inset: /\binset\b/.test(layer) };
+}
+
 /** The color of one `box-shadow` layer, as {hex, alpha}. */
 function layerColor(css: string, layer: string): { hex: string; alpha: number } {
   const rgbaMatch = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(layer);
@@ -149,15 +170,17 @@ function layerColor(css: string, layer: string): { hex: string; alpha: number } 
 }
 
 /**
- * Every layer of a `box-shadow`, in DECLARATION order.
+ * Every layer of a `box-shadow`, in DECLARATION order, with geometry.
  *
- * Declaration order is paint order: the first layer is drawn on top of the
- * later ones, so for the spread-only ring the first entry is the INNER band and
- * the last is the OUTER. Alpha is surfaced rather than resolved away so a pin
- * can composite it and report what actually renders.
+ * Declaration order is PAINT order: the first layer is drawn on top of the
+ * later ones. That alone does NOT make the first layer the inner band — it does
+ * so only when each subsequent layer spreads further. Give the first layer the
+ * larger spread and it covers the ones behind it completely, which is why
+ * geometry is parsed here and not discarded: a ring whose colors are all
+ * correct can still be an invisible ring.
  */
-export function shadowLayers(css: string, shadow: string): { hex: string; alpha: number }[] {
-  const layers = splitLayers(shadow).map((l) => layerColor(css, l));
+export function shadowLayers(css: string, shadow: string): ShadowLayer[] {
+  const layers = splitLayers(shadow).map((l) => ({ ...layerColor(css, l), ...layerGeometry(l) }));
   if (!layers.length) throw new Error(`no layers in box-shadow: ${shadow}`);
   return layers;
 }

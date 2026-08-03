@@ -53,9 +53,34 @@ describe('focus ring', () => {
     }
   });
 
+  it('has geometry that leaves both bands visible', () => {
+    // Colors alone do not make a ring. Paint order is declaration order, so a
+    // layer declared FIRST with a LARGER spread covers the ones behind it
+    // completely: swapping the two spreads here yields a ring whose blue band
+    // is entirely hidden under the white one, is invisible on a white control,
+    // and still satisfies every color assertion in this file. Geometry is the
+    // difference between "the right colors are declared" and "the indicator
+    // renders", and only this test can tell them apart.
+    const layers = shadowLayers(tokens, readToken(tokens, '--ds-ring'));
+    expect(layers).toHaveLength(2);
+
+    for (const [i, layer] of layers.entries()) {
+      expect(layer.inset, `layer ${i} must not be inset`).toBe(false);
+      expect([layer.offsetX, layer.offsetY, layer.blur], `layer ${i} must be a pure ring`).toEqual([
+        0, 0, 0
+      ]);
+      expect(layer.spread, `layer ${i} must have a positive spread`).toBeGreaterThan(0);
+    }
+    // Strictly increasing: each layer painted behind must extend past the one
+    // in front of it, or it contributes no visible pixels at all.
+    expect(layers[1].spread).toBeGreaterThan(layers[0].spread);
+  });
+
   it('has an outer band clearing 3:1 on every ground it is drawn on', () => {
     const layers = shadowLayers(tokens, readToken(tokens, '--ds-ring'));
-    const outer = layers[layers.length - 1];
+    // Widest spread, NOT last-declared: those coincide only while the geometry
+    // pin above holds, and this assertion must not quietly depend on it.
+    const outer = layers.reduce((a, b) => (b.spread > a.spread ? b : a));
     const failures: string[] = [];
 
     for (const groundToken of DRAWN_ON) {
@@ -191,12 +216,18 @@ describe('instrument band numerals', () => {
     for (const m of band.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
       const [, selector, body] = m;
       if (!attenuatesNumeral(selector)) continue;
-      const attenuation = /(?:^|[;{\s])(opacity|filter)\s*:\s*([^;]+)/.exec(body);
-      if (!attenuation) continue;
-      const [, prop, value] = attenuation;
-      // Fail CLOSED: an opacity we cannot parse is not an opacity we can clear.
-      const isFullyOpaque = prop === 'opacity' && Number(value.trim()) === 1;
-      if (!isFullyOpaque) offenders.push(`${selector.trim()} { ${prop}: ${value.trim()} }`);
+      // EVERY declaration, not the first: `opacity: 1; filter: opacity(.5)` has
+      // an innocent first match and a fade right behind it.
+      for (const decl of body.matchAll(/(?:^|[;{\s])(opacity|filter|animation)\s*:\s*([^;]+)/g)) {
+        const [, prop, raw] = decl;
+        const value = raw.trim();
+        // Fail CLOSED: a value we cannot read is not a value we can clear. Only
+        // a literal `opacity: 1` is provably harmless; `filter` and `animation`
+        // are listed because both can attenuate without the word "opacity"
+        // appearing as a property at all.
+        const provablyHarmless = prop === 'opacity' && Number(value) === 1;
+        if (!provablyHarmless) offenders.push(`${selector.trim()} { ${prop}: ${value} }`);
+      }
     }
 
     expect(

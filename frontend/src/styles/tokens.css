@@ -180,10 +180,12 @@
      both the light grounds it is drawn on AND whatever control it surrounds,
      and this palette holds controls at both ends: paper-light borders
      (--ds-border-strong) and near-black fills (--ds-navy, --ds-ok, --ds-seal).
-     Checked against all 21 of those colors, opaque --ds-stream fails 12 and
-     --ds-stream-ink fails 7 — and the constraints are contradictory, so no
-     third value rescues it. A darker ring that reads well on paper is the same
-     ring that disappears into a navy CTA.
+     Over the 21 colors a ring can plausibly abut, opaque --ds-stream fails 12
+     and --ds-stream-ink fails 7; over all 32 opaque palette tokens — what the
+     test actually sweeps — it is 22 and 17. The constraints are contradictory
+     either way, so no third value rescues it: clearing --ds-border-strong
+     needs luminance <= 0.182, clearing --ds-ok needs >= 0.440. A darker ring
+     that reads well on paper is the same ring that vanishes into a navy CTA.
 
      So the two layers split the job, and every adjacent color is carried by one
      of them:
@@ -194,12 +196,17 @@
                                  the light borders (3.56 .. 4.40)
      Outer vs inner is 5.64, so the two layers are distinct from each other too.
 
-     Worst figure anywhere in that matrix is 3.56, versus 3.07 for the best
-     single color — the two-tone is both more robust AND has more headroom.
-     Pinned in tests/unit/contrast.test.ts; re-tune either token and re-run it.
+     Worst figure over that adjacency set is 3.56, versus 3.07 for the best
+     single color. Over all 32 palette tokens the worst is 3.216 (white against
+     --ds-faint) — still clear, and against colors a ring is unlikely to touch.
+
+     Pinned in tests/unit/contrast.test.ts, which also pins the GEOMETRY: paint
+     order is declaration order, so giving the first layer the larger spread
+     would hide the blue band entirely while every color here stayed correct.
 
      Note this is a 4px ring where the old one was 3px, and box-shadow is not
-     clipped by layout but IS clipped by an ancestor's overflow:hidden. */
+     clipped by layout but IS clipped by an ancestor's overflow:hidden — see
+     AutonomyPill's segmented control for a pre-existing instance. */
   --ds-ring: 0 0 0 2px var(--ds-surface), 0 0 0 4px var(--ds-stream-ink);
 
   /* --- Motion ------------------------------------------------------------ */

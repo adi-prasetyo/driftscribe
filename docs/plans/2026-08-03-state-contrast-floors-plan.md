@@ -26,13 +26,18 @@ made a single color look sufficient.
 Applied consistently, the palette holds controls at *both* ends of the ramp:
 paper-light borders and near-black fills. The two constraints are contradictory.
 
-| candidate | palette colors it fails against |
-|---|---|
-| current `rgba(66,133,244,.30)` | all 32 — composites to 1.37–1.53 everywhere |
-| opaque `--ds-stream` | **12** — every border, every semantic fill, seal |
-| opaque `--ds-stream-ink` | **7** — ok/warn/danger fills and inks, navy, seal |
+Two sets are in play and they must not be conflated. The **adjacency set** (21
+colors: the eight grounds, the borders, the fills) is the design argument; the
+**full palette** (all 32 opaque tokens) is what the test sweeps, deliberately
+wider so it needs no maintenance.
 
-Ring luminance would need to be ≤0.183 to clear `--ds-border-strong` and ≥0.478
+| candidate | fails / 21 adjacency | fails / 32 palette |
+|---|---|---|
+| current `rgba(66,133,244,.30)` | 21 — 1.37–1.53 everywhere | 32 |
+| opaque `--ds-stream` | **12** | **22** |
+| opaque `--ds-stream-ink` | **7** | **17** |
+
+Ring luminance would need to be ≤0.182 to clear `--ds-border-strong` and ≥0.440
 to clear `--ds-ok`. Empty interval. **No third value rescues it** — which is why
 the earlier "reject a fourth blue" reasoning was answering the wrong question.
 
@@ -49,12 +54,22 @@ component does:
 | inner 2px `--ds-surface` | dark fills — navy 15.66, ok 6.42, warn 5.41, seal 5.44 | ≥5.41 |
 | outer 2px `--ds-stream-ink` | the eight light grounds, and the light borders | 3.56–5.64 |
 
-Outer vs inner is 5.64, so the layers read as two. Worst figure anywhere is
-**3.56**, against 3.069 for the best single color — more robust *and* more
-headroom. `--ds-seal` stops needing a scope argument: the inner band covers it.
+Outer vs inner is 5.64, so the layers read as two. Worst over the adjacency set
+is **3.56** against 3.069 for the best single color; over all 32 tokens it is
+**3.216** (white against `--ds-faint`, a text ink a ring is unlikely to abut).
+`--ds-seal` stops needing a scope argument: the inner band covers it.
+
+**Geometry is load-bearing, and colors alone do not capture it.** Paint order is
+declaration order, so a first layer with a *larger* spread covers the ones
+behind it: swapping the two spreads yields a ring whose blue band is entirely
+hidden, invisible on a white control, with every color assertion still passing.
+Caught only by pinning spreads, offsets, blur and `inset` — and the "outer" band
+is derived by widest spread, not by declaration position, so that assertion does
+not quietly depend on the geometry pin holding.
 
 Cost: a 4px ring where the old was 3px. `box-shadow` does not affect layout but
-IS clipped by an ancestor's `overflow: hidden`.
+IS clipped by an ancestor's `overflow: hidden` — `AutonomyPill`'s segmented
+control is a pre-existing instance, untouched by this change.
 
 ## 2. ds-16e — the bead names a numeral that never faded
 
@@ -103,15 +118,25 @@ human to add each dead name, and a token that never existed was never on a list.
 `tests/unit/contrast.ts` + `contrast.test.ts`, all figures derived from source:
 
 - every ring layer is opaque (the original defect, as a property not a number)
+- the ring's **geometry**: exactly two non-inset layers, zero offset and blur,
+  positive and strictly increasing spreads
 - the outer band clears 3:1 on all eight grounds it is drawn on
 - the layers clear 3:1 against **each other**
 - **every color in the palette is carried by some layer** — swept rather than
   listed, because a curated list cannot notice a newly added filled control,
   which is the omission that produced ds-dce
 - every numeral color clears 3:1 at rest
-- no hover/focus rule attenuates the numeral, failing **closed** on an opacity
-  it cannot parse
+- no hover/focus rule attenuates the numeral, checking **every** `opacity` /
+  `filter` / `animation` declaration and failing **closed** on any it cannot
+  prove harmless
 
-Verified by 8 injections, each reddening only its own test — including the
-bead's own proposed single-color ring, `opacity: var(--x)`, and the fade moved
-up to the parent stat.
+Verified by 16 injections, each reddening only its own test: the bead's proposed
+single-color ring, spreads swapped or equalised, `inset`, blur, offset,
+`opacity: var(--x)`, `opacity: 1` followed by `filter: opacity(.5)`, an
+animation-driven fade, and the fade moved up to the parent stat.
+
+**What the sweep does not prove.** It covers the 32 tokens declared as direct
+`#rrggbb`. It would not automatically see a token later written as `rgb()`,
+`oklch()`, `color-mix()` or an alias; a color hard-coded in a component; a
+translucent ground; or a ring clipped by an ancestor's `overflow: hidden`. It is
+a strong floor, not a universal visibility proof.
