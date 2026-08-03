@@ -141,17 +141,37 @@ export type ShadowLayer = {
   blur: number;
   spread: number;
   inset: boolean;
+  /** Lengths that are neither `0` nor a `px` value — see `layerGeometry`. */
+  badUnits: string[];
 };
 
-/** The lengths of one layer, in `<offset-x> <offset-y> <blur> <spread>` order. */
+/**
+ * The lengths of one layer, in `<offset-x> <offset-y> <blur> <spread>` order.
+ *
+ * Units are reported rather than normalised, because comparing bare NUMBERS
+ * across units is how a geometry check gets fooled: `2em` inner against `4px`
+ * outer reads as 2 < 4 and "increasing", while 2em is 32px and buries the outer
+ * band completely. A bare non-zero number is invalid CSS and reported too — the
+ * browser drops the whole declaration, so the ring silently disappears while
+ * every parsed value still looks reasonable.
+ *
+ * Colors are stripped BEFORE matching so digits inside a token name (`var(--ds-
+ * fs-1)`) can never be read as a length.
+ */
 function layerGeometry(layer: string): Omit<ShadowLayer, 'hex' | 'alpha'> {
   const withoutColor = layer
     .replace(/rgba?\([^)]*\)/g, ' ')
     .replace(/var\([^)]*\)/g, ' ')
     .replace(/#[0-9a-fA-F]{3,8}\b/g, ' ');
-  const lengths = [...withoutColor.matchAll(/(-?[\d.]+)(px|rem|em)?\b/g)].map((m) => Number(m[1]));
-  const [offsetX = 0, offsetY = 0, blur = 0, spread = 0] = lengths;
-  return { offsetX, offsetY, blur, spread, inset: /\binset\b/.test(layer) };
+  const lengths = [...withoutColor.matchAll(/(-?[\d.]+)([a-z%]*)/g)].map((m) => ({
+    value: Number(m[1]),
+    unit: m[2]
+  }));
+  const badUnits = lengths
+    .filter(({ value, unit }) => !(unit === 'px' || (value === 0 && unit === '')))
+    .map(({ value, unit }) => `${value}${unit || ' (no unit)'}`);
+  const [offsetX, offsetY, blur, spread] = [0, 1, 2, 3].map((i) => lengths[i]?.value ?? 0);
+  return { offsetX, offsetY, blur, spread, inset: /\binset\b/.test(layer), badUnits };
 }
 
 /** The color of one `box-shadow` layer, as {hex, alpha}. */

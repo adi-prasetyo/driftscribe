@@ -69,11 +69,22 @@ describe('focus ring', () => {
       expect([layer.offsetX, layer.offsetY, layer.blur], `layer ${i} must be a pure ring`).toEqual([
         0, 0, 0
       ]);
-      expect(layer.spread, `layer ${i} must have a positive spread`).toBeGreaterThan(0);
+      // Every length in px (or a bare 0). Comparing raw numbers across units is
+      // how this check gets fooled: 2em inner "< " 4px outer is 32px burying 4px.
+      expect(layer.badUnits, `layer ${i} has non-px lengths`).toEqual([]);
     }
-    // Strictly increasing: each layer painted behind must extend past the one
-    // in front of it, or it contributes no visible pixels at all.
-    expect(layers[1].spread).toBeGreaterThan(layers[0].spread);
+
+    // Each band must be thick enough to SEE. Positive-and-increasing is not
+    // enough on its own: 0.01px and 0.02px satisfy it and render nothing, and
+    // so does a 3.5px inner under a 4px outer, whose blue band is half a pixel.
+    // 2px is WCAG 2.4.13's minimum thickness for a focus indicator.
+    const MIN_BAND = 2;
+    const [inner, outer] = layers;
+    expect(inner.spread, 'inner band too thin to see').toBeGreaterThanOrEqual(MIN_BAND);
+    expect(
+      outer.spread - inner.spread,
+      'outer band too thin to see — it is what the ring is'
+    ).toBeGreaterThanOrEqual(MIN_BAND);
   });
 
   it('has an outer band clearing 3:1 on every ground it is drawn on', () => {
