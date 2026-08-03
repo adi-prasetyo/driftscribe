@@ -487,6 +487,15 @@ describe('inset focus ring (autonomy segmented dial)', () => {
     expect(failures, `inset ring below ${FLOOR}:1 on a segment fill\n${failures.join('\n')}`).toEqual([]);
   });
 
+  /**
+   * Subjects whose translucent fills are resolved by a dedicated test rather
+   * than by the generic sweep — today only the autonomy dial, whose
+   * `transparent` active state and `color-mix` armed state are composited
+   * against the pill and popover in the sweep above. Adding a prefix here is a
+   * promise that such a test exists.
+   */
+  const RESOLVED_BY_A_COMPONENT_TEST = ['.autonomy-segment'];
+
   it('is used ONLY on controls whose own fill is light, wherever it is consumed', () => {
     // The state sweep above proves the premise for the autonomy dial. It says
     // nothing about the NEXT consumer, and the token grew one: CapabilityCard's
@@ -494,26 +503,65 @@ describe('inset focus ring (autonomy segmented dial)', () => {
     // rest is exactly the shape of bug this whole file exists to stop, so find
     // every consumer from the source and prove each one.
     const ink = resolveColor(tokens, 'var(--ds-stream-ink)');
-    const dir = resolve(srcDir, 'components');
     const consumers: { where: string; hex: string; ratio: number }[] = [];
 
-    for (const file of readdirSync(dir).filter((f) => f.endsWith('.svelte'))) {
-      const src = readFileSync(resolve(dir, file), 'utf8');
-      const block = /<style[^>]*>([\s\S]*)<\/style>/.exec(src)?.[1] ?? '';
-      if (!block.includes('--ds-ring-inset-on-light')) continue;
+    // Walk ALL of src/, not just components/. `src/App.svelte` and
+    // `src/styles/base.css` both already consume ring tokens, so a directory-
+    // scoped scan would let the next consumer escape the premise entirely —
+    // silently, since nothing would report a file it never opened.
+    const styleSources = (dir: string): { file: string; css: string }[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+        const full = resolve(dir, e.name);
+        if (e.isDirectory()) return styleSources(full);
+        if (e.name.endsWith('.svelte')) {
+          const src = readFileSync(full, 'utf8');
+          return [{ file: full.slice(srcDir.length + 1), css: /<style[^>]*>([\s\S]*)<\/style>/.exec(src)?.[1] ?? '' }];
+        }
+        if (e.name.endsWith('.css')) return [{ file: full.slice(srcDir.length + 1), css: readFileSync(full, 'utf8') }];
+        return [];
+      });
+
+    for (const { file, css: block } of styleSources(srcDir)) {
+      // Skip the declaration itself; only USES matter here.
+      if (!new RegExp(`var\\(\\s*--ds-ring-inset-on-light`).test(block)) continue;
       const rs = rules(block);
 
       for (const rule of rs.filter((r) => /--ds-ring-inset-on-light/.test(r.body))) {
         for (const subj of subjects(rule.selector)) {
           // The control the ring is drawn ON, minus the focus pseudo-class.
           const base = subj.replace(/:focus-visible/g, '');
-          const painting = rs.filter((r) => subjects(r.selector).includes(base) && fill(r.body, r.selector));
+          // EVERY fill this control can take, not just its resting one. The ring
+          // is painted while focused, so a rule like
+          //   .foo:focus-visible { background: var(--ds-navy); outline: <ring> }
+          // puts a dark fill under it at exactly the moment it is drawn — and
+          // measuring only the rule whose subject is exactly `.foo` walks right
+          // past it. Match any subject that STARTS with the base, which is what
+          // picks up `:focus-visible`, `:hover`, `--modifier`, `[attr]`, etc.
+          const painting = rs.filter(
+            (r) => subjects(r.selector).some((x) => x === base || x.startsWith(`${base}:`) || x.startsWith(`${base}--`) || x.startsWith(`${base}[`)) && fill(r.body, r.selector),
+          );
           expect(
             painting.length,
             `${file}: ${base} takes the inset ring but declares no background, so what the ring is drawn on cannot be checked`,
           ).toBeGreaterThan(0);
-          const hex = resolveColor(tokens, fill(painting[painting.length - 1].body, base)!);
-          consumers.push({ where: `${file} ${base}`, hex, ratio: contrastRatio(ink, hex) });
+          // ALL of them must clear the floor — the ring cannot know which state
+          // it will be drawn in.
+          for (const rule of painting) {
+            const declared = fill(rule.body, rule.selector)!;
+            // A fully see-through fill has no substrate this test can name: what
+            // the ring lands on depends on what is painted BEHIND the control,
+            // which no per-rule reading can supply. Rather than skip it (silent)
+            // or guess (wrong), require a component-specific proof and name it.
+            if (/^(transparent|color-mix\()/.test(declared)) {
+              expect(
+                RESOLVED_BY_A_COMPONENT_TEST.some((prefix) => base.startsWith(prefix)),
+                `${file}: ${rule.selector} takes the inset ring over "${declared}", whose substrate depends on what is behind it. Add a component-specific test that resolves it (see the autonomy dial sweep above) and list its subject in RESOLVED_BY_A_COMPONENT_TEST.`,
+              ).toBe(true);
+              continue;
+            }
+            const hex = resolveColor(tokens, declared);
+            consumers.push({ where: `${file} ${rule.selector}`, hex, ratio: contrastRatio(ink, hex) });
+          }
         }
       }
     }

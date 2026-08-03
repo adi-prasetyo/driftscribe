@@ -18,9 +18,8 @@ focus indicator against the padding box of every ancestor that actually clips it
 ## What the sweep found
 
 The bead named one instance. A grep for `overflow: hidden` produced twelve
-candidate components. **Eleven of the twelve never clip anything**, and the
-measurement found five defects the grep could not have ranked — including one in
-a component the grep never flagged at all:
+candidate components, and measurement found real defects in **four** of them —
+`AutonomyPill` (twice), `Modal`, `PauseBanner`, and `CapabilityCard`:
 
 | # | control | clipped by | cut |
 |---|---|---|---|
@@ -36,13 +35,24 @@ container, which the bead did not consider at all: `scrollIntoView` aligns a
 focused element's border box, not its ring.
 
 (5) is the worst of the set and the last one found — a keyboard user tabbing the
-capabilities modal's workload list saw **no indicator at all**. It was missed
-twice over: the first version of that state used the shared `{ capabilities: [] }`
-mock, which renders no `<summary>` rows, so the test passed while covering
-nothing; and the second used a payload missing `human_gates`/`denylist`, which
-CapabilityCard correctly routes to its error row — again rendering no summaries.
-A state that cannot reach the thing it exists to check is worse than no state,
-because it reads as coverage.
+capabilities modal's workload list saw **no indicator at all**.
+
+**And it is the correction that matters most here.** After the first sweep I
+wrote that "eleven of the twelve candidates never clip anything" and treated the
+grep as noise. That was wrong, and wrong in the flattering direction:
+`CapabilityCard` was *in* the twelve, plainly declaring `overflow: hidden` on
+`.cap-workload`. What failed was not the grep's candidate list — it was my state
+coverage. The sweep had never opened the capabilities modal, so the component
+reported clean, and I promoted "unmeasured" to "fine". The grep ranked nothing,
+which is a real limitation; but it named the right file, and I then measured
+everything except the state where it bites.
+
+The state was also written twice before it covered anything: first with the
+shared `{ capabilities: [] }` mock, which renders no `<summary>` rows; then with
+a payload missing `human_gates`/`denylist`, which CapabilityCard correctly routes
+to its error row — again no summaries. Both passed. A state that cannot reach
+the thing it exists to check is worse than no state, because it reads as
+coverage.
 
 ## The fixes
 
@@ -130,11 +140,13 @@ safe is still lying, and three of these were false *negatives*:
 - `tests/smoke/focus-ring.smoke.ts` — 11 states (desk, desk in **Japanese**, chat,
   the dial, an **armed** segment, the pause banner's confirm row, the pause
   popover, the scrolled search modal, the capabilities modal, and both views at
-  390px). Asserts: nothing clipped; every control has an indicator that actually
-  *changes* on focus and paints a non-zero alpha; every Tab-reached control really
-  matches `:focus-visible`; and positive controls — minimum stop counts, a
-  per-state sentinel testid, and a traversal that must return to its FIRST stop,
-  so neither the Tab cap nor a focus trap can pass as coverage.
+  390px, plus the capabilities modal with a workload **expanded** so the nested
+  `<summary>` is reachable). Asserts: nothing clipped; every control has an
+  indicator that actually *changes* on focus, paints a non-zero alpha, and is not
+  faded away by `opacity`/`filter` on itself or any ancestor; every Tab-reached
+  control really matches `:focus-visible`; and positive controls — minimum stop
+  counts, a per-state sentinel testid, and a traversal that must return to its
+  FIRST stop, so neither the Tab cap nor a focus trap can pass as coverage.
 - `tests/unit/contrast.test.ts` — the inset ring's **premise**, at two levels.
   Every background the dial can take resolves to something clearing 3:1, with
   `transparent` and `color-mix(…, transparent)` resolved explicitly against the
@@ -150,13 +162,17 @@ safe is still lying, and three of these were false *negatives*:
 ## Verification
 
 - 1914 unit tests, `svelte-check` 0 errors, `npm run build`, full `test:smoke` 45/45
-- **17 defect injections**, each reddening only its own test: the outward ring
+- **20 defect injections**, each reddening only its own test: the outward ring
   restored on segments and on the workload summary; `outline-offset` flipped
   positive; `overflow:hidden` put back on each confirm row; `scroll-padding`
   removed; the composer allowlist entry deleted; a segment fill turned dark; the
   token's grammar widened; a fill in an unresolvable notation; three states
   renamed out of the premise sweep; a second consumer's fill turned dark, then
-  given no background at all, then given two competing background declarations
+  given no background at all, then given two competing background declarations;
+  a consumer added OUTSIDE `src/components`; a consumer whose dark fill is
+  declared in its own `:focus-visible` rule; a translucent fill with no
+  component-specific proof; and the focused control faded, once directly and
+  once through an ancestor's `filter: opacity()`
 - Pixel-walked screenshots of the focused dial at all three positions and armed
 
 Two of those injections found holes in **my own guards**, both on the coverage
@@ -183,5 +199,10 @@ stripped.
   Not hypothetical: AutonomyPill focuses its reason input on the tick after the
   confirm row mounts, so on the normal 200ms path that input is focused while
   Svelte's own injected `overflow: hidden` is still on the row (**ds-b74**).
-- Nothing about whether an indicator is *attractive*, only that it exists, is
-  unclipped, changes on focus, and clears 3:1.
+- Contrast is enforced for the two ring TOKENS, in `contrast.test.ts`. The smoke
+  does not measure the contrast of an arbitrary component's own focus override —
+  it checks that an indicator exists, changes on focus, paints something, is not
+  faded, and is not clipped. "Every indicator clears 3:1" is true of the
+  token-backed ones, and is not an invariant this suite enforces for a bespoke
+  one.
+- Nothing about whether an indicator is *attractive*.

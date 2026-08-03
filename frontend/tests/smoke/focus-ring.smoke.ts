@@ -64,6 +64,35 @@ const NO_INDICATOR_ALLOWED: Record<string, string> = {
   'chat-prompt': 'ds-tr5',
 };
 
+// A capabilities payload with a real workload. The shared `{ capabilities: [] }`
+// mock renders no <summary> rows at all, and a payload missing human_gates or
+// denylist routes CapabilityCard to its error row — which also renders none. Both
+// were tried first, and both passed while covering nothing.
+const CAPABILITIES_FIXTURE = {
+  version: 1,
+  provenance: 'focus-ring smoke',
+  iam_note: 'focus-ring smoke',
+  workloads: [
+    {
+      name: 'drift',
+      display_name: 'Anchor',
+      descriptor: 'Cloud Run config',
+      description: 'focus-ring smoke',
+      autonomous: true,
+      tools: [{ name: 'drift_read_live_env', description: 'smoke', write_capable: false }],
+      workers: [{ name: 'drift_reader', description: 'smoke' }],
+      actions: [{ name: 'no_op', display_name: 'No action needed', requires_approval: false }],
+    },
+  ],
+  // Required by the DTO. CapabilityCard deliberately routes a payload
+  // that parses as JSON but is missing structure to its error/retry row
+  // (Svelte 5 has no error boundary), and an error row renders NO
+  // workload summaries — which is exactly how the first version of this
+  // state passed while covering nothing.
+  human_gates: [],
+  denylist: { summary: 'focus-ring smoke', enforced_at: [], rules: [] },
+};
+
 async function seed(page: Page, locale: 'en' | 'ja' = 'en') {
   // Set BEFORE any navigation or interaction — see freezeMotion().
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -130,6 +159,7 @@ const SNAPSHOT_RESTING = (sel: string) => {
   return i;
 };
 
+
 // Runs in the page against document.activeElement.
 const PROBE = () => {
   const el = document.activeElement as HTMLElement | null;
@@ -159,32 +189,46 @@ const PROBE = () => {
   };
 
   /**
-   * Does this colour paint anything? Named for what it checks — an earlier
-   * version was called `isOpaque` while actually meaning "alpha > 0", and it
-   * only understood rgb()/rgba(). This app already emits
-   * `color(srgb 0.92 0.95 0.99 / 0.6)` for a color-mix fill, so a modern
-   * notation at zero alpha would have sailed through as a visible indicator.
-   * Unrecognised notations FAIL CLOSED (reported as painting nothing) so the
-   * gap surfaces as a test failure rather than a silent pass.
+   * Alpha of an ISOLATED colour string. Strict on purpose, and genuinely
+   * fail-closed: an earlier version ended in `/\b[a-z]{3,20}\b/`, which matched
+   * essentially anything — including the literal word `inset` in a box-shadow
+   * layer, so `paintsSomething('garbage')` returned true and an unknown
+   * zero-alpha notation counted as a visible indicator. It also claimed to fail
+   * closed in a comment while doing the opposite.
+   * Chromium serialises computed colours as rgb()/rgba()/color(), so the
+   * throwing branch should be unreachable for this app; if it ever fires, that
+   * is the signal to widen it deliberately rather than a value to wave through.
    */
-  const paintsSomething = (v: string) => {
-    if (/\btransparent\b/i.test(v)) return false;
-    const fn = /\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(([^)]*)\)/i.exec(v);
+  const paintsSomething = (raw: string) => {
+    const v = raw.trim();
+    if (/^transparent$/i.test(v)) return false;
+    const fn = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(([^)]*)\)$/i.exec(v);
     if (fn) {
       const slash = /\/\s*([\d.]+%?)\s*$/.exec(fn[2]);
       if (slash) return parseFloat(slash[1]) > 0;
       const parts = fn[2].split(',').map((x) => x.trim());
-      if (/^rgba|hsla$/i.test(fn[1]) && parts.length === 4) return parseFloat(parts[3]) > 0;
-      return true; // recognised notation, no alpha component -> opaque
+      if (/^(rgba|hsla)$/i.test(fn[1]) && parts.length === 4) return parseFloat(parts[3]) > 0;
+      return true; // recognised notation with no alpha component
     }
-    if (/#[0-9a-fA-F]{3,8}\b/.test(v)) {
-      const hex = /#([0-9a-fA-F]{3,8})\b/.exec(v)![1];
-      if (hex.length === 4) return parseInt(hex[3] + hex[3], 16) > 0;
-      if (hex.length === 8) return parseInt(hex.slice(6), 16) > 0;
+    const hex = /^#([0-9a-fA-F]{3,8})$/.exec(v);
+    if (hex) {
+      if (hex[1].length === 4) return parseInt(hex[1][3] + hex[1][3], 16) > 0;
+      if (hex[1].length === 8) return parseInt(hex[1].slice(6), 16) > 0;
       return true;
     }
-    if (/\b(currentcolor|[a-z]{3,20})\b/i.test(v)) return true; // named colour
-    throw new Error(`cannot tell whether this colour paints anything: ${v}`);
+    if (/^(currentcolor|white|black|red|blue|green|gray|grey)$/i.test(v)) return true;
+    throw new Error(`cannot determine the alpha of "${v}" — widen paintsSomething() deliberately rather than assuming it paints`);
+  };
+
+  /**
+   * The colour of a computed box-shadow layer. Chromium puts it FIRST, before
+   * the lengths and any `inset`. Extracted rather than passing the whole layer
+   * to a colour test, which is how the word `inset` used to be read as a colour.
+   */
+  const layerColor = (layer: string) => {
+    const m = /^\s*((?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^)]*\)|#[0-9a-fA-F]{3,8}|[a-z]+)/i.exec(layer);
+    if (!m) throw new Error(`no colour at the head of box-shadow layer: ${layer}`);
+    return m[1];
   };
 
   const cs = getComputedStyle(el);
@@ -205,7 +249,7 @@ const PROBE = () => {
   }
   if (cs.boxShadow && cs.boxShadow !== 'none') {
     for (const layer of splitLayers(cs.boxShadow)) {
-      if (!paintsSomething(layer)) continue;
+      if (!paintsSomething(layerColor(layer))) continue;
       const px = (layer.match(/-?\d*\.?\d+px/g) || []).map(parseFloat);
       const [ox = 0, oy = 0, blur = 0, spread = 0] = px;
       const extent = spread + blur + Math.max(Math.abs(ox), Math.abs(oy));
@@ -223,6 +267,21 @@ const PROBE = () => {
   const resting = (window as unknown as { __resting?: Record<string, string> }).__resting?.[idx ?? ''];
   const nowKey = `${cs.boxShadow}|${cs.outlineStyle}|${cs.outlineWidth}|${cs.outlineOffset}|${cs.outlineColor}`;
   const changesOnFocus = resting === undefined ? null : resting !== nowKey;
+
+  // An indicator can be present, opaque, unclipped — and still invisible,
+  // because the control or something above it is faded. Alpha on the colour does
+  // not see this: `opacity` and `filter: opacity()` compound down the tree. The
+  // instrument-band numerals (ds-16e) were exactly this shape, and a focusable
+  // control at `opacity: .6` would drop this ring under 3:1 while passing every
+  // other check here.
+  let effectiveOpacity = 1;
+  for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+    const ncs = getComputedStyle(n);
+    const o = parseFloat(ncs.opacity);
+    if (!Number.isNaN(o)) effectiveOpacity *= o;
+    const f = /\bopacity\(\s*([\d.]+%?)\s*\)/.exec(ncs.filter || '');
+    if (f) effectiveOpacity *= f[1].endsWith('%') ? parseFloat(f[1]) / 100 : parseFloat(f[1]);
+  }
 
   const r = el.getBoundingClientRect();
   const need = { left: r.left - outset, top: r.top - outset, right: r.right + outset, bottom: r.bottom + outset };
@@ -280,6 +339,7 @@ const PROBE = () => {
     outset,
     inset,
     changesOnFocus,
+    effectiveOpacity,
     clippers,
   };
 };
@@ -327,7 +387,7 @@ async function assertFocusRingsIntact(
   expect(rows.length, `${label}: sweep found ${rows.length} focus stops, expected ≥${opts.minStops}`).toBeGreaterThanOrEqual(opts.minStops);
   expect(
     cycled,
-    `${label}: Tab traversal never returned to its first stop (visited ${rows.length} of ${total} focusable elements in ${TAB_CAP} presses), so coverage is unknown and a pass here would be silent truncation`,
+    `${label}: Tab traversal never returned to its first stop (visited ${rows.length} stops; ${total} elements matched the focusable SELECTOR, which is an upper bound — it counts disabled controls, tabindex="-1", and descendants of closed <details>) in ${TAB_CAP} presses, so coverage is unknown and a pass here would be silent truncation`,
   ).toBe(true);
   expect(
     rows.filter((r) => r.outset > 0 || r.inset).length,
@@ -345,6 +405,11 @@ async function assertFocusRingsIntact(
   expect(notFocusVisible, `${label}: Tab-reached control did not match :focus-visible\n${notFocusVisible.join('\n')}`).toEqual([]);
 
   // ── The invariant.
+  const faded = rows
+    .filter((r) => r.effectiveOpacity < 0.999)
+    .map((r) => `  ${r.sel} "${r.text}" — effective opacity ${r.effectiveOpacity.toFixed(3)}`);
+  expect(faded, `${label}: focused control is faded, so its indicator renders below the contrast it was measured at\n${faded.join('\n')}`).toEqual([]);
+
   const clipped = rows
     .filter((r) => r.clippers.length > 0)
     .map((r) => `  ${r.sel} "${r.text}" (ring ${r.outset}px) — ${r.clippers.join('; ')}`);
@@ -522,34 +587,7 @@ test.describe('focus rings are never clipped (ds-2fp)', () => {
     // [] }` mock renders no `<summary>` rows at all, so this state would have
     // swept the modal chrome and silently missed the defect it exists to catch.
     await page.route('**/capabilities', (r) =>
-      r.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          version: 1,
-          provenance: 'focus-ring smoke',
-          iam_note: 'focus-ring smoke',
-          workloads: [
-            {
-              name: 'drift',
-              display_name: 'Anchor',
-              descriptor: 'Cloud Run config',
-              description: 'focus-ring smoke',
-              autonomous: true,
-              tools: [{ name: 'drift_read_live_env', description: 'smoke', write_capable: false }],
-              workers: [{ name: 'drift_reader', description: 'smoke' }],
-              actions: [{ name: 'no_op', display_name: 'No action needed', requires_approval: false }],
-            },
-          ],
-          // Required by the DTO. CapabilityCard deliberately routes a payload
-          // that parses as JSON but is missing structure to its error/retry row
-          // (Svelte 5 has no error boundary), and an error row renders NO
-          // workload summaries — which is exactly how the first version of this
-          // state passed while covering nothing.
-          human_gates: [],
-          denylist: { summary: 'focus-ring smoke', enforced_at: [], rules: [] },
-        }),
-      }),
+      r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(CAPABILITIES_FIXTURE) }),
     );
     // The trigger lives in the chat EMPTY state, so the thread must stay empty.
     await page.goto('/?view=chat');
@@ -561,6 +599,29 @@ test.describe('focus rings are never clipped (ds-2fp)', () => {
     // SENTINEL is what proves coverage here, not the count.
     await assertFocusRingsIntact(page, 'capabilities modal', {
       minStops: 2,
+      sentinel: 'cap-workload-drift-summary',
+    });
+  });
+
+  // Expanding a workload reveals a NESTED <details> ("View system prompts")
+  // whose <summary> is only tabbable once the outer one is open — so the state
+  // above, with everything collapsed, can never reach it. Its ancestors include
+  // the same `.cap-workload` that clipped the outer summary on all four sides.
+  test('capabilities modal — workload expanded', async ({ page, baseURL }) => {
+    await seed(page);
+    await mock(page, baseURL!);
+    await emptyConversations(page);
+    await page.route('**/capabilities', (r) =>
+      r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(CAPABILITIES_FIXTURE) }),
+    );
+    await page.goto('/?view=chat');
+    await page.getByTestId('capability-link').click();
+    await expect(page.getByTestId('capability-card')).toBeVisible();
+    await page.getByTestId('cap-workload-drift-summary').click();
+    await expect(page.locator('.cap-workload[open]')).toBeVisible();
+    await settle(page);
+    await assertFocusRingsIntact(page, 'capabilities modal (expanded)', {
+      minStops: 3,
       sentinel: 'cap-workload-drift-summary',
     });
   });
