@@ -194,6 +194,71 @@ export const desk = {
     // `shared.rail.traceButton.viewReasoning` so one product means one phrase.
     'desk.pending.viewReasoning': 'view the reasoning behind this →',
 
+    // ---- ds-jk9. A card the desk selected from a lane that did not refresh in
+    // the last cycle. overviewStore RETAINS a failed lane's previous value, so
+    // the item may already be resolved: a spent single-use rollback token, a PR
+    // that has since closed or merged.
+    //
+    // Everything here is PAST TENSE and names the evidence ("when this was last
+    // checked") rather than the system state. The card keeps its identity - the
+    // PR title, the number, the proposed-at time, the diff - because identity
+    // survives a retained value. What it loses is every present-tense claim
+    // about where the item stands now, and the live CTA that acts on that claim.
+    'desk.pending.stale.who': 'Last seen waiting for you',
+    'desk.pending.stale.headlineFallback':
+      'Infrastructure change PR #{pr} was waiting for you when this was last checked.',
+    'desk.pending.stale.rollbackHeadline':
+      'A rollback proposal was waiting for you when this was last checked.',
+    // Lane-NEUTRAL on purpose. An earlier draft said "the decision record could
+    // not be re-read", which is simply false when only /infra/pending-approvals
+    // failed - one card can be stale from either lane, and the copy cannot name
+    // a lane it does not know.
+    //
+    // It sends the operator to the approval page rather than apologising,
+    // because that page is authoritative: it re-reads live state and renders
+    // either the real form or a spent-token banner. The operator loses no
+    // capability here. What they stop getting is the desk pre-judging which.
+    'desk.pending.staleNotice':
+      "This card's current status could not be refreshed just now, so it may already be resolved. Open the approval page to see where it actually stands.",
+    // Rule 2.5 has no CTA, but its whole content is a verdict and its
+    // suppression rule is an absence claim over the same lane: a later
+    // successful rollback retires an older failure, and a stale list can omit
+    // that success.
+    // Two notices, not one, because the two phases can go false in DIFFERENT
+    // ways and a shared string would misdescribe one of them.
+    //
+    // `failed` is terminal for its own attempt (workers/rollback/main.py:1043),
+    // so its stated facts stay true. The only thing a retained list can get
+    // wrong is presenting it as the CURRENT open loop, because rule 2.5 retires
+    // an old failure via `newestAppliedAttempt` and a stale list can omit that
+    // later success.
+    //
+    // `outcome_unknown` is NONTERMINAL — /reconcile can promote the same attempt
+    // to applied or failed (workers/rollback/main.py:1025) — so it can be wrong
+    // in that way TOO, about itself. Its headline and body are replaced rather
+    // than annotated: "the outcome IS unconfirmed" is a live claim, and a notice
+    // underneath does not stop the sentence above from making it.
+    'desk.unresolved.stale.failedNotice':
+      'This could not be re-checked just now, so a later rollback may already have put the service right.',
+    'desk.unresolved.stale.unknownNotice':
+      'This could not be re-checked just now. The outcome may have been confirmed since, or a later rollback may already have settled it.',
+    'desk.unresolved.stale.unknownHeadline':
+      "The rollback's outcome was unconfirmed when this was last checked.",
+    // The DETAIL chip is a verdict too, and the shortest one on the card, which
+    // is exactly why it survived the first pass: "Outcome unconfirmed" reads as
+    // a label rather than a claim. It is a claim.
+    'desk.unresolved.stale.unknownDetail': 'Unconfirmed at the last check',
+    // Deliberately does NOT say "the traffic change was accepted", though the
+    // fresh copy this was derived from does. Acceptance is not established for
+    // every card that reaches outcome_unknown: rule 2.5 also synthesises the
+    // phase from a stuck `claimed` (desk.ts, STUCK_APPLYING_MS), where no
+    // operation handle exists, and the worker records it when starting the
+    // update itself throws (workers/rollback/main.py:846). The fresh string has
+    // the same overstatement and is left alone here - it is pre-existing, has
+    // its own trigger, and is filed rather than folded into this change.
+    'desk.unresolved.stale.unknownBody':
+      'We could not confirm the outcome within the time we waited. That was the state at the last successful check, and it may have resolved since. Check the service in Cloud Run before acting on this.',
+
     // No second person — see the register note on desk.ledger.* above; the
     // approval doc records no actor, so this byline cannot name one.
     'desk.stamped.who': 'Approved',
@@ -384,6 +449,27 @@ export const desk = {
     'desk.pending.viewDetailsCta': '承認の詳細を見る',
     'desk.pending.viewFailureCta': '失敗の詳細を見る',
     'desk.pending.viewReasoning': 'この提案に至った推論を見る →',
+
+    // ds-jk9. EN のコメント参照。すべて過去形で、「最後に確認した時点」という
+    // 根拠を名指す。現在形の断定は一切残さない。
+    'desk.pending.stale.who': '最後に確認した時点では待機中',
+    'desk.pending.stale.headlineFallback':
+      'インフラ変更 PR #{pr} は、最後に確認した時点ではあなたの対応を待っていました。',
+    'desk.pending.stale.rollbackHeadline':
+      'ロールバック提案は、最後に確認した時点ではあなたの対応を待っていました。',
+    'desk.pending.staleNotice':
+      'このカードの現在の状態を今は更新できませんでした。すでに処理済みの可能性があります。実際の状況は承認ページでご確認ください。',
+    // EN のコメント参照。failed と outcome_unknown では「古くなり方」が
+    // 異なるため、注記も分ける。outcome_unknown は見出しと本文ごと差し替える。
+    'desk.unresolved.stale.failedNotice':
+      'これを今は再確認できませんでした。その後のロールバックで既に復旧している可能性があります。',
+    'desk.unresolved.stale.unknownNotice':
+      'これを今は再確認できませんでした。その後に結果が確定した可能性も、後続のロールバックで既に解消された可能性もあります。',
+    'desk.unresolved.stale.unknownHeadline':
+      '最後に確認した時点では、ロールバックの結果を確認できていませんでした。',
+    'desk.unresolved.stale.unknownDetail': '最後の確認時点で未確定',
+    'desk.unresolved.stale.unknownBody':
+      '待機時間内に結果を確認できませんでした。これは最後に確認できた時点の状態であり、その後に解消している可能性があります。対応の前に Cloud Run で当該サービスの状態をご確認ください。',
 
     'desk.stamped.who': '承認済み',
     'desk.stamped.rollback.detail': 'ロールバック適用',

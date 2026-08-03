@@ -39,6 +39,8 @@
     pendingApprovals,
     settled = true,
     degraded = false,
+    approvalsStale = false,
+    decisionsStale = false,
     lastError = null,
     onShowEstate,
     recordTraceId = null,
@@ -56,6 +58,19 @@
     /** Did the last completed cycle fail to get a trustworthy answer about
      *  pending work? See OverviewState.degraded (ds-eh6). */
     degraded?: boolean;
+    /**
+     * Did the last cycle fail to refresh THIS lane (ds-jk9)? Narrower than
+     * `degraded` above, and the narrowness is the whole point: `degraded`
+     * answers "may the ABSENCE of a card be wrong" and routes to `unknown`,
+     * while these answer "may the card I am about to make actionable be wrong".
+     *
+     * Passed straight to deskModel, which knows which rule read which lane. The
+     * asymmetry runs one way: a decisions failure invalidates every pending
+     * selection, while a pending-approvals failure leaves the rollback and
+     * decisions-derived cards untouched. See DeskModelInput's own note.
+     */
+    approvalsStale?: boolean;
+    decisionsStale?: boolean;
     /** The store's last failing fetch kind, or null. Only `'graph'` can reach
      *  the resting state (a pending/decisions failure sets `degraded`, which
      *  routes to `unknown` instead), and it is used for exactly one thing:
@@ -112,7 +127,15 @@
   let decayTick = $state(0);
   const model = $derived.by((): DeskModel => {
     void decayTick;
-    return deskModel({ decisions, pendingApprovals, locale: $locale, settled, degraded });
+    return deskModel({
+      decisions,
+      pendingApprovals,
+      locale: $locale,
+      settled,
+      degraded,
+      approvalsStale,
+      decisionsStale,
+    });
   });
 
   // The honest system-wide total of everything awaiting the operator, NOT
@@ -259,6 +282,17 @@
   type DeskIacCtaState = IacApprovalCtaState | { kind: 'approve' };
 
   function pendingHeadline(m: DeskPending, tf: TranslateFn, cta: DeskIacCtaState): string {
+    // ds-jk9. A PR TITLE is identity — it names which change this is, and a
+    // failed refresh cannot make it the wrong name — so a stale card keeps it.
+    // Everything else in this function is a present-tense verdict about where
+    // the change stands, and that is what a retained lane cannot support.
+    if (m.stale) {
+      if (m.source === 'rollback') return tf('desk.pending.stale.rollbackHeadline');
+      const staleTitle =
+        m.provenance.kind === 'listing' ? m.provenance.approval.title : m.provenance.decision.pr_title;
+      if (typeof staleTitle === 'string' && staleTitle !== '') return staleTitle;
+      return tf('desk.pending.stale.headlineFallback', { pr: m.prNumber });
+    }
     if (m.source === 'rollback') return tf('desk.pending.rollback.headline');
     if (m.provenance.kind === 'listing' && m.provenance.approval.title) {
       return m.provenance.approval.title;
@@ -504,10 +538,19 @@
         data-source={model.source}
       >
         <div class="approval-desk__who">
+          <!-- ds-jk9. The stale check sits HERE, above the source split, not
+               inside pendingWhoKey: the rollback arm never calls that helper
+               (it has its own ternary, right below), so a stale arm added
+               there would silently miss every rollback card. One check, both
+               sources. pendingIacCtaState is deliberately NOT told about
+               freshness — it carries the ds-0rm never-lose-the-gate invariant
+               and must keep deciding only what the decisions say. -->
           <span
-            >{model.source === 'rollback'
-              ? $t('desk.pending.rollback.who')
-              : $t(pendingWhoKey(pendingCta))}</span
+            >{model.stale
+              ? $t('desk.pending.stale.who')
+              : model.source === 'rollback'
+                ? $t('desk.pending.rollback.who')
+                : $t(pendingWhoKey(pendingCta))}</span
           >
           {#if proposedAt}
             <span class="approval-desk__meta"
@@ -527,7 +570,12 @@
              is exactly the impression that let a 503 webhook go unnoticed.
              Gated on a POSITIVE 'failed' (see notifyFailed) so it never fires
              on a historical row that simply predates the field. -->
-        {#if pendingDecision && notifyFailed(pendingDecision)}
+        <!-- ds-jk9: and NOT on a stale card. "it has been waiting here
+             unannounced" is itself a present-tense waiting claim, and it
+             renders on its own path, so silencing the CTA does not silence it.
+             The stale notice below replaces it with something the desk can
+             actually support. -->
+        {#if !model.stale && pendingDecision && notifyFailed(pendingDecision)}
           <p class="approval-desk__notice" data-testid="approval-desk-notify-failed">
             {$t('desk.pending.notifyFailed')}
           </p>
@@ -559,13 +607,35 @@
             >
           </p>
         {/if}
+        <!-- ds-jk9. Names the gap, then points at the surface that can close
+             it. Lane-neutral wording: one card can be stale from either lane
+             and this notice does not know which, so it must not name one. -->
+        {#if model.stale}
+          <p class="approval-desk__notice" data-testid="approval-desk-stale-notice">
+            {$t('desk.pending.staleNotice')}
+          </p>
+        {/if}
         <!-- The shared discriminator keeps the card aligned with the rail and
              the approval page. Only a fresh/ambiguous listing keeps the full
              first-approval gate. Recorded approval gets one honest remaining
              action (continue merge or apply); terminal/superseded states get a
              view-only link because their page deliberately renders no form. -->
         <div class="approval-desk__acts">
-          {#if pendingCta.kind === 'continue'}
+          {#if model.stale}
+            <!-- ds-jk9. One neutral link, never Continue/Apply/Approve/Reject.
+                 The operator loses no capability: the HMAC-gated approval page
+                 is authoritative, re-reads live state, and renders either the
+                 real form or a spent-token banner. What they stop getting is
+                 the desk pre-judging which of those it will be. -->
+            <a
+              class="approval-desk__btn approval-desk__btn--primary"
+              data-testid="approval-desk-view-stale"
+              href={model.href}
+              target="_blank"
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.viewDetailsCta')}</a
+            >
+          {:else if pendingCta.kind === 'continue'}
             <a
               class="approval-desk__btn approval-desk__btn--primary"
               data-testid="approval-desk-continue"
@@ -628,14 +698,63 @@
       <div class="approval-desk__unresolved" data-testid="approval-desk-unresolved" data-phase={model.phase}>
         <div class="approval-desk__who">
           <span>{$t('desk.unresolved.who')}</span>
+          <!-- ds-jk9, Codex round 2. The detail chip is the shortest verdict on
+               the card, which is why it survived the first pass: "Outcome
+               unconfirmed" reads as a label. It is a claim, and /reconcile can
+               falsify it. `failed`'s chip stays - terminal for its attempt. -->
           <span class="approval-desk__meta"
-            >{$t(failed ? 'desk.unresolved.failed.detail' : 'desk.unresolved.unknown.detail')}</span
+            >{$t(
+              failed
+                ? 'desk.unresolved.failed.detail'
+                : model.stale
+                  ? 'desk.unresolved.stale.unknownDetail'
+                  : 'desk.unresolved.unknown.detail',
+            )}</span
           >
         </div>
-        <h2>{$t(failed ? 'desk.unresolved.failed.headline' : 'desk.unresolved.unknown.headline')}</h2>
+        <!-- ds-jk9, Codex round 1 of #290. `failed` is TERMINAL for its own
+             attempt, so its headline and body stay historical and true even on
+             a retained list. `outcome_unknown` is NOT: /reconcile can promote
+             the same attempt, so "the outcome IS unconfirmed" and "we cannot
+             confirm it either way" are live claims that a stale list cannot
+             support. They are REPLACED, not annotated — a notice underneath
+             does not stop the sentence above from making the claim. -->
+        <h2>
+          {$t(
+            failed
+              ? 'desk.unresolved.failed.headline'
+              : model.stale
+                ? 'desk.unresolved.stale.unknownHeadline'
+                : 'desk.unresolved.unknown.headline',
+          )}
+        </h2>
         <p class="approval-desk__unresolved-body">
-          {$t(failed ? 'desk.unresolved.failed.body' : 'desk.unresolved.unknown.body')}
+          {$t(
+            failed
+              ? 'desk.unresolved.failed.body'
+              : model.stale
+                ? 'desk.unresolved.stale.unknownBody'
+                : 'desk.unresolved.unknown.body',
+          )}
         </p>
+        <!-- ds-jk9. No CTA here, which is not a defence: the card's whole
+             content is a verdict, and rule 2.5's own suppression is an absence
+             claim over the same lane (`newestAppliedAttempt` retires an old
+             failure once a LATER rollback applied). A stale list that omits
+             that later success leaves a resolved failure standing as the
+             current open loop. The phase distinction is untouched — a `failed`
+             must never soften into `outcome_unknown`, stale or not, which is
+             also why the notice itself is phase-keyed: only the nonterminal
+             phase can have been confirmed since. -->
+        {#if model.stale}
+          <p class="approval-desk__notice" data-testid="approval-desk-unresolved-stale-notice">
+            {$t(
+              failed
+                ? 'desk.unresolved.stale.failedNotice'
+                : 'desk.unresolved.stale.unknownNotice',
+            )}
+          </p>
+        {/if}
         <DriftDiffCard decision={model.decision} />
       </div>
     {:else if model.kind === 'stamped'}

@@ -1583,3 +1583,125 @@ describe('App — popstate and the desk record (ds-jns)', () => {
     expect(new URLSearchParams(window.location.search).get('reasoning')).toBeNull();
   });
 });
+
+// ds-jk9. App hand-threads the overview store's two lane-freshness flags into
+// ApprovalDesk. This composition needs its OWN tests for the reason #289 round
+// 3 found the hard way: dropping a hand-threaded prop at the parent reddened
+// NOTHING across the whole suite. Component tests supply the prop themselves
+// and are structurally blind to App failing to, and an optional prop passes
+// svelte-check when omitted, so nothing else can catch the omission.
+//
+// TWO scenarios, not one, and each is good-then-failed:
+//
+//   - One decisions-failure test could not mutation-prove both props: deleting
+//     approvalsStale at the mount would not redden it. So each lane gets a
+//     scenario in which ONLY that lane fails, and each prop therefore has a
+//     test that fails only for it.
+//   - A first-cycle failure leaves the initial empty sentinel with no retained
+//     card to show, so no stale notice could ever appear and the test would
+//     pass for the wrong reason. Each scenario lands a good cycle first, then
+//     fails the refresh — which is also the real-world shape of the bug.
+describe('App — lane freshness reaches the desk (ds-jk9)', () => {
+  const GRAPH_OK = {
+    generated_at: '2026-08-03T06:00:00Z',
+    project: 'demo-proj',
+    caveat: '',
+    iac_snapshot_stale: false,
+    degraded: false,
+    degraded_reason: null,
+    totals: { resources: 2, managed: 2, drift: 0 },
+    groups: [],
+    edges: [],
+  };
+
+  /** Second and later cycles are driven by the store's focus listener. */
+  async function refetch(): Promise<void> {
+    window.dispatchEvent(new Event('focus'));
+  }
+
+  it('threads decisionsStale: a retained decisions-derived card stops being actionable', async () => {
+    const waiting = {
+      decision_id: 'iac-1',
+      action: 'iac_apply',
+      created_at: '2026-08-03T05:00:00Z',
+      pr_number: 42,
+      apply_status: 'waiting_for_rebake',
+      merge_state: 'merged',
+      event_key: 'iac-apply-42-gen1',
+    };
+    let decisionsOk = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/decisions')) {
+          return decisionsOk
+            ? okJson({ decisions: [waiting] })
+            : new Response('boom', { status: 500 });
+        }
+        if (url.includes('/infra/pending-approvals')) return okJson({ approvals: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH_OK);
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, queryByTestId } = render(App);
+
+    // Cycle 1: the card is live and carries a real Apply.
+    expect(await findByTestId('approval-desk-apply')).toBeTruthy();
+    expect(queryByTestId('approval-desk-stale-notice')).toBeNull();
+
+    // Cycle 2: /decisions fails. The store RETAINS the row, so the card stays…
+    decisionsOk = false;
+    await refetch();
+    await waitFor(() => expect(queryByTestId('approval-desk-stale-notice')).toBeTruthy());
+    // …but stops offering the action it can no longer vouch for.
+    expect(queryByTestId('approval-desk-pending')).toBeTruthy();
+    expect(queryByTestId('approval-desk-apply')).toBeNull();
+  });
+
+  it('threads approvalsStale: a retained listing card stops being actionable', async () => {
+    // Only the LISTING lane fails here, so this test is red only if
+    // `approvalsStale` specifically is missing at the mount.
+    let approvalsOk = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/pending-approvals')) {
+          return approvalsOk
+            ? okJson({
+                approvals: [
+                  {
+                    pr_number: 7,
+                    title: 'Adopt orders-sub into IaC',
+                    url: 'https://github.com/x/y/pull/7',
+                    asset_type: 'pubsub.googleapis.com/Subscription',
+                    resource_name: 'orders-sub',
+                  },
+                ],
+              })
+            : new Response('boom', { status: 500 });
+        }
+        if (url.includes('/infra/graph')) return okJson(GRAPH_OK);
+        return okJson({});
+      }),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, queryByTestId } = render(App);
+
+    expect(await findByTestId('approval-desk-approve')).toBeTruthy();
+    expect(queryByTestId('approval-desk-stale-notice')).toBeNull();
+
+    approvalsOk = false;
+    await refetch();
+    await waitFor(() => expect(queryByTestId('approval-desk-stale-notice')).toBeTruthy());
+    // Identity survives: it still names WHICH change it last saw.
+    expect(queryByTestId('approval-desk-pending')?.textContent).toContain(
+      'Adopt orders-sub into IaC',
+    );
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+  });
+});

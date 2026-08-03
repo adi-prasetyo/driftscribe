@@ -611,3 +611,102 @@ describe('createOverviewStore — graphStale (ds-1vn)', () => {
     s.destroy();
   });
 });
+
+// ds-jk9. The third per-lane flag, and the one the desk hero needs.
+//
+// The asymmetry runs ONE WAY. A /decisions failure invalidates every pending
+// card the hero can select, the listing-derived one included — rule 2a admits a
+// listing row only via an absence check over `decisions`. What per-lane gating
+// buys is the converse: a pending-approvals failure says nothing about a
+// rollback or a decisions-derived card, and the aggregate `degraded` fires for
+// either lane, so gating on it would withdraw those two every time the GitHub
+// listing blinked.
+describe('createOverviewStore — decisionsStale (ds-jk9)', () => {
+  it('is set when the decisions fetch fails', async () => {
+    const { fn } = makeCall({ decisions: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(true);
+    s.destroy();
+  });
+
+  it('is set when /decisions answers a malformed body', async () => {
+    // fetchDecisionsList rejects a non-array `decisions` as `ok: false`, which
+    // retains the previous list exactly like a 500 does — so it must set the
+    // flag by the same route. A 200 that fails the shape check is still a
+    // failed refresh.
+    const { fn } = makeCall({ decisions: () => res({ decisions: 'nope' }) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(true);
+    s.destroy();
+  });
+
+  it('is NOT set when only pending or graph failed, though degraded IS', async () => {
+    // The distinction that earns this field its existence, in the direction
+    // that matters for the hero: a pending-approvals outage says nothing about
+    // whether the retained decisions are current.
+    const { fn } = makeCall({ pending: () => res({}, 500), graph: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).degraded).toBe(true);
+    expect(get(s).decisionsStale).toBe(false);
+    s.destroy();
+  });
+
+  it('is NOT set by the pending-approvals soft-fail 200', async () => {
+    // /decisions has no soft-fail mode of its own; the sibling lane's must not
+    // leak across.
+    const { fn } = makeCall({ pending: () => res({ approvals: [], degraded: true }) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).approvalsStale).toBe(true);
+    expect(get(s).decisionsStale).toBe(false);
+    s.destroy();
+  });
+
+  it('is NOT set on a clean cycle', async () => {
+    const { fn } = makeCall();
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(false);
+    s.destroy();
+  });
+
+  it('retains the previous list while stale, then replaces it when the lane recovers', async () => {
+    // Three cycles, because the RETENTION is the premise of the whole bead and
+    // the first version of this test never established it: it failed from cycle
+    // one, so there was no previous list to retain, and it asserted only the
+    // flag while its name claimed something about `decisions`.
+    const FIRST = [{ decision_id: 'd-1' }];
+    const SECOND = [{ decision_id: 'd-2' }];
+    let stage: 'first' | 'fail' | 'second' = 'first';
+    const { fn } = makeCall({
+      decisions: () =>
+        stage === 'fail'
+          ? res({}, 500)
+          : res({ decisions: stage === 'first' ? FIRST : SECOND }),
+    });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(false);
+    expect(get(s).decisions).toEqual(FIRST);
+
+    // Failed refresh: the list is RETAINED — which is exactly why the desk
+    // needs the flag, since the retained rows are indistinguishable from fresh
+    // ones by inspection.
+    stage = 'fail';
+    await s.refresh();
+    await flush();
+    expect(get(s).decisionsStale).toBe(true);
+    expect(get(s).decisions).toEqual(FIRST);
+
+    // Recovery replaces it and clears the flag — never latched.
+    stage = 'second';
+    await s.refresh();
+    await flush();
+    expect(get(s).decisionsStale).toBe(false);
+    expect(get(s).decisions).toEqual(SECOND);
+    s.destroy();
+  });
+});

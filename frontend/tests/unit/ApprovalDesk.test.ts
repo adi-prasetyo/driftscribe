@@ -1251,6 +1251,38 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     expect(refresh.mock.calls.length).toBe(callCount);
   });
 
+  it('the STALE view link arms the ladder too (ds-jk9)', async () => {
+    // Codex round 4 of #290. The stale card replaces four live CTAs, all of
+    // which armed the return ladder, with one view-only link — and the first
+    // version of that link dropped the arming, so an operator who acted on the
+    // approval page came back to a desk that would not converge until the 45s
+    // poll. The one branch-local regression this PR introduced.
+    //
+    // The stale card arguably needs it MORE than the live ones: it is shown
+    // precisely because the desk could not refresh, and the operator clicking
+    // through is the one most likely to resolve the item while away.
+    const refresh = vi.fn();
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        onShowEstate: vi.fn(),
+        refresh,
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    await fireEvent.click(getByTestId('approval-desk-view-stale'));
+    expect(refresh).not.toHaveBeenCalled(); // arming alone does nothing yet
+
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(refresh.mock.calls.length).toBeGreaterThan(1);
+  });
+
   it('cannot stack: leaving and returning again mid-ladder does not start a second ladder', async () => {
     const refresh = vi.fn();
     const d = rollbackDecision();
@@ -1778,5 +1810,284 @@ describe('ApprovalDesk — undelivered-notification notice (ds-hdt)', () => {
     // every historical decision in the log.
     expect(getByTestId('approval-desk-pending')).toBeTruthy();
     expect(queryByTestId('approval-desk-notify-failed')).toBeNull();
+  });
+});
+
+// ds-jk9 / ds-smr. deskModel stamps `stale` when the lane that produced the
+// card did not refresh (desk.test.ts covers WHICH lane stamps WHICH rule). This
+// block covers what the component owes a stale card: keep every piece of
+// identity, drop the live CTA, and drop every present-tense claim about the
+// item's current state.
+//
+// Suppressing only the button would be the half-fix: every byline and headline
+// fallback on this card is written in the present tense, so a silenced Approve
+// under "An infrastructure change is waiting for your review" still tells the
+// operator something the app just failed to establish.
+describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds-jk9)', () => {
+  const base = { graph: GRAPH, onShowEstate: vi.fn() };
+
+  it('rollback: identity survives, CTA and byline do not', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-pending');
+    // Identity: the card is still here, still carries its diff evidence.
+    expect(card.getAttribute('data-source')).toBe('rollback');
+    expect(card.textContent).toContain('LOG_LEVEL');
+    // Verdict: gone.
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(getByTestId('approval-desk-view-stale')).toBeTruthy();
+    expect(getByTestId('approval-desk-stale-notice')).toBeTruthy();
+    // The rollback byline reaches the template through its OWN ternary, not
+    // through pendingWhoKey — so a stale arm added only to that helper would
+    // miss every rollback card. This assertion is what catches that.
+    expect(card.textContent).not.toMatch(/is proposing|waiting for your decision/i);
+  });
+
+  it('iac listing: identity survives, CTA and byline do not', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [],
+        pendingApprovals: [pendingIac()],
+        approvalsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-pending');
+    // Identity: the PR title and number are facts about WHICH item this is.
+    expect(card.textContent).toContain('Adopt orders-sub into IaC');
+    expect(card.textContent).toContain('PR #7');
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(getByTestId('approval-desk-view-stale')).toBeTruthy();
+  });
+
+  it('drops every present-tense variant, not just the ones the first draft listed', () => {
+    // A presence-only assertion blesses whatever copy it finds — twice over in
+    // #289. Assert the CLAIM. All six asserting strings on this card are
+    // covered, including iacMerged's "is approved and waiting to be applied",
+    // which an earlier regex here missed entirely.
+    const merged = iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [merged],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-pending');
+    expect(card.textContent).not.toMatch(
+      /waiting for your|waiting to be applied|needs attention|is proposing|is approved/i,
+    );
+    // and the positive: it says what it DID see, in the past tense.
+    expect(card.textContent).toMatch(/last (seen|checked)/i);
+  });
+
+  it('suppresses the notify-failed notice, which is itself a waiting claim', () => {
+    // "it has been waiting here unannounced" asserts the item is still waiting.
+    // It renders on its own path, independent of the CTA, so silencing the
+    // button does not silence it.
+    const d = rollbackDecision({
+      notify: { state: 'failed', error_code: 'worker_error', status_code: 503 },
+    });
+
+    // ASSERT THE FIXTURE'S PREMISE FIRST. The initial version of this test used
+    // a `notify_status` field that does not exist, so the notice never rendered
+    // and the test passed against the unfixed component — a suppression test
+    // whose subject was already absent proves nothing.
+    const fresh = render(ApprovalDesk, {
+      props: { ...base, decisions: [d], pendingApprovals: [] },
+    });
+    expect(fresh.getByTestId('approval-desk-notify-failed')).toBeTruthy();
+    cleanup();
+
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [d],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    expect(getByTestId('approval-desk-pending')).toBeTruthy();
+    expect(queryByTestId('approval-desk-notify-failed')).toBeNull();
+  });
+
+  it('a FRESH card is completely unchanged', () => {
+    // The negative that keeps this from being a blanket downgrade: with both
+    // lanes good the desk must still make its full, live claim.
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { ...base, decisions: [rollbackDecision()], pendingApprovals: [] },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view-stale')).toBeNull();
+    expect(queryByTestId('approval-desk-stale-notice')).toBeNull();
+    expect(getByTestId('approval-desk-pending').textContent).toContain('Anchor is proposing a fix');
+  });
+
+  function unresolved(phase: 'failed' | 'outcome_unknown'): Decision {
+    return rollbackDecision({
+      approval: { approval_url: '/approvals/rb-1?t=x', status: 'used', phase },
+    });
+  }
+
+  it('a stale outcome_unknown drops its live claim, not just its notice', () => {
+    // The case that makes rule 2.5 a blocker rather than a nicety.
+    // outcome_unknown is NONTERMINAL: /reconcile can promote the same attempt
+    // to applied or failed. So "the outcome IS unconfirmed" and "we cannot
+    // confirm it either way" are live claims a retained list cannot support.
+    //
+    // An earlier version of this test used only `phase: 'failed'` and asserted
+    // that the notice EXISTED. It passed while both sentences above went on
+    // asserting — a presence assertion blessing the copy it was meant to police,
+    // for the second time on this branch.
+    const fresh = render(ApprovalDesk, {
+      props: { ...base, decisions: [unresolved('outcome_unknown')], pendingApprovals: [] },
+    });
+    // Premise: the live claim really is there when the lane is good.
+    expect(fresh.getByTestId('approval-desk-unresolved').textContent).toMatch(
+      /outcome is unconfirmed/i,
+    );
+    cleanup();
+
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [unresolved('outcome_unknown')],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-unresolved');
+    expect(card.getAttribute('data-phase')).toBe('outcome_unknown');
+    expect(card.textContent).not.toMatch(/outcome is unconfirmed|cannot confirm it either way/i);
+    expect(card.textContent).toMatch(/was unconfirmed when this was last checked/i);
+
+    // The DETAIL chip, asserted on its own element. The regex above cannot
+    // reach it: "Outcome unconfirmed" contains neither "is" nor "cannot", so a
+    // whole-card negative silently let the shortest verdict on the card through
+    // (Codex round 2). It reads as a label, which is exactly why it survived.
+    const detail = card.querySelector('.approval-desk__meta')?.textContent?.trim();
+    expect(detail).not.toBe('Outcome unconfirmed');
+    expect(detail).toMatch(/last check/i);
+
+    // And the body must not claim the traffic change was ACCEPTED: rule 2.5
+    // also synthesises outcome_unknown from a stuck `claimed`, where no
+    // operation handle exists at all.
+    expect(card.textContent).not.toMatch(/was accepted/i);
+
+    // Its notice names the reconciliation case, which the failed one cannot have.
+    expect(getByTestId('approval-desk-unresolved-stale-notice').textContent).toMatch(
+      /confirmed since/i,
+    );
+  });
+
+  it('a stale failed keeps its terminal facts and gets the other notice', () => {
+    // failed is terminal for its own attempt, so its sentences stay true. The
+    // only thing a retained list gets wrong is presenting it as the CURRENT
+    // open loop, so the notice names a later rollback and must NOT offer the
+    // reconciliation escape that only outcome_unknown has.
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [unresolved('failed')],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-unresolved');
+    expect(card.getAttribute('data-phase')).toBe('failed');
+    expect(card.textContent).toMatch(/did not apply/i);
+    const notice = getByTestId('approval-desk-unresolved-stale-notice');
+    expect(notice.textContent).toMatch(/later rollback/i);
+    expect(notice.textContent).not.toMatch(/confirmed since/i);
+  });
+
+  it('JA keeps the claim out too, on BOTH sources', async () => {
+    // A locale that keeps the present tense is the same defect in the language
+    // the product is delivered in.
+    //
+    // Both fixtures, because an earlier version rendered only the rollback one:
+    // 確認が必要 and 承認済み belong to the IaC bylines, so against a rollback
+    // card those alternatives could never appear and mutation-proved nothing.
+    const { locale } = await import('../../src/lib/i18n');
+    const CLAIMS = /待っています|確認が必要|承認済み|提案しています|適用を待って/;
+    locale.set('ja');
+    try {
+      const rb = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [rollbackDecision()],
+          pendingApprovals: [],
+          decisionsStale: true,
+          degraded: true,
+        },
+      });
+      expect(rb.getByTestId('approval-desk-pending').textContent).not.toMatch(CLAIMS);
+      cleanup();
+
+      // Premise check: this fixture's JA byline really does assert, when fresh.
+      const freshIac = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' })],
+          pendingApprovals: [],
+        },
+      });
+      expect(freshIac.getByTestId('approval-desk-pending').textContent).toMatch(CLAIMS);
+      cleanup();
+
+      const iac = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' })],
+          pendingApprovals: [],
+          decisionsStale: true,
+          degraded: true,
+        },
+      });
+      expect(iac.getByTestId('approval-desk-pending').textContent).not.toMatch(CLAIMS);
+      cleanup();
+
+      // The UNRESOLVED card too. Restricting this test to pending cards is how
+      // 結果は未確認 survived round 2 in JA: it lives on a card this block was
+      // never rendering. Premise first, then the negative.
+      const freshUnknown = render(ApprovalDesk, {
+        props: { ...base, decisions: [unresolved('outcome_unknown')], pendingApprovals: [] },
+      });
+      expect(freshUnknown.getByTestId('approval-desk-unresolved').textContent).toMatch(
+        /結果は未確認/,
+      );
+      cleanup();
+
+      const staleUnknown = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [unresolved('outcome_unknown')],
+          pendingApprovals: [],
+          decisionsStale: true,
+          degraded: true,
+        },
+      });
+      const jaCard = staleUnknown.getByTestId('approval-desk-unresolved');
+      expect(jaCard.textContent).not.toMatch(/結果は未確認/);
+      expect(jaCard.textContent).not.toMatch(/受理されました/);
+      expect(jaCard.textContent).toMatch(/最後の確認時点|最後に確認した時点/);
+    } finally {
+      locale.set('en');
+    }
   });
 });

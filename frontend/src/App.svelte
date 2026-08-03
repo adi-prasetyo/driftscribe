@@ -2261,6 +2261,8 @@
     pendingApprovals={$overview.pendingApprovals}
     settled={$overview.settled}
     degraded={$overview.degraded}
+    approvalsStale={$overview.approvalsStale}
+    decisionsStale={$overview.decisionsStale}
     lastError={$overview.lastError}
     refresh={overview.refresh}
     onShowEstate={scrollToEstate}
