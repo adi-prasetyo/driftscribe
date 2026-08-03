@@ -149,6 +149,13 @@ human to add each dead name, and a token that never existed was never on a list.
   `color: var(--ds-faint); color: rgba(138,144,153,.75)` renders at 2.225:1
 - the band sets no inline `style=` attribute and no attenuating `style:`
   directive, which the `<style>`-only scan cannot see
+- **every rule's subject names an instrument-band class.** This is the property
+  the subject-keyed guards above all rely on, and without it a rule can reach
+  the numeral anonymously — `.instrument-band__stat[data-unknown] > :first-child`
+  wins by source order at equal specificity and renders at 1.043:1, while the
+  color collector skips it (no `__num`) and the attenuation scan skips it
+  (subject `:first-child`). Pinning the contract closes that for every
+  subject-keyed guard at once, instead of patching each one
 - the numeral cannot be attenuated by **any** mechanism: every `opacity` /
   `filter` / `animation*` declaration (case-insensitively, vendor prefixes
   included), a custom property set under `:hover`/`:focus` that a base rule
@@ -163,7 +170,7 @@ human to add each dead name, and a token that never existed was never on a list.
   knows nothing about an ancestor's opacity. Reads the `<style>`
   block only, so template markup is never brace-matched as CSS
 
-Verified by **46 injections**, each reddening only its own test: the bead's
+Verified by **49 injections**, each reddening only its own test: the bead's
 proposed single-color ring; spreads swapped, equalised, sub-pixel, half-pixel,
 or 100000px; `inset` (upper and lower case), blur, offset; `1em` against `px`,
 `calc()`, a bare number, `%`, a fifth length, three layers, two colors in one
@@ -174,7 +181,9 @@ set on hover and read by a base rule, a translucent `color`, the fade moved up
 to the parent stat, `opacity` on the `.instrument-band` / `__stats` / `__stat`
 ANCESTORS (transient *and* resting, which is worse), an uppercase `:HOVER`, a
 resting `color: rgba(…, .75)` overriding the token on the next line, an inline
-`style="opacity:.75"`, and a `style:opacity` directive.
+`style="opacity:.75"`, a `style={'opacity: .75'}` expression, a `style:opacity`
+directive, and selectors that reach the numeral without naming it
+(`> :first-child`, `> span`).
 
 Plus `rgba(255,255,255,1.)` — invalid CSS, because a decimal point needs a digit
 after it, so the browser drops the declaration; `Number('1.')` is 1 and a

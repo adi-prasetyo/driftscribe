@@ -307,9 +307,47 @@ describe('instrument band numerals', () => {
       .replace(/<style[^>]*>[\s\S]*?<\/style>/g, '')
       .replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
 
-    expect([...markup.matchAll(/\bstyle\s*=\s*(["'][^"']*["'])/g)].map((m) => m[1])).toEqual([]);
+    // Match the ATTRIBUTE, not a quoted literal after it: Svelte accepts an
+    // expression, and `style={'opacity: .75'}` compiles fine while sailing past
+    // a regex that expects a quote.
+    expect([...markup.matchAll(/\bstyle\s*=/gi)].map((m) => m[0])).toEqual([]);
     expect(
       [...markup.matchAll(/\bstyle:(opacity|filter|color)\b/gi)].map((m) => m[0])
+    ).toEqual([]);
+  });
+
+  it('names an instrument-band class as the subject of every rule', () => {
+    // The BEM contract, and the reason the checks above can key on class names.
+    //
+    // A rule can reach the numeral without ever naming it:
+    //
+    //   .instrument-band__stat[data-unknown] > :first-child { color: … }
+    //
+    // The numeral IS the first child, so this wins by source order at equal
+    // specificity and renders at 1.043:1 — while `numeralColorTokens` skips it
+    // (no `__num` in the selector) and the attenuation scan skips it (subject is
+    // `:first-child`). Every subject-keyed guard in this file has that blind
+    // spot, so rather than patch each one, pin the property they all rely on:
+    // in this component's scoped styles, the subject of every rule names an
+    // instrument-band class. Positional and element subjects are then simply
+    // not expressible, and the blind spot closes for all of them at once.
+    const style = /<style[^>]*>([\s\S]*)<\/style>/.exec(band)?.[1] ?? '';
+    const withoutComments = style.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const anonymous: string[] = [];
+    for (const m of withoutComments.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+      const selector = m[1].trim();
+      // At-rule preludes and keyframe steps are not element subjects.
+      if (!selector || selector.startsWith('@') || /^(from|to|[\d.]+%)$/.test(selector)) continue;
+      for (const part of selector.split(',')) {
+        const subject = part.trim().split(/\s+/).pop() ?? '';
+        if (subject && !subject.includes('instrument-band')) anonymous.push(part.trim());
+      }
+    }
+
+    expect(
+      anonymous,
+      `rule subjects that do not name an instrument-band class:\n  ${anonymous.join('\n  ')}`
     ).toEqual([]);
   });
 });
