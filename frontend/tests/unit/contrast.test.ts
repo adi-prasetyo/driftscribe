@@ -265,9 +265,25 @@ describe('instrument band numerals', () => {
         for (const d of body.matchAll(/(?:^|[;{\s])(--[\w-]+)\s*:/g)) {
           flag(`${d[1]}: … (custom property set on hover)`);
         }
-        // Translucency can also live in the color itself.
-        for (const d of body.matchAll(/(?:^|[;{\s])color\s*:\s*([^;]+)/gi)) {
-          flag(`color: ${d[1].trim()}`);
+      }
+
+      // Translucency can live in the color itself, and a RESTING one is the
+      // color equivalent of the resting-ancestor-opacity gap above:
+      //
+      //   color: var(--ds-faint);
+      //   color: rgba(138, 144, 153, .75);   <- CSS takes the last declaration
+      //
+      // The rest-contrast test does not see it either, because it collects
+      // `color: var(--ds-*)` and measures the TOKEN. So every color declared on
+      // a containing subject must be an opaque palette token — which is what
+      // makes the rest test's measurement the whole truth — and anything else
+      // fails closed, interactive or not.
+      for (const d of body.matchAll(/(?:^|[;{\s])color\s*:\s*([^;]+)/gi)) {
+        const value = d[1].trim();
+        try {
+          resolveColor(tokens, value);
+        } catch {
+          flag(`color: ${value} (not an opaque palette token)`);
         }
       }
     }
@@ -275,6 +291,25 @@ describe('instrument band numerals', () => {
     expect(
       [...new Set(offenders)],
       `the band numeral can be attenuated:\n  ${[...new Set(offenders)].join('\n  ')}`
+    ).toEqual([]);
+  });
+
+  it('sets no inline style that could attenuate the numeral', () => {
+    // The attenuation scan above deliberately reads the <style> block only, so
+    // template markup is never brace-matched as CSS. That leaves inline styling
+    // as a blind spot: `<span class="instrument-band__num" style="opacity:.75">`
+    // fades the numeral and no CSS rule exists to find.
+    //
+    // The band sets no inline styles today except `style:flex` on the two meter
+    // bars, which cannot attenuate anything, so the guard is simply: no `style=`
+    // attribute at all, and no attenuating `style:` directive.
+    const markup = band
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/g, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
+
+    expect([...markup.matchAll(/\bstyle\s*=\s*(["'][^"']*["'])/g)].map((m) => m[1])).toEqual([]);
+    expect(
+      [...markup.matchAll(/\bstyle:(opacity|filter|color)\b/gi)].map((m) => m[0])
     ).toEqual([]);
   });
 });
