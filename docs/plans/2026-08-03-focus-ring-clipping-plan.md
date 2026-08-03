@@ -137,7 +137,7 @@ safe is still lying, and three of these were false *negatives*:
 
 ## What is pinned
 
-- `tests/smoke/focus-ring.smoke.ts` — 11 states (desk, desk in **Japanese**, chat,
+- `tests/smoke/focus-ring.smoke.ts` — **12 states** (desk, desk in **Japanese**, chat,
   the dial, an **armed** segment, the pause banner's confirm row, the pause
   popover, the scrolled search modal, the capabilities modal, and both views at
   390px, plus the capabilities modal with a workload **expanded** so the nested
@@ -161,7 +161,8 @@ safe is still lying, and three of these were false *negatives*:
 
 ## Verification
 
-- 1914 unit tests, `svelte-check` 0 errors, `npm run build`, full `test:smoke` 45/45
+- 1915 unit tests, `svelte-check` 0 errors, `npm run build`, `ruff` clean, full
+  `test:smoke` 47/47 (12 of those are this spec), all green in CI
 - **20 defect injections**, each reddening only its own test: the outward ring
   restored on segments and on the workload summary; `outline-offset` flipped
   positive; `overflow:hidden` put back on each confirm row; `scroll-padding`

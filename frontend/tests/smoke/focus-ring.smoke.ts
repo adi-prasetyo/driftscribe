@@ -9,8 +9,15 @@ import { test, decisionsResponse, infraGraphResponse } from './fixtures';
 // settled focus indicator against the padding box of every ancestor that
 // actually clips it.
 //
-// It replaced a grep for `overflow: hidden`, which flagged twelve components of
-// which eleven never clip anything. The measurement is the finding.
+// It replaced a grep for `overflow: hidden`, which flagged twelve components.
+// Four of them really do clip a ring: AutonomyPill (twice), Modal, PauseBanner,
+// CapabilityCard. The grep could not rank them — but it did name every one, and
+// an earlier version of this note claimed eleven of the twelve were noise. That
+// was wrong: CapabilityCard was among them and held the worst defect here, four
+// sides gone. What had actually happened is that no state in this file opened
+// the capabilities modal, so it measured clean and got recorded as fine.
+// "Unmeasured" is not "fine", and the state list below is the whole of what
+// this suite knows.
 //
 // SCOPE, because the title overclaims if read loosely: Chromium only, and only
 // the states enumerated below. A control reachable solely through some other
