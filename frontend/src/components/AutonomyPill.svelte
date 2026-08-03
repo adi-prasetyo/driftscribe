@@ -576,6 +576,60 @@
     opacity: 0.6;
   }
 
+  /* ds-2fp: the ring goes INSIDE this control. `.autonomy-segments` is
+     overflow:hidden (it clips the sliding pill and rounds the segment corners),
+     which cut 4px off the global box-shadow ring on every edge it touched — top
+     and bottom on all three segments, plus the outer edge on the first and the
+     last. What survived was a sliver bleeding over the neighbour.
+
+     `outline`, not an inset box-shadow, because `.autonomy-segment--armed`
+     already owns `box-shadow` and the two do not compose: the winning
+     declaration replaces the whole shadow list, and this rule outranks the armed
+     one, so a box-shadow ring here would erase the armed indicator at exactly
+     the moment you are both armed and focused.
+
+     `box-shadow: none` is explicit and load-bearing: left in place the global
+     ring is invisible (clipped) but still painted and still measured, and the
+     clipping guard would keep reporting it.
+
+     OFFSET IS -3px, NOT -2px, AND THAT 1px IS THE WHOLE POINT. A 2px outline at
+     -2px occupies the outermost 2px band, which is exactly where the armed
+     state's `inset 0 0 0 1px` stroke lives — measured, not reasoned about:
+     rendering an armed+focused segment that way produced ZERO pixels of
+     `#4285f4` in the whole control. The armed rule below would still be in the
+     computed style and still be invisible, which is worse than not having it.
+     At -3px the band sits 1px..3px inside, leaving the armed stroke its own
+     pixels: the edge walk reads border #d6d2ca, armed #4285f4, ring #2a63c9
+     ×2, then the armed tint.
+
+     Corner check, corrected: the band spans 1px..3px inside the border box, and
+     the edge that matters is the OUTER one at 1px — nearest the clip. Against
+     the container's r=4px arc its corner point sits 4.243px from the arc centre,
+     i.e. 0.243px OUTSIDE it, so the extreme corner is clipped by a quarter of a
+     pixel. (An earlier version of this note did the arithmetic on the inner edge
+     at 3px — 1.414px, comfortably inside — and drew the wrong conclusion from a
+     correct sum.) Sub-pixel and not visible: the rendered band reads as
+     continuous in the captures of all three segments, which is the evidence this
+     rests on rather than the geometry. */
+  .autonomy-segment:focus-visible {
+    outline: var(--ds-ring-inset-on-light);
+    outline-offset: -3px;
+    box-shadow: none;
+  }
+  /* Armed is a state you can be focused IN — activate a segment, then Shift+Tab
+     back to it — so its stroke has to survive the `box-shadow: none` above,
+     which outranks `.autonomy-segment--armed` on its own.
+
+     Honest about what this buys: the stroke's pixels survive, but while focused
+     it is a weak signal — 1.581:1 against the ring inside it and 2.364:1 against
+     the container border outside it. It is kept because the alternative is
+     worse: the armed TINT alone is #f4f8fe on #ffffff, 1.04:1, invisible. The
+     state's real carrier is the confirm row that slides in below; this stroke is
+     reinforcement, not the distinction. */
+  .autonomy-segment--armed:focus-visible {
+    box-shadow: inset 0 0 0 1px var(--ds-stream);
+  }
+
   /* ---- Current-mode caption + blurb ---- */
   .autonomy-mode-summary {
     display: flex;
@@ -675,7 +729,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--ds-sp-2);
-    overflow: hidden;
+    /* ds-2fp: no `overflow: hidden` here. It cost the confirm button 4px of ring
+       on its left and bottom, Cancel 4px on its bottom, and the reason input 4px
+       on its right — the row has no padding, so every child is flush with the
+       clip edge. It was only ever needed for `transition:slide`, and Svelte's
+       slide emits `overflow: hidden` itself for the duration of the animation,
+       so the static rule bought nothing at rest and broke the ring permanently. */
   }
   .autonomy-confirm-hint {
     margin: 0;

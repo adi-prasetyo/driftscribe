@@ -488,6 +488,19 @@
     list-style: none;
     background: var(--ds-neutral-surface);
   }
+  /* ds-2fp: the worst instance found. This summary fills its <details> exactly,
+     and `.cap-workload` is overflow:hidden (it rounds this filled row against
+     the container's border), so the global outward ring was cut on ALL FOUR
+     sides — a keyboard user tabbing the workload list saw nothing at all.
+     Same remedy as the autonomy dial: put the ring inside. --ds-neutral-surface
+     (#efeeea) reads 4.854:1 against --ds-stream-ink, so the on-light precondition
+     holds; contrast.test.ts proves it for every consumer of the token, not just
+     the first one. */
+  .cap-workload__summary:focus-visible {
+    outline: var(--ds-ring-inset-on-light);
+    outline-offset: -3px;
+    box-shadow: none;
+  }
   .cap-workload__summary::-webkit-details-marker {
     display: none;
   }

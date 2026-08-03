@@ -250,7 +250,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--ds-sp-2);
-    overflow: hidden;
+    /* ds-2fp: no `overflow: hidden` — same defect as AutonomyPill's confirm row.
+       The row has no padding, so its buttons sit flush against the clip edge and
+       lose ring. `transition:slide` supplies its own `overflow: hidden` for the
+       length of the animation (svelte/src/transition/index.js), so the static
+       rule only ever cost the ring. */
   }
   .pause-confirm-hint {
     margin: 0;
