@@ -68,6 +68,19 @@ export interface DeskPendingRollback {
    * iac arms do not have that property — see `DeskPendingIac.traceId`.
    */
   traceId: string | null;
+  /**
+   * The lane this selection came from did not refresh in the last completed
+   * cycle (ds-jk9), so what the card shows is the last thing SEEN, not what is
+   * currently true. The card still renders — identity survives a retained value
+   * — but the component must withhold the live CTA and every present-tense
+   * claim about the item's state.
+   *
+   * Stamped by `deskModel`, never by the selectors: the selectors decide WHAT
+   * shows, `deskModel` knows which RULE fired and therefore which lane to
+   * blame. The selectors return `Omit<…, 'stale'>` so the compiler proves no
+   * construction site can skip the stamp.
+   */
+  stale: boolean;
 }
 
 /**
@@ -114,6 +127,9 @@ export interface DeskPendingIac {
    * reads as evidence-free.
    */
   traceId: string | null;
+  /** See `DeskPendingRollback.stale`. Both arms carry it so the component can
+   *  read `model.stale` without first narrowing on `source`. */
+  stale: boolean;
 }
 
 export type DeskPending = DeskPendingRollback | DeskPendingIac;
@@ -153,6 +169,17 @@ export interface DeskUnresolved {
   /** `failed` — definitely did not apply. `outcome_unknown` — may have applied;
    *  we could not confirm. Drives which of the two copy variants renders. */
   phase: 'failed' | 'outcome_unknown';
+  /**
+   * See `DeskPendingRollback.stale`. This card has no CTA, which is NOT a
+   * defence: its entire content is a verdict, and its own suppression rule is
+   * an absence claim over the same lane. `selectUnresolvedRollback` retires an
+   * old failure once a LATER rollback demonstrably applied
+   * (`newestAppliedAttempt`), so a stale decisions list that omits that later
+   * success leaves a resolved failure standing as the current open loop.
+   * Separately, `outcome_unknown` is genuinely nonterminal — `/reconcile` can
+   * still promote it — so even the softer of the two phases can go false.
+   */
+  stale: boolean;
 }
 
 export interface DeskResting {
@@ -227,6 +254,26 @@ export interface DeskModelInput {
    * job precisely because this module has no view of where they came from.
    */
   degraded?: boolean;
+  /**
+   * Did the last completed cycle fail to refresh THIS lane (ds-jk9)? Both
+   * default to false, so every pre-existing caller keeps its current meaning.
+   *
+   * Distinct from `degraded` above, which answers "may the ABSENCE of a card be
+   * wrong". These answer the narrower question the CTA depends on: "may the
+   * card I am about to make actionable be wrong". Only the lane that produced
+   * that card can answer it.
+   *
+   * The asymmetry runs ONE WAY and is easy to state backwards. A `/decisions`
+   * failure invalidates EVERY pending selection here, rule 2a's listing row
+   * included — that row is admitted only when `resolvedPrs`, derived from
+   * `decisions`, does not already contain it. What per-lane gating buys is the
+   * converse: an `/infra/pending-approvals` failure says nothing about a
+   * rollback (rule 1), a decisions-derived IaC card (rule 2b) or an unresolved
+   * outcome (rule 2.5), and collapsing to `degraded` would withdraw all three
+   * every time the GitHub listing blinked.
+   */
+  approvalsStale?: boolean;
+  decisionsStale?: boolean;
 }
 
 /** Parses an ISO timestamp to epoch-ms for ORDERING purposes only (picking
@@ -281,7 +328,7 @@ function selectPendingRollback(
   now: number,
   origin: string | undefined,
   locale: string | undefined,
-): DeskPendingRollback | null {
+): Omit<DeskPendingRollback, 'stale'> | null {
   let best: { decision: Decision; href: string; ts: number } | null = null;
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
@@ -355,7 +402,7 @@ function selectPendingIac(
   decisions: ReadonlyArray<Decision | null | undefined>,
   resolvedPrs: ReadonlySet<number>,
   locale: string | undefined,
-): DeskPendingIac | null {
+): Omit<DeskPendingIac, 'stale'> | null {
   for (const approval of pendingApprovals) {
     if (approval == null) continue; // defensive: malformed array element, skip not throw
     if (resolvedPrs.has(approval.pr_number)) continue; // ds-0rm: already applied, stale cache row
@@ -398,7 +445,7 @@ function selectPendingIacFromDecisions(
   decisions: ReadonlyArray<Decision | null | undefined>,
   supersededIds: ReadonlySet<string>,
   locale: string | undefined,
-): DeskPendingIac | null {
+): Omit<DeskPendingIac, 'stale'> | null {
   let best: { decision: Decision; href: string; prNumber: number; ts: number } | null = null;
   for (const decision of decisions) {
     if (decision == null) continue; // defensive: malformed array element, skip not throw
@@ -521,7 +568,7 @@ function selectStamped(
 function selectUnresolvedRollback(
   decisions: ReadonlyArray<Decision | null | undefined>,
   now: number,
-): DeskUnresolved | null {
+): Omit<DeskUnresolved, 'stale'> | null {
   let best: {
     decision: Decision;
     phase: 'failed' | 'outcome_unknown';
@@ -613,8 +660,16 @@ export function deskModel(input: DeskModelInput): DeskModel {
   const decisions = input.decisions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
 
+  // ds-jk9. Each rule reads a specific lane, and that decides which retained-lane
+  // flag can falsify its result. Stamped HERE rather than inside the selectors:
+  // they decide WHAT shows, this function knows which RULE fired and therefore
+  // which lane to blame, and keeping the two apart stops a future rule from
+  // silently inheriting the wrong lane's freshness.
+  const approvalsStale = input.approvalsStale === true;
+  const decisionsStale = input.decisionsStale === true;
+
   const rollback = selectPendingRollback(decisions, now, input.origin, input.locale);
-  if (rollback) return rollback;
+  if (rollback) return { ...rollback, stale: decisionsStale };
 
   // TWO sets for TWO different questions, each computed once (ds-dzd). resolvedPrs
   // is PR-wide and goes ONLY to the listing rule 2a, which has no generation
@@ -625,13 +680,21 @@ export function deskModel(input: DeskModelInput): DeskModel {
   const supersededIds = supersededWaitingIds(decisions);
 
   const iacFromListing = selectPendingIac(pendingApprovals, decisions, resolvedPrs, input.locale);
-  if (iacFromListing) return iacFromListing;
+  // BOTH lanes. The listing supplies the row, but the row is only ADMITTED
+  // because `resolvedPrs` — derived from `decisions` — does not already contain
+  // it, and that is an absence claim over the decisions lane. A fresh listing
+  // does not rescue it: ApprovalDesk goes on to derive this card's whole
+  // Approve/Continue/Apply state from `decisions` as well.
+  if (iacFromListing) return { ...iacFromListing, stale: approvalsStale || decisionsStale };
 
   const iacFromDecisions = selectPendingIacFromDecisions(decisions, supersededIds, input.locale);
-  if (iacFromDecisions) return iacFromDecisions;
+  if (iacFromDecisions) return { ...iacFromDecisions, stale: decisionsStale };
 
+  // No CTA on this one, which is not a defence — its whole content is a verdict,
+  // and `selectUnresolvedRollback`'s own suppression rule (`newestAppliedAttempt`)
+  // is an absence claim over the same lane. See `DeskUnresolved.stale`.
   const unresolved = selectUnresolvedRollback(decisions, now);
-  if (unresolved) return unresolved;
+  if (unresolved) return { ...unresolved, stale: decisionsStale };
 
   const stamped = selectStamped(decisions, now);
   if (stamped) return stamped;

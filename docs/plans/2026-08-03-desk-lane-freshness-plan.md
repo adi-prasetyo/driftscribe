@@ -29,11 +29,18 @@ CTA, and it must not restate a present-tense claim about that item's state.
 ## Why per-lane and not the existing aggregate `degraded`
 
 `deskModel` already takes `degraded`, and hoisting the existing check above the selection
-rules would be a two-line fix. It is the wrong fix: `degraded` is `!p.ok || !d.ok ||
-p.value.degraded`, so a `/decisions` failure alone would suppress a perfectly fresh
-listing-derived approval, and vice versa. Coarse gating throws away valid work from the
-lane that is still good. `OverviewState.approvalsStale`'s own doc comment already argues
-this exact point for the estate; this plan applies it to the hero.
+rules would be a two-line fix. It is the wrong fix — but **the asymmetry runs one way, and
+the first draft of this plan had it backwards** (Codex review, finding 2).
+
+A `/decisions` failure invalidates **every** pending selection the hero can make, the
+listing-derived one included. So per-lane gating is NOT here to spare rule 2a from a
+decisions outage. It is here so the converse holds: a **pending-approvals** failure says
+nothing about a rollback (rule 1) or a decisions-derived IaC card (rule 2b), and gating
+those on `degraded` — which fires for either lane — would withdraw two perfectly sound
+cards every time the GitHub listing blinked.
+
+`OverviewState.approvalsStale`'s own doc comment argues the same shape for the estate; this
+plan applies it to the hero, in the one direction that is actually true here.
 
 ## Lane → rule map
 
@@ -45,7 +52,7 @@ determines which flag makes its result stale:
 | 1 | `selectPendingRollback` | `decisions` | `decisionsStale` |
 | 2a | `selectPendingIac` | `pendingApprovals` + `resolvedPrs` (from `decisions`) | `approvalsStale \|\| decisionsStale` |
 | 2b | `selectPendingIacFromDecisions` | `decisions` | `decisionsStale` |
-| 2.5 | `selectUnresolvedRollback` | `decisions` | out of scope — see below |
+| 2.5 | `selectUnresolvedRollback` | `decisions` | `decisionsStale` |
 | 3 | `selectStamped` | `decisions` | never — terminal facts are monotonic |
 
 **Rule 2a takes BOTH flags.** It is tempting to call it "the approvals lane", but its
@@ -59,13 +66,21 @@ monotonic: it cannot become un-applied, so retaining it asserts nothing that can
 The same argument covers the estate's applied+merged reconciliation, which is why #289 left
 it alone too.
 
-**Rule 2.5 (`unresolved`) is deliberately out of scope,** and this is a judgement call worth
-stating rather than silently taking. `failed` and `outcome_unknown` ARE verdicts, and a
-retained `failed` could in principle be a rollback that a later `/reconcile` settled. But
-the card carries no CTA, both variants already read as open loops rather than resolutions,
-and `outcome_unknown` is *already* the "we cannot confirm" state — so a freshness overlay on
-top of it would be an admission of uncertainty about an admission of uncertainty. Noted in
-the bead, not built here.
+**Rule 2.5 (`unresolved`) is IN scope** — the first draft excluded it, and Codex was right
+that the exclusion does not hold. The argument I gave for excluding it was also factually
+wrong, which is worth recording: I claimed a retained `failed` might be a rollback a later
+`/reconcile` settled, but terminal phases are immutable
+(`workers/rollback/main.py:1043`). The real defect is elsewhere and is worse:
+
+`selectUnresolvedRollback` suppresses an old failure via `newestAppliedAttempt`
+(`desk.ts:531`, `:595`) — *"a later success supersedes an earlier failure"*. That is an
+**absence claim over `decisions`**, exactly like rule 2a's `resolvedPrs`. A stale list can
+omit the later successful rollback, so the old failure keeps rendering as the CURRENT open
+loop after the estate has actually recovered. Separately, `outcome_unknown` genuinely is
+nonterminal and `/reconcile` can promote it (`workers/rollback/main.py:1025`).
+
+`DeskUnresolved` therefore gains `stale` too, and its copy gets the same last-seen
+treatment. Having no CTA is not a defence: the card's whole content is a verdict.
 
 ---
 
@@ -203,6 +218,11 @@ future rule from silently inheriting the wrong lane.
 
   const iacFromDecisions = selectPendingIacFromDecisions(decisions, supersededIds, input.locale);
   if (iacFromDecisions) return { ...iacFromDecisions, stale: decisionsStale };
+
+  // Rule 2.5. No CTA, but its whole content is a verdict, and its suppression
+  // rule (`newestAppliedAttempt`) is an absence claim over the same lane.
+  const unresolved = selectUnresolvedRollback(decisions, now);
+  if (unresolved) return { ...unresolved, stale: decisionsStale };
 ```
 
 Have the three selectors keep returning their existing shapes minus `stale` (use
@@ -235,6 +255,8 @@ claiming under a failed refresh:
 - `desk.pending.iacMerged.who` "An approved infrastructure change **is waiting to be applied**"
 - `desk.pending.iacView.who` "An infrastructure change **needs attention**"
 - all three `*.headlineFallback` strings
+- `desk.pending.notifyFailed` "...it **has been waiting here** unannounced." (Codex finding
+  3 — missed in the first draft, and it renders on its own path, independent of the CTA)
 
 **Step 1: Write the failing tests**
 
@@ -259,11 +281,16 @@ whatever copy it finds. Add the negative:
 
 ```ts
   const card = screen.getByTestId('approval-desk-pending');
-  expect(card.textContent).not.toMatch(/waiting for your|needs attention|is proposing/i);
+  expect(card.textContent).not.toMatch(
+    /waiting for your|waiting to be applied|needs attention|is proposing|is approved/i,
+  );
 ```
 
-and the JA mirror (`待っています|確認が必要`), because a locale that keeps the claim is the
-same defect in the language the pitch is delivered in.
+and the JA mirror (`待っています|確認が必要|承認済み|提案しています`), because a locale that
+keeps the claim is the same defect in the language the pitch is delivered in. Codex finding
+5: the first draft's regexes covered only three of the six asserting variants, which would
+have let `iacMerged` ("is approved and waiting to be applied") through the negative
+assertion entirely.
 
 **Step 2: Run, confirm failure**
 
@@ -271,9 +298,15 @@ same defect in the language the pitch is delivered in.
 
 - Props: `decisionsStale = false`, `approvalsStale = false`, both optional booleans, both
   passed into the `deskModel(...)` call at line ~115.
-- `pendingWhoKey(cta)` gains a stale arm returning `desk.pending.stale.who`. Simpler and
-  safer than a fourth CTA kind: `pendingIacCtaState` is load-bearing for the ds-0rm
-  never-lose-the-gate invariant and must not learn about freshness.
+- **The byline stale-check must sit ABOVE the source split, not inside `pendingWhoKey`.**
+  Codex finding 3: the rollback arm never calls that helper — the template has a direct
+  ternary (`model.source === 'rollback' ? ... : $t(pendingWhoKey(cta))`), so a stale arm
+  added inside the helper would silently miss every rollback card. One `{#if model.stale}`
+  around the whole byline. `pendingIacCtaState` still must not learn about freshness: it is
+  load-bearing for the ds-0rm never-lose-the-gate invariant.
+- `notifyFailed`: suppress on a stale card. Its claim is "this has been sitting here
+  unannounced", which is precisely a current-waiting assertion, and the stale notice below
+  it already tells the operator the card may be resolved.
 - `pendingHeadline(m, tf, cta)`: when `m.stale`, prefer the PR title if there is one
   (identity), else `desk.pending.stale.headlineFallback`; for `source === 'rollback'`, use
   `desk.pending.stale.rollbackHeadline`.
@@ -288,13 +321,19 @@ New EN copy (no em dashes — public surface):
 
 ```
 'desk.pending.stale.who': 'Last seen waiting for you',
-'desk.pending.stale.headlineFallback': 'Infrastructure change PR #{pr} was waiting for you when the record was last read.',
-'desk.pending.stale.rollbackHeadline': 'A rollback proposal was waiting for you when the record was last read.',
-'desk.pending.staleNotice': 'The decision record could not be re-read just now, so this may already be resolved. Open the approval page to see where it actually stands.',
+'desk.pending.stale.headlineFallback': 'Infrastructure change PR #{pr} was waiting for you when this was last checked.',
+'desk.pending.stale.rollbackHeadline': 'A rollback proposal was waiting for you when this was last checked.',
+'desk.pending.staleNotice': "This card's current status could not be refreshed just now, so it may already be resolved. Open the approval page to see where it actually stands.",
+'desk.unresolved.stale.detail': 'Last checked',
+'desk.unresolved.staleNotice': "This outcome could not be re-checked just now, so a later rollback may already have settled it.",
 ```
 
-Past tense throughout, and it names the evidence ("when the record was last read") rather
-than the system state. JA mirrors it: 「最後に確認した時点で…」.
+Past tense throughout, naming the evidence rather than the system state.
+
+**The notice must be lane-NEUTRAL** (Codex finding 3): the first draft said "the decision
+record could not be re-read", which is simply false when only `/infra/pending-approvals`
+failed. One card can be stale from either lane, and the copy cannot name a lane it does not
+know. JA mirrors it: 「最後に確認した時点で…」.
 
 **Step 4: Run tests + `npm run check`**
 
@@ -308,15 +347,27 @@ than the system state. JA mirrors it: 「最後に確認した時点で…」.
 - Modify: `frontend/src/App.svelte` (the `<ApprovalDesk>` mount, ~2258)
 - Test: `frontend/tests/unit/App.test.ts`
 
-**Step 1: Write the failing test.** This task has its own test *because of the #289 round-3
-finding*: dropping a hand-threaded prop at the parent reddened NOTHING across 1866 tests —
-component tests supply the prop themselves and are structurally blind to `App` failing to,
-and an optional prop passes `svelte-check` when omitted. So:
+**Step 1: Write the failing tests.** This task has its own tests *because of the #289
+round-3 finding*: dropping a hand-threaded prop at the parent reddened NOTHING across 1866
+tests — component tests supply the prop themselves and are structurally blind to `App`
+failing to, and an optional prop passes `svelte-check` when omitted.
+
+**TWO scenarios, not one** (Codex finding 4). One decisions-failure test cannot
+mutation-prove both props: deleting `approvalsStale` at the mount would not redden it. And
+each scenario must be **good → then failed**, because a first-cycle failure leaves the
+initial empty sentinel with no retained card to show, so no stale notice could appear and
+the test would pass for the wrong reason:
 
 ```ts
-it('App hands the desk both lane-freshness flags from the store', async () => {
-  // /decisions 500s, everything else fine
-  ...
+it('App hands the desk decisionsStale from the store', async () => {
+  // cycle 1: a decisions-derived pending card lands
+  // cycle 2: /decisions 500s, pending + graph fine
+  await waitFor(() => expect(screen.getByTestId('approval-desk-stale-notice')).toBeTruthy());
+});
+
+it('App hands the desk approvalsStale from the store', async () => {
+  // cycle 1: a LISTING-derived pending card lands (decisions empty)
+  // cycle 2: /infra/pending-approvals 500s, decisions + graph fine
   await waitFor(() => expect(screen.getByTestId('approval-desk-stale-notice')).toBeTruthy());
 });
 ```
@@ -329,9 +380,10 @@ Driven through App's real fetch mock, not by passing props.
 `approvalsStale={$overview.approvalsStale}` to the mount.
 
 **Step 4: Verify by injection** (mandatory, not optional): delete each of the two added
-lines in turn, re-run the suite, confirm this test reddens for both. Restore from a
-scratchpad copy, never `git checkout` — a checkout on a file holding uncommitted work
-destroyed a round of #289.
+lines in turn, re-run the suite, confirm the MATCHING test reddens and — the point of
+having two — that each prop has a test that fails only for it. Restore from a scratchpad
+copy, never `git checkout`; a checkout on a file holding uncommitted work destroyed a round
+of #289.
 
 **Step 5: Commit** — `feat(ui): App threads lane freshness to the desk (ds-jk9)`
 

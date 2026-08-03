@@ -1957,3 +1957,185 @@ describe('deskModel — a chat-initiated rollback row (ds-y5i)', () => {
     expect(deskModel({ decisions: [d], pendingApprovals: [], now: NOW, origin: ORIGIN }).kind).toBe('pending');
   });
 });
+
+// ds-jk9 / ds-smr. overviewStore RETAINS a lane's previous value when its fetch
+// fails, so a card the desk selects may describe a world that has since moved
+// on: a rollback approval whose single-use token was spent, an IaC PR that has
+// since closed or merged, a failure a later rollback already superseded.
+//
+// The rule, from #289 round 5: identity survives a retained value; a verdict
+// does not. deskModel still SELECTS the card — hiding it would trade a false
+// claim for a false all-clear — and stamps it `stale` so the component can
+// withhold the live CTA and the present-tense copy.
+//
+// Which flag applies is decided by which LANE the winning rule read. The
+// asymmetry runs one way: /decisions invalidates every pending selection
+// (rule 2a's listing row is admitted only by an absence check over decisions),
+// while a pending-approvals failure leaves rules 1, 2b and 2.5 untouched.
+describe('deskModel — lane freshness (ds-jk9, ds-smr)', () => {
+  const usedRollback = () =>
+    rollbackDecision({
+      decision_id: 'rb-fail',
+      approval: { approval_url: '/approvals/rb-fail?t=x', status: 'used', phase: 'failed' },
+    });
+
+  it('rule 1 (rollback) is stale when the decisions lane failed', () => {
+    const model = deskModel({
+      decisions: [rollbackDecision()],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      decisionsStale: true,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending') expect(model.stale).toBe(true);
+  });
+
+  it('rule 1 is NOT stale when only the approvals lane failed', () => {
+    // The whole reason these are per-lane rather than the aggregate `degraded`:
+    // a GitHub listing outage says nothing about a rollback read from /decisions.
+    const model = deskModel({
+      decisions: [rollbackDecision()],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      approvalsStale: true,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending') expect(model.stale).toBe(false);
+  });
+
+  it('rule 2a (listing) is stale when the approvals lane failed', () => {
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [pendingIac()],
+      now: NOW,
+      origin: ORIGIN,
+      approvalsStale: true,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.provenance.kind).toBe('listing');
+      expect(model.stale).toBe(true);
+    }
+  });
+
+  it('rule 2a is ALSO stale when only the decisions lane failed', () => {
+    // The finding a reviewer is most likely to doubt, so it gets its own test.
+    // selectPendingIac admits a listing row only when resolvedPrs — derived
+    // from `decisions` — does NOT contain it. That is an absence claim over the
+    // decisions lane, so a stale decisions list can leave the row admitted
+    // after a decision resolved it. The listing being fresh does not save it.
+    const model = deskModel({
+      decisions: [],
+      pendingApprovals: [pendingIac()],
+      now: NOW,
+      origin: ORIGIN,
+      decisionsStale: true,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.provenance.kind).toBe('listing');
+      expect(model.stale).toBe(true);
+    }
+  });
+
+  it('ds-smr: a retained waiting_for_rebake row is still selected, but not actionable', () => {
+    // The bead's own four-step scenario:
+    //   1. the snapshot holds a waiting_for_rebake IaC row
+    //   2. the server records its terminal outcome
+    //   3. the next /decisions fails; pending-approvals returns empty
+    //   4. the retained waiting row still wins the selection
+    // It must still WIN (hiding it would be a false all-clear) and must not
+    // carry a live Apply.
+    const waiting = iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' });
+    const model = deskModel({
+      decisions: [waiting],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      settled: true,
+      degraded: true,
+      decisionsStale: true,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending' && model.source === 'iac') {
+      expect(model.provenance.kind).toBe('decision');
+      expect(model.stale).toBe(true);
+    }
+  });
+
+  it('rule 2b is NOT stale when only the approvals lane failed', () => {
+    const waiting = iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' });
+    const model = deskModel({
+      decisions: [waiting],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      approvalsStale: true,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending') expect(model.stale).toBe(false);
+  });
+
+  it('rule 2.5 (unresolved) is stale when the decisions lane failed', () => {
+    // No CTA here, but the card's whole content is a verdict, and its own
+    // suppression rule is an absence claim over the same lane:
+    // `newestAppliedAttempt` retires an old failure once a LATER rollback
+    // applied. A stale list can omit that later success, leaving a resolved
+    // failure standing as the current open loop.
+    const model = deskModel({
+      decisions: [usedRollback()],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      decisionsStale: true,
+    });
+    expect(model.kind).toBe('unresolved');
+    if (model.kind === 'unresolved') expect(model.stale).toBe(true);
+  });
+
+  it('rule 2.5 is NOT stale when only the approvals lane failed', () => {
+    const model = deskModel({
+      decisions: [usedRollback()],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      approvalsStale: true,
+    });
+    expect(model.kind).toBe('unresolved');
+    if (model.kind === 'unresolved') expect(model.stale).toBe(false);
+  });
+
+  it('rule 3 (stamped) carries no freshness field at all — terminal facts are monotonic', () => {
+    // An applied decision cannot become un-applied, so retaining it asserts
+    // nothing that can go false. Giving it a `stale` bit would invite a future
+    // reader to hedge a fact that needs no hedging.
+    const applied = iacDecision({
+      apply_status: 'applied',
+      applied_at: new Date(NOW - 60_000).toISOString(),
+    });
+    const model = deskModel({
+      decisions: [applied],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+      decisionsStale: true,
+      approvalsStale: true,
+    });
+    expect(model.kind).toBe('stamped');
+    expect('stale' in model).toBe(false);
+  });
+
+  it('defaults to fresh when neither flag is supplied', () => {
+    // Every pre-existing caller and test keeps its current meaning.
+    const model = deskModel({
+      decisions: [rollbackDecision()],
+      pendingApprovals: [],
+      now: NOW,
+      origin: ORIGIN,
+    });
+    expect(model.kind).toBe('pending');
+    if (model.kind === 'pending') expect(model.stale).toBe(false);
+  });
+});
