@@ -232,6 +232,14 @@
     overflow-y: auto;
     min-height: 0;
     padding: var(--ds-sp-4) var(--ds-sp-5) var(--ds-sp-5);
+    /* ds-2fp: scrollIntoView aligns a focused row's BORDER box, not its ring, so
+       a row at the scroll boundary lost the outer 4px of its focus ring — clipped
+       here and again by .modal__panel. Padding does not help: overflow clips at
+       the PADDING box, which is outside the padding. scroll-padding insets the
+       snapport itself, so the browser leaves room for the ring.
+       4px is --ds-ring's widest spread; not tokenised because contrast.test.ts
+       pins that ring's spreads to the literals [2, 4]. */
+    scroll-padding: 4px;
   }
 
   @keyframes modal-fade {

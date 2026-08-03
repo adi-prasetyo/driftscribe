@@ -213,6 +213,25 @@
      AutonomyPill's segmented control for a pre-existing instance. */
   --ds-ring: 0 0 0 2px var(--ds-surface), 0 0 0 4px var(--ds-stream-ink);
 
+  /* Inset variant (ds-2fp), for a control that sits flush inside a clipping
+     container — today only AutonomyPill's segmented dial, whose `overflow:
+     hidden` removed 4px of the ring above on every edge it touched.
+
+     ONE tone, where --ds-ring needs two. That is not an inconsistency: --ds-ring
+     is drawn OUTSIDE, so it abuts both the page ground and the control fill, and
+     the palette has controls at both ends of the ramp. Drawn INSIDE a control
+     whose every possible fill is light, one dark tone clears the floor against
+     all of them — measured against every fill a segment can take: surface
+     #ffffff 5.635, surface-2 #f6f5f1 5.165, stream-surface #ecf3fe 5.050,
+     armed-over-white #f4f8fe 5.288, and the container's --ds-border-strong
+     #d6d2ca 3.738. Floor is 3:1 (WCAG 1.4.11); worst is border-strong.
+
+     THE NAME CARRIES THE PRECONDITION ON PURPOSE. `--ds-ring-inset` would invite
+     reuse on a dark control, where a single dark tone is invisible and the whole
+     argument above collapses. tests/unit/contrast.test.ts pins the premise (every
+     substrate is light), not merely these numbers. */
+  --ds-ring-inset-on-light: 2px solid var(--ds-stream-ink);
+
   /* --- Motion ------------------------------------------------------------ */
   --ds-dur-fast: 120ms;
   --ds-dur: 220ms;        /* default transition duration */

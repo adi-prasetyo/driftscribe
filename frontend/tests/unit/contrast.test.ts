@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { colorTokens, contrastOver, contrastRatio, readToken, resolveColor, shadowLayers } from './contrast';
+import { colorTokens, composite, contrastOver, contrastRatio, readToken, resolveColor, shadowLayers } from './contrast';
 
 // ---------------------------------------------------------------------------
 // Contrast floors, enforced (ds-dce, ds-16e).
@@ -349,5 +349,130 @@ describe('instrument band numerals', () => {
       anonymous,
       `rule subjects that do not name an instrument-band class:\n  ${anonymous.join('\n  ')}`
     ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The INSET ring's premise (ds-2fp).
+//
+// --ds-ring-inset-on-light is a SINGLE tone, where --ds-ring above needs two.
+// That is only sound because it is drawn inside a control whose every possible
+// fill is light. The numbers are not the fragile part — the premise is. So this
+// sweeps every background an autonomy segment can actually take and fails if any
+// of them stops being light, or if one appears in a form it cannot resolve.
+// ---------------------------------------------------------------------------
+
+describe('inset focus ring (autonomy segmented dial)', () => {
+  let pill = '';
+  let style = '';
+
+  beforeAll(() => {
+    pill = readFileSync(resolve(srcDir, 'components/AutonomyPill.svelte'), 'utf8');
+    style = /<style[^>]*>([\s\S]*)<\/style>/.exec(pill)?.[1] ?? '';
+  });
+
+  /** Every `selector { ... }` pair in the component's scoped styles. */
+  const rules = (css: string) =>
+    [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+      selector: m[1].trim().replace(/\s+/g, ' '),
+      body: m[2],
+    }));
+
+  const declaration = (body: string, prop: string) =>
+    new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`, 'i').exec(body)?.[1].trim() ?? null;
+
+  /** The last compound of a selector — what the rule actually styles. */
+  const subject = (selector: string) => selector.split(',')[0].trim().split(/\s+/).pop() ?? '';
+
+  it('declares the token with the exact grammar the component relies on', () => {
+    // Width and style are load-bearing: the component pairs this with
+    // outline-offset -3px, and both numbers were chosen against the container's
+    // r=4px corner arc and the 1px armed stroke it must not cover.
+    const raw = readToken(tokens, '--ds-ring-inset-on-light');
+    expect(raw).toBe('2px solid var(--ds-stream-ink)');
+  });
+
+  it('is drawn on nothing but light, which is the whole reason one tone suffices', () => {
+    const ink = resolveColor(tokens, /var\(\s*(--[\w-]+)\s*\)/.exec(readToken(tokens, '--ds-ring-inset-on-light'))![0]);
+
+    // Backgrounds that are not a plain colour depend on what is BEHIND them, so
+    // a declaration parser cannot resolve them alone. Each is resolved here
+    // explicitly, against a value also read from the source rather than assumed.
+    const popoverBg = resolveColor(
+      tokens,
+      declaration(rules(style).find((r) => subject(r.selector) === '.autonomy-popover')!.body, 'background')!,
+    );
+    const pillBg = resolveColor(
+      tokens,
+      declaration(rules(style).find((r) => subject(r.selector) === '.autonomy-segments__pill')!.body, 'background')!,
+    );
+
+    const substrates: { where: string; subject: string; hex: string }[] = [];
+    for (const rule of rules(style)) {
+      const subj = subject(rule.selector);
+      if (!/^\.autonomy-segment(--|:|$)/.test(subj)) continue;
+      const bg = declaration(rule.body, 'background') ?? declaration(rule.body, 'background-color');
+      if (!bg) continue;
+
+      if (bg === 'transparent') {
+        // `.autonomy-segments--measured .autonomy-segment--active` goes
+        // transparent so the sliding pill shows through. The pill is what the
+        // ring is actually drawn over.
+        substrates.push({ where: `${rule.selector} (pill shows through)`, subject: subj, hex: pillBg });
+        continue;
+      }
+      const mix = /^color-mix\(\s*in srgb\s*,\s*(var\(\s*--[\w-]+\s*\)|#[0-9a-fA-F]{3,8})\s+(\d+)%\s*,\s*transparent\s*\)$/.exec(bg);
+      if (mix) {
+        // A translucent fill composites over the popover behind it.
+        substrates.push({
+          where: `${rule.selector} (over the popover)`,
+          subject: subj,
+          hex: composite(resolveColor(tokens, mix[1]), Number(mix[2]) / 100, popoverBg),
+        });
+        continue;
+      }
+      // Anything else must resolve to an opaque colour, or resolveColor throws.
+      // Failing closed is the point: a background form this test does not
+      // understand must not be silently dropped from the sweep.
+      substrates.push({ where: rule.selector, subject: subj, hex: resolveColor(tokens, bg) });
+    }
+
+    // Counting is not coverage, and neither is substring matching. Two failed
+    // versions of this check, both caught by injection:
+    //   "at least four substrates" — renaming `--active` out of the sweep still
+    //   left four, so a state vanished from the premise with the test green.
+    //   then `selector.includes('--active')` — which the HOVER rule satisfies,
+    //   because its selector is `.autonomy-segment:not(.autonomy-segment--active)
+    //   :not(--armed):not(:disabled):hover`. The modifier appears inside a
+    //   `:not()`, naming the state it EXCLUDES.
+    // So: match the rule's SUBJECT with `:not(...)` stripped out — what the rule
+    // actually styles, not what it happens to mention.
+    const styledStates = substrates.map((s) => s.subject.replace(/:not\([^)]*\)/g, ''));
+    for (const required of ['--active', '--armed', ':hover']) {
+      expect(
+        styledStates.join(' | '),
+        `no rule STYLES the segment's "${required}" state — a renamed state leaves the premise unproven`,
+      ).toContain(required);
+    }
+    // Plus the resting segment itself, whose subject carries no modifier at all.
+    expect(
+      styledStates.some((s) => s === '.autonomy-segment'),
+      'no background found for the resting `.autonomy-segment` itself',
+    ).toBe(true);
+
+    const failures = substrates
+      .map((s) => ({ ...s, ratio: contrastRatio(ink, s.hex) }))
+      .filter((s) => s.ratio < FLOOR)
+      .map((s) => `${s.where} -> ${s.hex} = ${s.ratio.toFixed(3)}:1`);
+    expect(failures, `inset ring below ${FLOOR}:1 on a segment fill\n${failures.join('\n')}`).toEqual([]);
+  });
+
+  it('also clears the floor against the container border it sits beside', () => {
+    // The outermost pixel of the band sits next to the segment separators and
+    // the container's own border, both --ds-border-strong. This is the WORST
+    // adjacency of the set, so it is asserted separately rather than buried.
+    const ink = resolveColor(tokens, 'var(--ds-stream-ink)');
+    const border = resolveColor(tokens, 'var(--ds-border-strong)');
+    expect(contrastRatio(ink, border)).toBeGreaterThanOrEqual(FLOOR);
   });
 });
