@@ -673,18 +673,40 @@ describe('createOverviewStore — decisionsStale (ds-jk9)', () => {
     s.destroy();
   });
 
-  it('clears on the next successful cycle, while the retained list is replaced', async () => {
-    let fail = true;
+  it('retains the previous list while stale, then replaces it when the lane recovers', async () => {
+    // Three cycles, because the RETENTION is the premise of the whole bead and
+    // the first version of this test never established it: it failed from cycle
+    // one, so there was no previous list to retain, and it asserted only the
+    // flag while its name claimed something about `decisions`.
+    const FIRST = [{ decision_id: 'd-1' }];
+    const SECOND = [{ decision_id: 'd-2' }];
+    let stage: 'first' | 'fail' | 'second' = 'first';
     const { fn } = makeCall({
-      decisions: () => (fail ? res({}, 500) : res({ decisions: [] })),
+      decisions: () =>
+        stage === 'fail'
+          ? res({}, 500)
+          : res({ decisions: stage === 'first' ? FIRST : SECOND }),
     });
     const s = createOverviewStore(fn);
     await flush();
+    expect(get(s).decisionsStale).toBe(false);
+    expect(get(s).decisions).toEqual(FIRST);
+
+    // Failed refresh: the list is RETAINED — which is exactly why the desk
+    // needs the flag, since the retained rows are indistinguishable from fresh
+    // ones by inspection.
+    stage = 'fail';
+    await s.refresh();
+    await flush();
     expect(get(s).decisionsStale).toBe(true);
-    fail = false;
+    expect(get(s).decisions).toEqual(FIRST);
+
+    // Recovery replaces it and clears the flag — never latched.
+    stage = 'second';
     await s.refresh();
     await flush();
     expect(get(s).decisionsStale).toBe(false);
+    expect(get(s).decisions).toEqual(SECOND);
     s.destroy();
   });
 });
