@@ -239,20 +239,25 @@ describe('instrument band numerals', () => {
       const [, selector, body] = m;
       const subject = subjects(selector);
       if (!subject.some((s) => CONTAINS_NUMERAL.test(s))) continue;
-      const hitsNumeral = subject.some((s) => s.includes('instrument-band__num'));
-      const interactive = /:hover|:focus/.test(selector);
+      // Pseudo-class names are case-insensitive in CSS; this regex must be too,
+      // or `:HOVER` walks straight past the transient-color check below.
+      const interactive = /:hover|:focus/i.test(selector);
       const flag = (what: string) => offenders.push(`${selector.trim().split('\n').pop()} { ${what} }`);
 
       // Attenuating properties, case-insensitively and including vendor
-      // prefixes. Checked on the numeral ALWAYS (a base rule reading a custom
-      // property is half of the indirection trick) and on an ancestor only when
-      // interactive, since a resting ancestor opacity is not a hover fade.
-      if (hitsNumeral || interactive) {
-        for (const d of body.matchAll(/(?:^|[;{\s])(-[a-z]+-)?(opacity|filter|animation[\w-]*)\s*:\s*([^;]+)/gi)) {
-          const prop = `${d[1] ?? ''}${d[2]}`;
-          const value = d[3].trim();
-          if (!(/^opacity$/i.test(prop) && Number(value) === 1)) flag(`${prop}: ${value}`);
-        }
+      // prefixes — on EVERY containing subject, interactive or not.
+      //
+      // An earlier version checked ancestors only when the selector carried
+      // :hover/:focus, reasoning that a resting ancestor opacity is not a hover
+      // fade. That reasoning is backwards: `.instrument-band__stat { opacity:
+      // .75 }` attenuates the numeral permanently rather than transiently,
+      // which is worse, and it evades the rest-contrast test too because that
+      // test measures the numeral's declared color and knows nothing about an
+      // ancestor's opacity.
+      for (const d of body.matchAll(/(?:^|[;{\s])(-[a-z]+-)?(opacity|filter|animation[\w-]*)\s*:\s*([^;]+)/gi)) {
+        const prop = `${d[1] ?? ''}${d[2]}`;
+        const value = d[3].trim();
+        if (!(/^opacity$/i.test(prop) && Number(value) === 1)) flag(`${prop}: ${value}`);
       }
       // The other half of the indirection: a custom property set under :hover
       // feeds any base rule that reads it, and neither rule reads as a fade.
