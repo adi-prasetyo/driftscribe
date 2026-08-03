@@ -1251,6 +1251,38 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     expect(refresh.mock.calls.length).toBe(callCount);
   });
 
+  it('the STALE view link arms the ladder too (ds-jk9)', async () => {
+    // Codex round 4 of #290. The stale card replaces four live CTAs, all of
+    // which armed the return ladder, with one view-only link — and the first
+    // version of that link dropped the arming, so an operator who acted on the
+    // approval page came back to a desk that would not converge until the 45s
+    // poll. The one branch-local regression this PR introduced.
+    //
+    // The stale card arguably needs it MORE than the live ones: it is shown
+    // precisely because the desk could not refresh, and the operator clicking
+    // through is the one most likely to resolve the item while away.
+    const refresh = vi.fn();
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        graph: GRAPH,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        onShowEstate: vi.fn(),
+        refresh,
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    await fireEvent.click(getByTestId('approval-desk-view-stale'));
+    expect(refresh).not.toHaveBeenCalled(); // arming alone does nothing yet
+
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(refresh.mock.calls.length).toBeGreaterThan(1);
+  });
+
   it('cannot stack: leaving and returning again mid-ladder does not start a second ladder', async () => {
     const refresh = vi.fn();
     const d = rollbackDecision();

@@ -632,7 +632,8 @@
               data-testid="approval-desk-view-stale"
               href={model.href}
               target="_blank"
-              rel="noopener">{$t('desk.pending.viewDetailsCta')}</a
+              rel="noopener"
+              onclick={armReturnLadder}>{$t('desk.pending.viewDetailsCta')}</a
             >
           {:else if pendingCta.kind === 'continue'}
             <a
