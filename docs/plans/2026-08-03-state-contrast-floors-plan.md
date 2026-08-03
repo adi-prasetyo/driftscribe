@@ -45,9 +45,9 @@ Three constraints are needed, not two:
 |---|---|
 | `--ds-navy` | ≥0.15110 — its darker branch is negative, so it forces the light side |
 | `--ds-ok` | ≥0.44033 **or** ≤0.00448 — navy eliminates the second branch |
-| `--ds-border-strong` | ≤0.18216 — its lighter branch exceeds 1 |
+| `--ds-border-strong` | ≤0.18218 — its lighter branch exceeds 1 |
 
-0.44033 > 0.18216. Citing `--ds-ok` alone would have been an incomplete proof:
+0.44033 > 0.18218. Citing `--ds-ok` alone would have been an incomplete proof:
 it leaves a near-black ring admissible, and only `--ds-navy` closes that branch.
 
 **Adopted — a two-tone ring.** Each layer takes the end of the ramp the other
@@ -72,9 +72,17 @@ is **3.56** against 3.069 for the best single color; over all 32 tokens it is
 declaration order, so a first layer with a *larger* spread covers the ones
 behind it: swapping the two spreads yields a ring whose blue band is entirely
 hidden, invisible on a white control, with every color assertion still passing.
-Caught only by pinning spreads, offsets, blur and `inset` — and the "outer" band
-is derived by widest spread, not by declaration position, so that assertion does
-not quietly depend on the geometry pin holding.
+And that is only the first of the family. A geometry check that *scans* for
+numbers accepts `1em` as smaller than `2px` while it is 16px, reads digits out
+of `calc()`, lets a bare number or `%` through (invalid CSS: the browser drops
+the declaration and renders no ring at all), ignores a fifth length, and accepts
+two colors in one layer. So each layer is matched **anchored** as four canonical
+px lengths plus exactly one color, empty entries and unbalanced parentheses are
+surfaced rather than discarded, and the spreads are pinned to exactly 2px/4px —
+bounds only invite the next near-miss (3.5px/4px leaves half a pixel of blue;
+100000px/100002px clears any minimum while putting the ring nowhere near the
+control). The "outer" band is derived by widest spread, not declaration
+position, so that assertion does not quietly depend on the geometry pin holding.
 
 Cost: a 4px ring where the old was 3px. `box-shadow` does not affect layout but
 IS clipped by an ancestor's `overflow: hidden` — `AutonomyPill`'s segmented
@@ -127,22 +135,31 @@ human to add each dead name, and a token that never existed was never on a list.
 `tests/unit/contrast.ts` + `contrast.test.ts`, all figures derived from source:
 
 - every ring layer is opaque (the original defect, as a property not a number)
-- the ring's **geometry**: exactly two non-inset layers, zero offset and blur,
-  positive and strictly increasing spreads
+- the ring's **geometry**: exactly two non-inset layers, each matched anchored
+  as four canonical px lengths plus exactly one color, zero offset and blur,
+  and the canonical 2px/4px spreads pinned exactly rather than by bounds
 - the outer band clears 3:1 on all eight grounds it is drawn on
 - the layers clear 3:1 against **each other**
 - **every color in the palette is carried by some layer** — swept rather than
   listed, because a curated list cannot notice a newly added filled control,
   which is the omission that produced ds-dce
 - every numeral color clears 3:1 at rest
-- no hover/focus rule attenuates the numeral, checking **every** `opacity` /
-  `filter` / `animation` declaration and failing **closed** on any it cannot
-  prove harmless
+- the numeral cannot be attenuated by **any** mechanism: every `opacity` /
+  `filter` / `animation*` declaration (case-insensitively, vendor prefixes
+  included), a custom property set under `:hover`/`:focus` that a base rule
+  could read, and a translucent `color` — failing **closed** on anything it
+  cannot prove harmless, and scanning the `<style>` block rather than the whole
+  file so template markup cannot be mistaken for CSS
 
-Verified by 16 injections, each reddening only its own test: the bead's proposed
-single-color ring, spreads swapped or equalised, `inset`, blur, offset,
-`opacity: var(--x)`, `opacity: 1` followed by `filter: opacity(.5)`, an
-animation-driven fade, and the fade moved up to the parent stat.
+Verified by **37 injections**, each reddening only its own test: the bead's
+proposed single-color ring; spreads swapped, equalised, sub-pixel, half-pixel,
+or 100000px; `inset` (upper and lower case), blur, offset; `1em` against `px`,
+`calc()`, a bare number, `%`, a fifth length, three layers, two colors in one
+layer, a trailing comma, unbalanced parentheses; `opacity: var(--x)`,
+`opacity: 1` then `filter: opacity(.5)`, `animation-name` alone,
+`Animation-Name`, `-webkit-animation-name`, a bare `:focus`, a custom property
+set on hover and read by a base rule, a translucent `color`, and the fade moved
+up to the parent stat.
 
 **What the sweep does not prove.** It covers the 32 tokens declared as direct
 `#rrggbb`. It would not automatically see a token later written as `rgb()`,

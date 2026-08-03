@@ -69,24 +69,22 @@ describe('focus ring', () => {
       expect([layer.offsetX, layer.offsetY, layer.blur], `layer ${i} must be a pure ring`).toEqual([
         0, 0, 0
       ]);
-      // Exactly four canonical px lengths, matched anchored. Scanning for
-      // numbers instead lets `1em` read as smaller than `2px`, lets invalid
-      // units through (the browser drops the declaration and renders NO ring
-      // while the numbers still parse), and quietly ignores a fifth length.
-      expect(layer.badSyntax, `layer ${i} is not four canonical px lengths`).toBeNull();
+      // The WHOLE layer anchored: four canonical px lengths then exactly one
+      // color. Validating only a stripped remainder accepts two colors in a
+      // layer, and scanning for numbers accepts `1em` (reads as smaller than
+      // `2px` while being 16px), `calc()`, a bare number, `%`, and a fifth
+      // length. Each of those is a ring that renders nothing while parsing fine.
+      expect(layer.badSyntax, `layer ${i} is not <4 px lengths> <1 color>`).toBeNull();
     }
 
-    // Each band must be thick enough to SEE. Positive-and-increasing is not
-    // enough on its own: 0.01px and 0.02px satisfy it and render nothing, and
-    // so does a 3.5px inner under a 4px outer, whose blue band is half a pixel.
-    // 2px is WCAG 2.4.13's minimum thickness for a focus indicator.
-    const MIN_BAND = 2;
-    const [inner, outer] = layers;
-    expect(inner.spread, 'inner band too thin to see').toBeGreaterThanOrEqual(MIN_BAND);
-    expect(
-      outer.spread - inner.spread,
-      'outer band too thin to see — it is what the ring is'
-    ).toBeGreaterThanOrEqual(MIN_BAND);
+    // Exact spreads, not bounds. Bounds invite the next clever near-miss: a
+    // 3.5px inner under a 4px outer leaves half a pixel of blue, 0.01/0.02px
+    // renders nothing, and 100000px/100002px satisfies any minimum while
+    // putting the indicator nowhere near the control. There is one canonical
+    // ring; pin it, and the whole family disappears. 2px per band is this
+    // project's chosen thickness, in the spirit of WCAG 2.4.13's "area at least
+    // equal to a 2px perimeter".
+    expect(layers.map((l) => l.spread), 'ring is not the canonical 2px/4px').toEqual([2, 4]);
   });
 
   it('has an outer band clearing 3:1 on every ground it is drawn on', () => {
@@ -189,69 +187,82 @@ describe('instrument band numerals', () => {
     expect(failures, `numerals below ${FLOOR}:1 at rest:\n  ${failures.join('\n  ')}`).toEqual([]);
   });
 
-  it('is never attenuated on hover, at any strength', () => {
+  it('is never attenuated, by any mechanism', () => {
     // ds-16e's fix is the ABSENCE of a rule, so this asserts absence directly
-    // rather than measuring a fade that should not exist. Measuring instead
-    // would fail open in every way the fade could come back: `opacity: var(..)`,
-    // a percentage, a `filter: opacity()`, an animation, or the opacity moving
-    // up to the parent stat.
+    // rather than measuring a fade that should not exist. Measuring would fail
+    // open in every way the fade can come back, and there are more of those
+    // than the original `opacity: .75` suggests:
+    //
+    //   opacity: var(--x)          unreadable value
+    //   opacity: 1; filter: ...    an innocent first declaration
+    //   animation-name: fade       no `opacity` property anywhere
+    //   Animation-Name / -webkit-  CSS property names are case-insensitive
+    //   :focus rather than :hover  same defect, different trigger
+    //   --num-opacity: .75         set on the STAT, read by a base rule on the
+    //                              numeral: neither rule looks like a fade
+    //   color: rgba(.., .75)       translucency in the color itself
     //
     // Why absence rather than a safe value: of the three numerals that could
     // fade (awaiting is interactive:false, so it never did — despite ds-16e's
     // title), the [data-unknown] placeholder takes --ds-faint and rests at just
     // 3.083:1. It needs alpha >= ~.981 to hold 3:1, which is not a fade anyone
     // can perceive, so there is no useful value between "none" and "broken".
-    // It is reachable on both interactive stats: ApprovalDesk passes null for
+    // It is reachable on BOTH interactive stats: ApprovalDesk passes null for
     // managed and drift whenever the graph is unavailable.
+    const style = /<style[^>]*>([\s\S]*)<\/style>/.exec(band)?.[1] ?? '';
+    expect(style, 'premise: found the component style block').not.toBe('');
+
     /**
      * Does this selector's SUBJECT receive the declaration?
      *
-     * The subject is the last compound, not any mention: the band already has a
-     * rule reading `.instrument-band__stat:hover ... .instrument-band__label
-     * { opacity: 0 }`, which blanks the LABEL under its hint and is correct. A
-     * looser `includes()` flags it, so match the numeral itself or the stat
-     * (whose opacity would inherit down to the numeral).
+     * The subject is the last compound, not any mention: the band has a rule
+     * reading `.instrument-band__stat:hover ... .instrument-band__label
+     * { opacity: 0 }`, which blanks the LABEL under its hint and is correct.
      */
-    function attenuatesNumeral(selector: string): boolean {
+    function subjects(selector: string): string[] {
       return selector
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .split(',')
-        .some((part) => {
-          const compounds = part.trim().split(/\s+/);
-          const subject = compounds[compounds.length - 1] ?? '';
-          // Bare `:focus` too — attenuating on focus is the same defect, and
-          // a rule can reach the numeral through either.
-          const interactiveState = /:hover|:focus/.test(part);
-          const hits =
-            subject.includes('instrument-band__num') || subject.includes('instrument-band__stat');
-          return interactiveState && hits;
-        });
+        .map((part) => part.trim().split(/\s+/).pop() ?? '');
     }
 
     const offenders: string[] = [];
-    for (const m of band.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+    for (const m of style.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
       const [, selector, body] = m;
-      if (!attenuatesNumeral(selector)) continue;
-      // EVERY declaration, not the first: `opacity: 1; filter: opacity(.5)` has
-      // an innocent first match and a fade right behind it.
-      for (const decl of body.matchAll(
-        /(?:^|[;{\s])(opacity|filter|animation[\w-]*)\s*:\s*([^;]+)/g
-      )) {
-        const [, prop, raw] = decl;
-        const value = raw.trim();
-        // Fail CLOSED: a value we cannot read is not a value we can clear. Only
-        // a literal `opacity: 1` is provably harmless; `filter` and every
-        // `animation*` longhand are listed because each can attenuate without
-        // the word "opacity" appearing as a property at all — `animation-name`
-        // alone is enough, so matching the shorthand only would fail open.
-        const provablyHarmless = prop === 'opacity' && Number(value) === 1;
-        if (!provablyHarmless) offenders.push(`${selector.trim()} { ${prop}: ${value} }`);
+      const subject = subjects(selector);
+      const hitsNumeral = subject.some((s) => s.includes('instrument-band__num'));
+      const hitsStat = subject.some((s) => s.includes('instrument-band__stat'));
+      if (!hitsNumeral && !hitsStat) continue;
+      const interactive = /:hover|:focus/.test(selector);
+      const flag = (what: string) => offenders.push(`${selector.trim().split('\n').pop()} { ${what} }`);
+
+      // Attenuating properties, case-insensitively and including vendor
+      // prefixes. Checked on the numeral ALWAYS (a base rule reading a custom
+      // property is half of the indirection trick) and on the stat only when
+      // interactive, since a resting stat-level opacity is not a hover fade.
+      if (hitsNumeral || interactive) {
+        for (const d of body.matchAll(/(?:^|[;{\s])(-[a-z]+-)?(opacity|filter|animation[\w-]*)\s*:\s*([^;]+)/gi)) {
+          const prop = `${d[1] ?? ''}${d[2]}`;
+          const value = d[3].trim();
+          if (!(/^opacity$/i.test(prop) && Number(value) === 1)) flag(`${prop}: ${value}`);
+        }
+      }
+      // The other half of the indirection: a custom property set under :hover
+      // feeds any base rule that reads it, and neither rule reads as a fade.
+      if (interactive) {
+        for (const d of body.matchAll(/(?:^|[;{\s])(--[\w-]+)\s*:/g)) {
+          flag(`${d[1]}: … (custom property set on hover)`);
+        }
+        // Translucency can also live in the color itself.
+        for (const d of body.matchAll(/(?:^|[;{\s])color\s*:\s*([^;]+)/gi)) {
+          flag(`color: ${d[1].trim()}`);
+        }
       }
     }
 
     expect(
-      offenders,
-      `a hover rule attenuates the band numeral:\n  ${offenders.join('\n  ')}`
+      [...new Set(offenders)],
+      `the band numeral can be attenuated:\n  ${[...new Set(offenders)].join('\n  ')}`
     ).toEqual([]);
   });
 });

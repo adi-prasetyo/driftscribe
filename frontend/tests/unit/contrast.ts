@@ -116,7 +116,15 @@ export function resolveColor(css: string, value: string, depth = 0): string {
   throw new Error(`not an opaque color: ${v}`);
 }
 
-/** Split on top-level commas, ignoring those inside `rgba(...)` / `var(...)`. */
+/**
+ * Split on top-level commas, ignoring those inside `rgba(...)` / `var(...)`.
+ *
+ * Empty entries are KEPT, not filtered. A trailing comma (`..., 4px var(--x),`)
+ * is invalid CSS — the browser drops the whole declaration and renders no ring
+ * — but dropping the empty entry here would leave two perfectly valid-looking
+ * layers and the pin would pass over an indicator that does not exist.
+ * Unbalanced parentheses are surfaced the same way, as one unparseable layer.
+ */
 function splitLayers(value: string): string[] {
   const out: string[] = [];
   let depth = 0;
@@ -129,8 +137,9 @@ function splitLayers(value: string): string[] {
       current = '';
     } else current += c;
   }
-  if (current.trim()) out.push(current);
-  return out.map((s) => s.trim()).filter(Boolean);
+  out.push(current);
+  if (depth !== 0) return [value];
+  return out.map((s) => s.trim());
 }
 
 export type ShadowLayer = {
@@ -147,7 +156,18 @@ export type ShadowLayer = {
 
 /** `0`, or a px length. Nothing else is a length this design system writes. */
 const LENGTH = String.raw`(?:0|-?\d*\.?\d+px)`;
-const FOUR_LENGTHS = new RegExp(String.raw`^${LENGTH}(?:\s+${LENGTH}){3}$`);
+/** Exactly one color, in one of the three notations the ring has ever used. */
+const COLOR = String.raw`(?:var\(\s*--[\w-]+\s*\)|#[0-9a-fA-F]{3,8}|rgba?\([^()]*\))`;
+/**
+ * A whole layer: four lengths then one color, and nothing else.
+ *
+ * Anchoring the ENTIRE layer rather than just its lengths is what closes the
+ * last family of false passes. Stripping colors and then validating only the
+ * remainder accepts `0 0 0 2px var(--a) var(--b)` — two colors, invalid CSS,
+ * the whole declaration dropped and no ring rendered — because the leftover
+ * lengths still look canonical.
+ */
+const CANONICAL_LAYER = new RegExp(String.raw`^${LENGTH}(?:\s+${LENGTH}){3}\s+${COLOR}$`);
 
 /**
  * The lengths of one layer, in `<offset-x> <offset-y> <blur> <spread>` order.
@@ -168,19 +188,14 @@ const FOUR_LENGTHS = new RegExp(String.raw`^${LENGTH}(?:\s+${LENGTH}){3}$`);
  * (`var(--ds-fs-1)`) can never be read as a length.
  */
 function layerGeometry(layer: string): Omit<ShadowLayer, 'hex' | 'alpha'> {
-  const inset = /\binset\b/.test(layer);
-  const remainder = layer
-    .replace(/rgba?\([^)]*\)/g, ' ')
-    .replace(/var\([^)]*\)/g, ' ')
-    .replace(/#[0-9a-fA-F]{3,8}\b/g, ' ')
-    .replace(/\binset\b/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
+  const inset = /\binset\b/i.test(layer);
+  const normalized = layer.replace(/\binset\b/gi, ' ').trim().replace(/\s+/g, ' ');
 
-  if (!FOUR_LENGTHS.test(remainder)) {
-    return { offsetX: 0, offsetY: 0, blur: 0, spread: 0, inset, badSyntax: remainder };
+  if (!CANONICAL_LAYER.test(normalized)) {
+    return { offsetX: 0, offsetY: 0, blur: 0, spread: 0, inset, badSyntax: normalized || '(empty)' };
   }
-  const [offsetX, offsetY, blur, spread] = remainder.split(' ').map(parseFloat);
+  // Safe now that the whole layer matched: the first four tokens are the lengths.
+  const [offsetX, offsetY, blur, spread] = normalized.split(' ').slice(0, 4).map(parseFloat);
   return { offsetX, offsetY, blur, spread, inset, badSyntax: null };
 }
 

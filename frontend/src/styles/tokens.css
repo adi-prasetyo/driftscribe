@@ -184,11 +184,11 @@
      and --ds-stream-ink fails 7; over all 32 opaque palette tokens — what the
      test actually sweeps — it is 22 and 17. And no third value rescues it,
      because the feasible interval is provably empty:
-       --ds-navy          forces L >= 0.151 (its darker branch is negative)
-       --ds-ok            allows L >= 0.440 OR L <= 0.004; navy kills the
-                          second, leaving L >= 0.440
-       --ds-border-strong forces L <= 0.182
-     0.440 > 0.182. A darker ring that reads well on paper is the same ring
+       --ds-navy          forces L >= 0.15110 (its darker branch is negative)
+       --ds-ok            allows L >= 0.44033 OR L <= 0.00448; navy kills the
+                          second, leaving L >= 0.44033
+       --ds-border-strong forces L <= 0.18218
+     0.44033 > 0.18218. A darker ring that reads well on paper is the same ring
      that vanishes into a navy CTA.
 
      So the two layers split the job, and every adjacent color is carried by one
