@@ -141,37 +141,47 @@ export type ShadowLayer = {
   blur: number;
   spread: number;
   inset: boolean;
-  /** Lengths that are neither `0` nor a `px` value — see `layerGeometry`. */
-  badUnits: string[];
+  /** Non-null when the layer is not four canonical lengths — see `layerGeometry`. */
+  badSyntax: string | null;
 };
+
+/** `0`, or a px length. Nothing else is a length this design system writes. */
+const LENGTH = String.raw`(?:0|-?\d*\.?\d+px)`;
+const FOUR_LENGTHS = new RegExp(String.raw`^${LENGTH}(?:\s+${LENGTH}){3}$`);
 
 /**
  * The lengths of one layer, in `<offset-x> <offset-y> <blur> <spread>` order.
  *
- * Units are reported rather than normalised, because comparing bare NUMBERS
- * across units is how a geometry check gets fooled: `2em` inner against `4px`
- * outer reads as 2 < 4 and "increasing", while 2em is 32px and buries the outer
- * band completely. A bare non-zero number is invalid CSS and reported too — the
- * browser drops the whole declaration, so the ring silently disappears while
- * every parsed value still looks reasonable.
+ * The whole remainder is matched ANCHORED against exactly four canonical
+ * lengths, and anything else is REJECTED rather than normalised. Scanning for
+ * numbers instead is how a geometry check gets fooled, in more ways than one:
  *
- * Colors are stripped BEFORE matching so digits inside a token name (`var(--ds-
- * fs-1)`) can never be read as a length.
+ *   `1em` inner vs `2px` outer   reads as 1 < 2 and "increasing" — 1em is 16px
+ *                                and buries the outer band completely
+ *   `2%` / a bare `2`            invalid CSS; the browser drops the whole
+ *                                declaration and there is no ring at all, while
+ *                                the numbers still parse as sensible
+ *   `calc(2px + 3em)`            a lenient scan reads some digits out of it
+ *   a fifth length               silently ignored by a positional read
+ *
+ * Colors are stripped BEFORE matching, so digits inside a token name
+ * (`var(--ds-fs-1)`) can never be read as a length.
  */
 function layerGeometry(layer: string): Omit<ShadowLayer, 'hex' | 'alpha'> {
-  const withoutColor = layer
+  const inset = /\binset\b/.test(layer);
+  const remainder = layer
     .replace(/rgba?\([^)]*\)/g, ' ')
     .replace(/var\([^)]*\)/g, ' ')
-    .replace(/#[0-9a-fA-F]{3,8}\b/g, ' ');
-  const lengths = [...withoutColor.matchAll(/(-?[\d.]+)([a-z%]*)/g)].map((m) => ({
-    value: Number(m[1]),
-    unit: m[2]
-  }));
-  const badUnits = lengths
-    .filter(({ value, unit }) => !(unit === 'px' || (value === 0 && unit === '')))
-    .map(({ value, unit }) => `${value}${unit || ' (no unit)'}`);
-  const [offsetX, offsetY, blur, spread] = [0, 1, 2, 3].map((i) => lengths[i]?.value ?? 0);
-  return { offsetX, offsetY, blur, spread, inset: /\binset\b/.test(layer), badUnits };
+    .replace(/#[0-9a-fA-F]{3,8}\b/g, ' ')
+    .replace(/\binset\b/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+
+  if (!FOUR_LENGTHS.test(remainder)) {
+    return { offsetX: 0, offsetY: 0, blur: 0, spread: 0, inset, badSyntax: remainder };
+  }
+  const [offsetX, offsetY, blur, spread] = remainder.split(' ').map(parseFloat);
+  return { offsetX, offsetY, blur, spread, inset, badSyntax: null };
 }
 
 /** The color of one `box-shadow` layer, as {hex, alpha}. */

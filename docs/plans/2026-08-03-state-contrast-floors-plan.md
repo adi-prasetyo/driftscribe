@@ -37,9 +37,18 @@ wider so it needs no maintenance.
 | opaque `--ds-stream` | **12** | **22** |
 | opaque `--ds-stream-ink` | **7** | **17** |
 
-Ring luminance would need to be ≤0.182 to clear `--ds-border-strong` and ≥0.440
-to clear `--ds-ok`. Empty interval. **No third value rescues it** — which is why
+**No third value rescues it**, and the interval is provably empty — which is why
 the earlier "reject a fourth blue" reasoning was answering the wrong question.
+Three constraints are needed, not two:
+
+| token | admissible ring luminance |
+|---|---|
+| `--ds-navy` | ≥0.15110 — its darker branch is negative, so it forces the light side |
+| `--ds-ok` | ≥0.44033 **or** ≤0.00448 — navy eliminates the second branch |
+| `--ds-border-strong` | ≤0.18216 — its lighter branch exceeds 1 |
+
+0.44033 > 0.18216. Citing `--ds-ok` alone would have been an incomplete proof:
+it leaves a near-black ring admissible, and only `--ds-navy` closes that branch.
 
 **Adopted — a two-tone ring.** Each layer takes the end of the ramp the other
 cannot, and WCAG lets a multi-color indicator satisfy the floor when *one*

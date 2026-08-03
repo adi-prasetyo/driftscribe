@@ -69,9 +69,11 @@ describe('focus ring', () => {
       expect([layer.offsetX, layer.offsetY, layer.blur], `layer ${i} must be a pure ring`).toEqual([
         0, 0, 0
       ]);
-      // Every length in px (or a bare 0). Comparing raw numbers across units is
-      // how this check gets fooled: 2em inner "< " 4px outer is 32px burying 4px.
-      expect(layer.badUnits, `layer ${i} has non-px lengths`).toEqual([]);
+      // Exactly four canonical px lengths, matched anchored. Scanning for
+      // numbers instead lets `1em` read as smaller than `2px`, lets invalid
+      // units through (the browser drops the declaration and renders NO ring
+      // while the numbers still parse), and quietly ignores a fifth length.
+      expect(layer.badSyntax, `layer ${i} is not four canonical px lengths`).toBeNull();
     }
 
     // Each band must be thick enough to SEE. Positive-and-increasing is not
@@ -121,8 +123,9 @@ describe('focus ring', () => {
     // This palette holds controls at both ends of the ramp - paper-light
     // borders (--ds-border-strong) and near-black fills (--ds-navy, --ds-ok,
     // --ds-seal) - so the two constraints are contradictory and NO single color
-    // satisfies them: opaque --ds-stream fails 12 of these and --ds-stream-ink
-    // fails 7. Two layers split the job; each adjacent color needs only ONE of
+    // satisfies them: opaque --ds-stream fails 22 of these 32 and --ds-stream-ink
+    // fails 17 (12 and 7 over the narrower 21-color adjacency set the design
+    // record argues from). Two layers split the job; each adjacent color needs ONE of
     // them to clear the floor, which is how WCAG treats a multi-color indicator.
     //
     // Sweeping the whole palette rather than a curated list of "grounds" is
@@ -216,7 +219,9 @@ describe('instrument band numerals', () => {
         .some((part) => {
           const compounds = part.trim().split(/\s+/);
           const subject = compounds[compounds.length - 1] ?? '';
-          const interactiveState = /:hover|:focus-visible/.test(part);
+          // Bare `:focus` too — attenuating on focus is the same defect, and
+          // a rule can reach the numeral through either.
+          const interactiveState = /:hover|:focus/.test(part);
           const hits =
             subject.includes('instrument-band__num') || subject.includes('instrument-band__stat');
           return interactiveState && hits;
@@ -229,13 +234,16 @@ describe('instrument band numerals', () => {
       if (!attenuatesNumeral(selector)) continue;
       // EVERY declaration, not the first: `opacity: 1; filter: opacity(.5)` has
       // an innocent first match and a fade right behind it.
-      for (const decl of body.matchAll(/(?:^|[;{\s])(opacity|filter|animation)\s*:\s*([^;]+)/g)) {
+      for (const decl of body.matchAll(
+        /(?:^|[;{\s])(opacity|filter|animation[\w-]*)\s*:\s*([^;]+)/g
+      )) {
         const [, prop, raw] = decl;
         const value = raw.trim();
         // Fail CLOSED: a value we cannot read is not a value we can clear. Only
-        // a literal `opacity: 1` is provably harmless; `filter` and `animation`
-        // are listed because both can attenuate without the word "opacity"
-        // appearing as a property at all.
+        // a literal `opacity: 1` is provably harmless; `filter` and every
+        // `animation*` longhand are listed because each can attenuate without
+        // the word "opacity" appearing as a property at all — `animation-name`
+        // alone is enough, so matching the shorthand only would fail open.
         const provablyHarmless = prop === 'opacity' && Number(value) === 1;
         if (!provablyHarmless) offenders.push(`${selector.trim()} { ${prop}: ${value} }`);
       }
