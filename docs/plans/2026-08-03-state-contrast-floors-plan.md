@@ -1,171 +1,117 @@
-# State contrast floors — implementation plan (ds-dce, ds-16e, ds-b42)
+# State contrast floors — design record (ds-dce, ds-16e, ds-b42)
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
-**Goal:** Three design-token defects that fail *silently* and only in a transient
-state — fix them, and pin the arithmetic in a test so a future palette re-tune
+**Goal:** Design-token defects that fail *silently*, and mostly only in a
+transient state — fix them, and pin the arithmetic so a future palette re-tune
 cannot re-break them.
 
-**Architecture:** Two of the three are contrast floors that hold at rest and fail
-only while the control is focused (ds-dce) or pointed at (ds-16e); the third is a
-token that does not exist (ds-b42). The durable half of the change is a contrast
-test helper that reads the REAL declared values out of `tokens.css`, so the pins
-track the palette instead of a copy of it.
+**Architecture:** Two are contrast floors that hold at rest and fail only while a
+control is focused (ds-dce) or pointed at (ds-16e); the third is a token that
+does not exist (ds-b42). The durable half is a contrast helper that reads the
+REAL declared values out of `tokens.css`, so the pins track the palette instead
+of a copy of it.
 
-**Tech Stack:** Svelte 5, vitest, plain CSS custom properties.
-
----
-
-## Findings that change the fix
-
-The audit contradicts both bead descriptions. Recorded here because the
-implementation follows the audit, not the bead.
-
-### ds-dce: `--ds-stream-ink` is NOT the safer choice
-
-The bead's design note says "Codex notes `--ds-stream-ink` would give more
-headroom." Against light grounds it does. Against a **navy filled control**
-(`--ds-navy #0e1b5f`, the Send button and the desk approve CTA) it measures
-**2.780:1 and fails.** Raising contrast against paper lowers it against navy —
-the two constraints pull in opposite directions.
-
-Ring luminance must satisfy both. For ≥3:1 against the neutral chip (`#efeeea`,
-the lightest ground) *and* ≥3:1 against navy, relative luminance must land in
-**[0.154, 0.248]**. `--ds-stream` (#4285f4) sits at 0.2446 — inside, near the top.
-`--ds-stream-ink` (#2a63c9) at 0.0868 is below the floor.
-
-| ring | paper | white | surface-2 | neutral chip | ok | warn | danger | stream | NAVY |
-|---|---|---|---|---|---|---|---|---|---|
-| current `rgba(66,133,244,.30)` | 1.397 | 1.416 | 1.391 | 1.374 | 1.374 | 1.380 | 1.385 | 1.376 | 1.536 |
-| **opaque `--ds-stream`** | 3.416 | 3.564 | 3.267 | **3.069** | 3.145 | 3.150 | 3.167 | 3.193 | 4.395 |
-| opaque `--ds-stream-ink` | 5.402 | 5.635 | 5.165 | 4.854 | 4.973 | 4.982 | 5.008 | 5.050 | **2.780 FAIL** |
-
-**Vermilion is out of scope, and that is a finding, not an omission.** The ring
-measures 1.526 against `--ds-seal`. But `--ds-seal` is only ever a `color` or a
-`border` — `grep` finds no `background: var(--ds-seal)` anywhere. No focus ring is
-ever drawn on vermilion, so the ground does not exist. If a filled seal is ever
-introduced, this floor breaks; the test comment must say so.
-
-**Rejected: a fourth blue.** Balancing the two constraints exactly
-(luminance 0.1967) would yield 3.628 on *both* worst grounds instead of
-3.069/4.395. It is measurably better and still wrong: `tokens.css` governs blue to
-exactly three jobs, and 0.5 ratio points does not buy a fourth. Record the 3.069
-margin (2.3% over the floor) instead of hiding it.
-
-### ds-16e: raising the fade to `.91` does not fix it
-
-The bead says "Either raise the fade to ~opacity:.91 ... or drop the numeral fade
-entirely," and checks "the other two stats" — managed (navy) and drift (amber).
-There is a **fourth** numeral color it does not count:
-`.instrument-band__stat[data-unknown] .instrument-band__num` takes `--ds-faint`
-(`InstrumentBand.svelte:317`).
-
-`data-unknown` is set from `n === null`; `--static` is set from
-`!spec.interactive` (`:213`, `:217`). They are **independent**, so an interactive
-stat with an unknown value is a hoverable `<button>` with a faint numeral.
-
-Contrast on paper, 44px/600 → 3:1 large-text floor:
-
-| numeral | rest | @.75 (today) | @.91 (bead's fix) | @1.0 |
-|---|---|---|---|---|
-| managed `--ds-navy` | 15.016 | 7.041 | 11.850 | 15.016 |
-| drift `--ds-warn` | 5.190 | 3.224 | 4.370 | 5.190 |
-| awaiting `--ds-stream` | 3.416 | **2.462** | 3.021 | 3.416 |
-| unknown `--ds-faint` | 3.083 | **2.235** | **2.719 FAIL** | 3.083 |
-
-So the alpha option is dead on arithmetic: `--ds-faint` needs alpha **1.0** to
-clear 3:1 — it rests at 3.083, only 2.8% over the floor, and *any* fade sinks it.
-**Removing the numeral fade is the only fix that clears all four.** That is also
-what the bead author and Codex preferred on taste; now there is a reason.
-
-The affordance survives: the hover hint under the label (`ds-7ag.2`) is a separate
-element with its own fade and is untouched.
+> Revised after review. The first draft proposed a single opaque ring, which is
+> wrong; §1 records why. Findings that contradict the beads are kept here
+> because the implementation follows the audit, not the bead.
 
 ---
 
-### Task 1: Contrast helper + failing pins
+## 1. ds-dce — no single color can be the ring
 
-**Files:**
-- Create: `frontend/tests/unit/contrast.ts`
-- Create: `frontend/tests/unit/contrast.test.ts`
+A focus ring abuts **two** things: the ground outside it, and the control
+inside it. The first draft mixed those models — it counted `--ds-navy` as an
+adjacent color but not `--ds-border-strong` — and that inconsistency is what
+made a single color look sufficient.
 
-**Step 1: Write the helper.** Pure functions, no framework:
-`relativeLuminance(hex)`, `contrastRatio(a, b)`, `composite(fg, alpha, bg)`, and
-`readToken(css, name)` which pulls a declared value out of `tokens.css` source so
-the pins read the real palette rather than a stale copy.
+Applied consistently, the palette holds controls at *both* ends of the ramp:
+paper-light borders and near-black fills. The two constraints are contradictory.
 
-**Step 2: Write the failing tests.**
+| candidate | palette colors it fails against |
+|---|---|
+| current `rgba(66,133,244,.30)` | all 32 — composites to 1.37–1.53 everywhere |
+| opaque `--ds-stream` | **12** — every border, every semantic fill, seal |
+| opaque `--ds-stream-ink` | **7** — ok/warn/danger fills and inks, navy, seal |
 
-```ts
-const FLOOR = 3.0; // WCAG 1.4.11 non-text / 1.4.3 large text
+Ring luminance would need to be ≤0.183 to clear `--ds-border-strong` and ≥0.478
+to clear `--ds-ok`. Empty interval. **No third value rescues it** — which is why
+the earlier "reject a fourth blue" reasoning was answering the wrong question.
 
-// Every ground the ring is DRAWN on, plus every component color it sits
-// ADJACENT to. --ds-seal is deliberately absent: it is only ever a color or a
-// border, never a background, so no ring is drawn on it. Add it here the day a
-// filled vermilion surface appears - the ring measures 1.526 against it.
-const RING_GROUNDS = ['--ds-bg', '--ds-surface', '--ds-surface-2',
-  '--ds-neutral-surface', '--ds-ok-surface', '--ds-warn-surface',
-  '--ds-danger-surface', '--ds-stream-surface', '--ds-navy'];
-
-it('focus ring clears 3:1 on every ground it renders against', () => { ... });
-it('every instrument-band numeral clears 3:1 at rest AND while hovered', () => { ... });
-```
-
-The numeral test must derive the hover alpha from `InstrumentBand.svelte` source
-(regex the `opacity` in the `:hover .instrument-band__num` rule), defaulting to
-1.0 when the rule is absent — so deleting the rule is what makes it pass, and
-re-adding any fade re-reddens it.
-
-**Step 3: Run — expect FAIL.**
-`npm run test:unit -- --run contrast` → ring 1.397 vs 3.0, faint numeral 2.235.
-
-**Step 4: Commit the failing test** (`test:` prefix, so the red is in history).
-
-### Task 2: ds-dce — opaque ring
-
-**Files:** Modify `frontend/src/styles/tokens.css:176`
+**Adopted — a two-tone ring.** Each layer takes the end of the ramp the other
+cannot, and WCAG lets a multi-color indicator satisfy the floor when *one*
+component does:
 
 ```css
-/* Focus ring. OPAQUE, not a tint: at 30% alpha this composited to 1.37-1.54:1
-   on every ground and failed WCAG 1.4.11's 3:1 everywhere (ds-dce). --ds-stream
-   is the only palette blue that clears the floor on BOTH sides - the light
-   grounds and a navy filled control. --ds-stream-ink looks safer and is not:
-   it measures 2.780 against --ds-navy. Worst case is 3.069 on the neutral chip,
-   2.3% of headroom, so re-tuning --ds-stream requires re-running the pins in
-   tests/unit/contrast.test.ts. */
---ds-ring: 0 0 0 3px var(--ds-stream);
+--ds-ring: 0 0 0 2px var(--ds-surface), 0 0 0 4px var(--ds-stream-ink);
 ```
 
-**Verify:** ring test passes; `npm run test:unit -- --run` stays green.
+| | carries | range |
+|---|---|---|
+| inner 2px `--ds-surface` | dark fills — navy 15.66, ok 6.42, warn 5.41, seal 5.44 | ≥5.41 |
+| outer 2px `--ds-stream-ink` | the eight light grounds, and the light borders | 3.56–5.64 |
 
-### Task 3: ds-16e — delete the numeral fade
+Outer vs inner is 5.64, so the layers read as two. Worst figure anywhere is
+**3.56**, against 3.069 for the best single color — more robust *and* more
+headroom. `--ds-seal` stops needing a scope argument: the inner band covers it.
 
-**Files:** Modify `frontend/src/components/InstrumentBand.svelte:280-284`
+Cost: a 4px ring where the old was 3px. `box-shadow` does not affect layout but
+IS clipped by an ancestor's `overflow: hidden`.
 
-Delete the `:hover .instrument-band__num { opacity: .75 }` rule and replace the
-comment with why there is no fade: `--ds-faint` (the unknown numeral) rests at
-3.083 and any alpha below 1.0 sinks it under 3:1; the hover hint carries the
-affordance instead. Keep the `transition: opacity` on `__num` — the numeral tick
-animation (ds-wd2.13) will want it.
+## 2. ds-16e — the bead names a numeral that never faded
 
-**Verify:** numeral test passes; `InstrumentBand.test.ts` stays green.
+The fade rule was `.instrument-band__stat:not(--static):hover .__num`, and
+`awaiting` is declared `interactive: false` (`InstrumentBand.svelte:166`), so it
+carries `--static` and was **excluded**. The awaiting numeral — the bead's title
+and its only cited measurement — could not fade.
 
-### Task 4: ds-b42 — the shadow token that does not exist
+The real defect is on `[data-unknown]`, which the bead never counted: it takes
+`--ds-faint`, and `data-unknown` (`n === null`) is independent of `--static`, so
+it lands on managed and drift, both interactive. `ApprovalDesk` passes `null` for
+both whenever the graph is unavailable.
 
-**Files:** Modify `DemoNoticeBell.svelte:309`, `PausePill.svelte:248`,
-`AutonomyPill.svelte:506` — `var(--ds-shadow-md, var(--ds-shadow-sm))` →
-`var(--ds-shadow)`.
+Reachable fading numerals, on paper, 44px/600 → 3:1 floor:
 
-`--ds-shadow-md` is declared nowhere, so all three silently take the fallback:
-`--ds-shadow-sm`, the LIGHTEST tier — while `tokens.css` names popovers as one of
-the three things that earn elevation. Add a `styles.test.ts` pin that no
-component references an undeclared `--ds-*` token, which catches the whole class.
+| numeral | rest | @.75 (was) | @.91 | @.98 | @.99 |
+|---|---|---|---|---|---|
+| managed `--ds-navy` | 15.016 | 7.051 | 11.841 | 14.333 | 14.678 |
+| drift `--ds-warn` | 5.190 | 3.229 | 4.363 | 4.993 | 5.090 |
+| unknown `--ds-faint` | 3.083 | **2.225** | **2.731** | **3.000** | 3.041 |
+| *(awaiting `--ds-stream` — static, never fades)* | 3.416 | — | — | — | — |
 
-### Task 5: Verification
+`--ds-faint` needs alpha ≥ **~0.981**. The first draft claimed "only 1.0 works";
+that was wrong, and the correction does not change the outcome — a fade nobody
+can perceive is not a fade. **Removing it is the only honest option.** The hover
+hint under the label (ds-7ag.2) is a separate element and still carries the
+affordance.
 
-- `npm run test:unit -- --run`, `npm run check`, `npm run build`
-- `uv run --with ruff ruff check .`
-- Screenshot pass: focus each of button / link / input / textarea / pill in both
-  locales; hover each instrument-band stat including an unknown one.
-- **Defect injection:** revert each of the three fixes in turn, confirm only its
-  own test reddens.
+## 3. ds-b42 — and a fourth instance the guard found
+
+`--ds-shadow-md` is declared nowhere, so three popovers silently took the
+`var()` fallback — `--ds-shadow-sm`, the lightest tier — while `tokens.css` names
+popovers as one of the three things that earn elevation.
+
+Generalizing that into a guard ("no `var()` reads an undeclared `--ds-*`")
+immediately found a fourth: `PrBodyDisclosure.svelte:202` read
+`var(--ds-accent, var(--ds-fg))`. `--ds-accent` has never existed, so links
+inside a rendered PR body were painted in **body ink** — distinguishable from
+prose by their underline alone. Now `--ds-stream-ink`, matching bare `a`.
+
+The pre-existing retired-token test could not have caught either: it needs a
+human to add each dead name, and a token that never existed was never on a list.
+
+## 4. What is pinned
+
+`tests/unit/contrast.ts` + `contrast.test.ts`, all figures derived from source:
+
+- every ring layer is opaque (the original defect, as a property not a number)
+- the outer band clears 3:1 on all eight grounds it is drawn on
+- the layers clear 3:1 against **each other**
+- **every color in the palette is carried by some layer** — swept rather than
+  listed, because a curated list cannot notice a newly added filled control,
+  which is the omission that produced ds-dce
+- every numeral color clears 3:1 at rest
+- no hover/focus rule attenuates the numeral, failing **closed** on an opacity
+  it cannot parse
+
+Verified by 8 injections, each reddening only its own test — including the
+bead's own proposed single-color ring, `opacity: var(--x)`, and the fade moved
+up to the parent stat.

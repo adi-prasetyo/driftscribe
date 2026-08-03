@@ -306,7 +306,7 @@
     border: 1px solid var(--ds-border);
     border-left: 3px solid var(--ds-stream);
     background: var(--ds-surface);
-    box-shadow: var(--ds-shadow-md, var(--ds-shadow-sm));
+    box-shadow: var(--ds-shadow);
     text-align: left;
   }
   /* ds-odt — see the markup comment. Transparent to the pointer while it is

@@ -245,7 +245,7 @@
     border-radius: var(--ds-radius);
     border: 1px solid var(--ds-border);
     background: var(--ds-surface);
-    box-shadow: var(--ds-shadow-md, var(--ds-shadow-sm));
+    box-shadow: var(--ds-shadow);
     overflow: hidden;
     text-align: left;
   }

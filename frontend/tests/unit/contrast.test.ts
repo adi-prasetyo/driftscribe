@@ -2,20 +2,18 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { composite, contrastOver, readToken, resolveColor, shadowColor } from './contrast';
+import { colorTokens, contrastOver, contrastRatio, readToken, resolveColor, shadowLayers } from './contrast';
 
 // ---------------------------------------------------------------------------
 // Contrast floors, enforced (ds-dce, ds-16e).
 //
-// Both defects this file pins were INVISIBLE at rest and appeared only while a
-// control was focused or pointed at, which is why neither showed up in a
-// screenshot pass or a design review. They also shared a mechanism: a color
-// declared at less than full opacity is not the color that renders, and nobody
-// had done the compositing arithmetic.
+// Both defects pinned here were invisible at rest and appeared only while a
+// control was focused or pointed at, which is why neither survived a screenshot
+// pass. They share a mechanism: a color declared below full opacity is not the
+// color that renders, and nobody had done the compositing arithmetic.
 //
-// Every figure these tests assert is derived from the CSS/component source at
-// run time, never copied into the test. Re-tune --ds-stream and this file
-// re-measures it; it does not compare against a remembered number.
+// Every figure is derived from the CSS/component source at run time, never
+// copied into the test. Re-tune a palette entry and this file re-measures it.
 // ---------------------------------------------------------------------------
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,17 +31,9 @@ beforeAll(() => {
 });
 
 describe('focus ring', () => {
-  // Every ground the ring is DRAWN on (page, cards, wells, the four semantic
-  // tints) plus the component colors it renders ADJACENT to. 1.4.11 asks for
-  // 3:1 against adjacent colors, and a focused navy CTA has the ring on paper
-  // on one side and navy on the other, so both sides are grounds here.
-  //
-  // --ds-seal is deliberately ABSENT. The ring measures 1.526 against
-  // vermilion, which would fail - but --ds-seal is only ever a `color` or a
-  // `border` in this codebase, never a `background`, so no ring is ever drawn
-  // on it. The day a filled vermilion surface appears, add it here and expect
-  // this pin to go red; that is the intended behavior, not a false alarm.
-  const RING_GROUNDS = [
+  // The grounds the ring is DRAWN on: the page, the two card surfaces, the
+  // sunken well, and the four semantic tints. The outer band lands on these.
+  const DRAWN_ON = [
     '--ds-bg',
     '--ds-surface',
     '--ds-surface-2',
@@ -51,108 +41,167 @@ describe('focus ring', () => {
     '--ds-ok-surface',
     '--ds-warn-surface',
     '--ds-danger-surface',
-    '--ds-stream-surface',
-    '--ds-navy'
+    '--ds-stream-surface'
   ];
 
-  it('clears 3:1 on every ground it renders against', () => {
-    const { hex, alpha } = shadowColor(tokens, readToken(tokens, '--ds-ring'));
-    const failures: string[] = [];
-
-    for (const groundToken of RING_GROUNDS) {
-      const ground = resolveColor(tokens, `var(${groundToken})`);
-      // The ring is what RENDERS, not what is declared: at alpha < 1 it is the
-      // declared blue mixed with this particular ground.
-      // `rendered` is for the message only; the ratio is measured unrounded.
-      const rendered = composite(hex, alpha, ground);
-      const ratio = contrastOver(hex, alpha, ground);
-      if (ratio < FLOOR) {
-        failures.push(`${groundToken}: ${ratio.toFixed(3)} (ring renders ${rendered})`);
-      }
+  it('is opaque in every layer, so its contrast does not depend on the ground', () => {
+    // The original defect exactly: a ring at 30% alpha measured 1.37-1.53
+    // everywhere, because a translucent ring is not its declared color at all.
+    // Pin the property rather than a number.
+    for (const layer of shadowLayers(tokens, readToken(tokens, '--ds-ring'))) {
+      expect(layer.alpha).toBe(1);
     }
-
-    expect(failures, `focus ring below ${FLOOR}:1 on:\n  ${failures.join('\n  ')}`).toEqual([]);
   });
 
-  it('is opaque, so its contrast does not depend on what is behind it', () => {
-    // The regression this guards is the original defect exactly: a ring at 30%
-    // alpha measured 1.374-1.536 everywhere. Any alpha < 1 reintroduces a ring
-    // whose real color is a mix, so pin the property rather than the number.
-    const { alpha } = shadowColor(tokens, readToken(tokens, '--ds-ring'));
-    expect(alpha).toBe(1);
+  it('has an outer band clearing 3:1 on every ground it is drawn on', () => {
+    const layers = shadowLayers(tokens, readToken(tokens, '--ds-ring'));
+    const outer = layers[layers.length - 1];
+    const failures: string[] = [];
+
+    for (const groundToken of DRAWN_ON) {
+      const ground = resolveColor(tokens, `var(${groundToken})`);
+      const ratio = contrastOver(outer.hex, outer.alpha, ground);
+      if (ratio < FLOOR) failures.push(`${groundToken}: ${ratio.toFixed(3)}`);
+    }
+
+    expect(failures, `outer ring below ${FLOOR}:1 on:\n  ${failures.join('\n  ')}`).toEqual([]);
+  });
+
+  it('separates its own layers, so the ring reads as a ring', () => {
+    // A two-tone indicator whose tones do not contrast is one fat tone with a
+    // seam, and the inner band stops doing the job it was added for.
+    const layers = shadowLayers(tokens, readToken(tokens, '--ds-ring'));
+    if (layers.length < 2) return; // single-tone ring: nothing to separate
+    expect(contrastRatio(layers[0].hex, layers[layers.length - 1].hex)).toBeGreaterThanOrEqual(
+      FLOOR
+    );
+  });
+
+  it('is carried by some layer against EVERY color in the palette', () => {
+    // The invariant that made a two-tone ring necessary, and the reason this
+    // list is not hand-maintained.
+    //
+    // A ring abuts two things: the ground outside it and the control inside it.
+    // This palette holds controls at both ends of the ramp - paper-light
+    // borders (--ds-border-strong) and near-black fills (--ds-navy, --ds-ok,
+    // --ds-seal) - so the two constraints are contradictory and NO single color
+    // satisfies them: opaque --ds-stream fails 12 of these and --ds-stream-ink
+    // fails 7. Two layers split the job; each adjacent color needs only ONE of
+    // them to clear the floor, which is how WCAG treats a multi-color indicator.
+    //
+    // Sweeping the whole palette rather than a curated list of "grounds" is
+    // deliberate: a curated list cannot notice a newly introduced filled
+    // control, which is precisely the kind of omission that produced ds-dce.
+    const layers = shadowLayers(tokens, readToken(tokens, '--ds-ring'));
+    const palette = colorTokens(tokens);
+    expect(Object.keys(palette).length).toBeGreaterThan(25); // premise: parsed the palette
+
+    const failures: string[] = [];
+    for (const [name, color] of Object.entries(palette)) {
+      const best = Math.max(...layers.map((l) => contrastOver(l.hex, l.alpha, color)));
+      if (best < FLOOR) failures.push(`${name} (${color}): best layer ${best.toFixed(3)}`);
+    }
+
+    expect(
+      failures,
+      `no ring layer clears ${FLOOR}:1 against:\n  ${failures.join('\n  ')}`
+    ).toEqual([]);
   });
 });
 
 describe('instrument band numerals', () => {
   /**
    * Every `--ds-*` color assigned to `.instrument-band__num`, parsed from the
-   * component. Parsed rather than listed because an allowlist is exactly how
-   * ds-16e survived: its bead audited three numeral colors and there were four.
-   * A fifth added later is covered by this test the moment it is written.
+   * component. Parsed rather than listed because an allowlist is how ds-16e
+   * survived: its bead audited three numeral colors and there are four.
    */
   function numeralColorTokens(source: string): string[] {
     const found = new Set<string>();
-    const ruleRe = /([^{}]*)\{([^{}]*)\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = ruleRe.exec(source))) {
+    for (const m of source.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
       const [, selector, body] = m;
       if (!selector.includes('.instrument-band__num')) continue;
-      const colorRe = /(?:^|[;{\s])color:\s*var\(\s*(--[\w-]+)\s*\)/g;
-      let c: RegExpExecArray | null;
-      while ((c = colorRe.exec(body))) found.add(c[1]);
+      for (const c of body.matchAll(/(?:^|[;{\s])color:\s*var\(\s*(--[\w-]+)\s*\)/g)) {
+        found.add(c[1]);
+      }
     }
     return [...found];
   }
 
-  /**
-   * The opacity applied to the numeral on hover, or 1 when no such rule exists.
-   *
-   * Defaulting to 1 is what makes DELETING the fade the way to pass: the fix
-   * for ds-16e is the absence of a rule, and a test that only checked a number
-   * could not tell "no fade" from "no rule found".
-   */
-  function hoverAlpha(source: string): number {
-    const ruleRe = /([^{}]*)\{([^{}]*)\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = ruleRe.exec(source))) {
-      const [, selector, body] = m;
-      if (!selector.includes(':hover') || !selector.includes('.instrument-band__num')) continue;
-      const o = /(?:^|[;{\s])opacity:\s*([\d.]+)/.exec(body);
-      if (o) return Number(o[1]);
-    }
-    return 1;
-  }
-
   it('finds every numeral color, including the unknown placeholder', () => {
-    // A premise check. If the parser silently matched nothing, the contrast
-    // assertions below would pass over an empty list and prove nothing at all.
+    // A premise check. Without it, a parser that silently matched nothing would
+    // let the assertions below iterate an empty list and prove nothing.
     const found = numeralColorTokens(band);
     expect(found).toContain('--ds-navy'); // managed
     expect(found).toContain('--ds-warn'); // drift
-    expect(found).toContain('--ds-stream'); // awaiting
+    expect(found).toContain('--ds-stream'); // awaiting (static — never fades)
     expect(found).toContain('--ds-faint'); // [data-unknown] — the one ds-16e missed
   });
 
-  it('clears 3:1 at rest AND while hovered', () => {
-    // The band's own ground: .approval-desk sets background: var(--ds-bg).
+  it('clears 3:1 at rest', () => {
+    // .approval-desk sets background: var(--ds-bg), so paper is the band's ground.
     const ground = resolveColor(tokens, 'var(--ds-bg)');
-    const alpha = hoverAlpha(band);
     const failures: string[] = [];
 
     for (const token of numeralColorTokens(band)) {
-      const declared = resolveColor(tokens, `var(${token})`);
-      for (const [state, a] of [
-        ['rest', 1],
-        ['hover', alpha]
-      ] as const) {
-        const rendered = composite(declared, a, ground);
-        const ratio = contrastOver(declared, a, ground);
-        if (ratio < FLOOR) {
-          failures.push(`${token} @${state} (alpha ${a}): ${ratio.toFixed(3)} — renders ${rendered}`);
-        }
-      }
+      const ratio = contrastRatio(resolveColor(tokens, `var(${token})`), ground);
+      if (ratio < FLOOR) failures.push(`${token}: ${ratio.toFixed(3)}`);
     }
 
-    expect(failures, `numerals below ${FLOOR}:1:\n  ${failures.join('\n  ')}`).toEqual([]);
+    expect(failures, `numerals below ${FLOOR}:1 at rest:\n  ${failures.join('\n  ')}`).toEqual([]);
+  });
+
+  it('is never attenuated on hover, at any strength', () => {
+    // ds-16e's fix is the ABSENCE of a rule, so this asserts absence directly
+    // rather than measuring a fade that should not exist. Measuring instead
+    // would fail open in every way the fade could come back: `opacity: var(..)`,
+    // a percentage, a `filter: opacity()`, an animation, or the opacity moving
+    // up to the parent stat.
+    //
+    // Why absence rather than a safe value: of the three numerals that could
+    // fade (awaiting is interactive:false, so it never did — despite ds-16e's
+    // title), the [data-unknown] placeholder takes --ds-faint and rests at just
+    // 3.083:1. It needs alpha >= ~.981 to hold 3:1, which is not a fade anyone
+    // can perceive, so there is no useful value between "none" and "broken".
+    // It is reachable on both interactive stats: ApprovalDesk passes null for
+    // managed and drift whenever the graph is unavailable.
+    /**
+     * Does this selector's SUBJECT receive the declaration?
+     *
+     * The subject is the last compound, not any mention: the band already has a
+     * rule reading `.instrument-band__stat:hover ... .instrument-band__label
+     * { opacity: 0 }`, which blanks the LABEL under its hint and is correct. A
+     * looser `includes()` flags it, so match the numeral itself or the stat
+     * (whose opacity would inherit down to the numeral).
+     */
+    function attenuatesNumeral(selector: string): boolean {
+      return selector
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split(',')
+        .some((part) => {
+          const compounds = part.trim().split(/\s+/);
+          const subject = compounds[compounds.length - 1] ?? '';
+          const interactiveState = /:hover|:focus-visible/.test(part);
+          const hits =
+            subject.includes('instrument-band__num') || subject.includes('instrument-band__stat');
+          return interactiveState && hits;
+        });
+    }
+
+    const offenders: string[] = [];
+    for (const m of band.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+      const [, selector, body] = m;
+      if (!attenuatesNumeral(selector)) continue;
+      const attenuation = /(?:^|[;{\s])(opacity|filter)\s*:\s*([^;]+)/.exec(body);
+      if (!attenuation) continue;
+      const [, prop, value] = attenuation;
+      // Fail CLOSED: an opacity we cannot parse is not an opacity we can clear.
+      const isFullyOpaque = prop === 'opacity' && Number(value.trim()) === 1;
+      if (!isFullyOpaque) offenders.push(`${selector.trim()} { ${prop}: ${value.trim()} }`);
+    }
+
+    expect(
+      offenders,
+      `a hover rule attenuates the band numeral:\n  ${offenders.join('\n  ')}`
+    ).toEqual([]);
   });
 });

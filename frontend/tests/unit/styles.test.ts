@@ -211,6 +211,36 @@ describe('tokens.css — design-system custom properties', () => {
     ).toEqual([]);
   });
 
+  it('references no --ds-* custom property that is declared nowhere', () => {
+    // ds-b42: three popovers read `var(--ds-shadow-md, var(--ds-shadow-sm))`.
+    // --ds-shadow-md has never existed, so all three silently took the FALLBACK
+    // — the lightest shadow in the set — while tokens.css names popovers as one
+    // of the three things that earn real elevation. Nothing failed; they just
+    // rendered a tier lighter than intended, forever.
+    //
+    // This generalizes the retired-token test above: that one needs a human to
+    // add each dead name, and a token that never existed was never on the list.
+    // Here anything referenced but undeclared is an offender, whether it was
+    // retired, renamed, or simply mistyped. A `var(--x, fallback)` is still an
+    // offender: the fallback makes the mistake invisible, not correct.
+    const declared = new Set(
+      [...stripComments(tokens).matchAll(/(--ds-[\w-]+)\s*:/g)].map((m) => m[1]),
+    );
+    expect(declared.size).toBeGreaterThan(50); // premise: the parse found the palette
+
+    const offenders: string[] = [];
+    for (const file of svelteAndCssSources()) {
+      const src = stripComments(readFileSync(file, 'utf8'));
+      for (const m of src.matchAll(/var\(\s*(--ds-[\w-]+)/g)) {
+        if (!declared.has(m[1])) offenders.push(`${relative(srcDir, file)}: ${m[1]}`);
+      }
+    }
+    expect(
+      [...new Set(offenders)],
+      `var() reads an undeclared --ds-* token:\n${[...new Set(offenders)].join('\n')}`,
+    ).toEqual([]);
+  });
+
   it('has no component still referencing a retired paper-world token', () => {
     // The declarations being gone is only half of it: a component reading
     // var(--ds-paper-mut) after the block was deleted would silently render an

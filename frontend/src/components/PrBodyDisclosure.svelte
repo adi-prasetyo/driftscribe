@@ -199,7 +199,13 @@
   }
 
   .md-link {
-    color: var(--ds-accent, var(--ds-fg));
+    /* --ds-accent has never been declared, so this read its fallback and painted
+       links in body ink: inside a rendered PR body, a link was distinguishable
+       from prose by its underline alone. --ds-stream-ink is the palette's
+       text-level blue (base.css gives bare `a` the same value) and clears 4.5:1
+       on both grounds this disclosure renders on — 5.40 on paper, 5.64 on a
+       white card. Found by the undeclared-token sweep added for ds-b42. */
+    color: var(--ds-stream-ink);
     text-decoration: underline;
     word-break: break-word;
   }

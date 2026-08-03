@@ -12,10 +12,18 @@
  * the new value instead of silently drifting away from a hardcoded expectation.
  */
 
-/** sRGB channel -> linear, per WCAG 2.x relative luminance. */
+/**
+ * sRGB channel -> linear, for WCAG relative luminance.
+ *
+ * The breakpoint is sRGB's 0.04045. WCAG's own prose says 0.03928, a rounding
+ * of the same number that survived into the spec; the two disagree only for
+ * channel values strictly between 10.01 and 10.31 out of 255, so no 8-bit color
+ * can tell them apart. Compositing produces fractional channels that could land
+ * in that window, which is the only reason it is worth being deliberate here.
+ */
 function channel(c8: number): number {
   const c = c8 / 255;
-  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
 function rgb(hex: string): [number, number, number] {
@@ -108,23 +116,59 @@ export function resolveColor(css: string, value: string, depth = 0): string {
   throw new Error(`not an opaque color: ${v}`);
 }
 
-/**
- * Pull the color out of a `box-shadow` value, as {hex, alpha}.
- *
- * Handles the two forms the ring has taken: a bare `rgba(...)` and a
- * `var(--token)` reference. Alpha is surfaced rather than resolved away so the
- * ring pin can composite it over each ground and report what actually renders.
- */
-export function shadowColor(css: string, shadow: string): { hex: string; alpha: number } {
-  const rgbaMatch = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(shadow);
+/** Split on top-level commas, ignoring those inside `rgba(...)` / `var(...)`. */
+function splitLayers(value: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const c of value) {
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    if (c === ',' && depth === 0) {
+      out.push(current);
+      current = '';
+    } else current += c;
+  }
+  if (current.trim()) out.push(current);
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+/** The color of one `box-shadow` layer, as {hex, alpha}. */
+function layerColor(css: string, layer: string): { hex: string; alpha: number } {
+  const rgbaMatch = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(layer);
   if (rgbaMatch) {
     const [, r, g, b, a] = rgbaMatch;
     const hex = '#' + [r, g, b].map((c) => Number(c).toString(16).padStart(2, '0')).join('');
     return { hex, alpha: a === undefined ? 1 : Number(a) };
   }
-  const varMatch = /var\(\s*--[\w-]+\s*\)/.exec(shadow);
+  const varMatch = /var\(\s*--[\w-]+\s*\)/.exec(layer);
   if (varMatch) return { hex: resolveColor(css, varMatch[0]), alpha: 1 };
-  const hexMatch = /#[0-9a-fA-F]{6}\b/.exec(shadow);
+  const hexMatch = /#[0-9a-fA-F]{6}\b/.exec(layer);
   if (hexMatch) return { hex: hexMatch[0], alpha: 1 };
-  throw new Error(`no color found in box-shadow: ${shadow}`);
+  throw new Error(`no color found in box-shadow layer: ${layer}`);
+}
+
+/**
+ * Every layer of a `box-shadow`, in DECLARATION order.
+ *
+ * Declaration order is paint order: the first layer is drawn on top of the
+ * later ones, so for the spread-only ring the first entry is the INNER band and
+ * the last is the OUTER. Alpha is surfaced rather than resolved away so a pin
+ * can composite it and report what actually renders.
+ */
+export function shadowLayers(css: string, shadow: string): { hex: string; alpha: number }[] {
+  const layers = splitLayers(shadow).map((l) => layerColor(css, l));
+  if (!layers.length) throw new Error(`no layers in box-shadow: ${shadow}`);
+  return layers;
+}
+
+/** Every `--ds-*` token in the palette whose value is an opaque hex color. */
+export function colorTokens(css: string): Record<string, string> {
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: Record<string, string> = {};
+  for (const m of stripped.matchAll(/(--ds-[\w-]+)\s*:\s*([^;]+);/g)) {
+    const value = m[2].trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(value)) out[m[1]] = value;
+  }
+  return out;
 }
