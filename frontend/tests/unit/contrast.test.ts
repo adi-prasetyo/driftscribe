@@ -226,20 +226,27 @@ describe('instrument band numerals', () => {
         .map((part) => part.trim().split(/\s+/).pop() ?? '');
     }
 
+    // The numeral and every element that can CONTAIN it: opacity on an ancestor
+    // fades the numeral just as surely as opacity on the numeral, and
+    // `.instrument-band` / `.instrument-band__stats` are both live ancestors.
+    // Siblings are deliberately excluded — `.instrument-band__label` carries a
+    // legitimate `opacity: 0` under :hover for the hint swap (ds-7ag.2), and it
+    // is never an ancestor of the numeral, so it cannot attenuate it.
+    const CONTAINS_NUMERAL = /instrument-band(?:__(?:stats?|num))?(?:--[\w-]+)?(?![\w-])/;
+
     const offenders: string[] = [];
     for (const m of style.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
       const [, selector, body] = m;
       const subject = subjects(selector);
+      if (!subject.some((s) => CONTAINS_NUMERAL.test(s))) continue;
       const hitsNumeral = subject.some((s) => s.includes('instrument-band__num'));
-      const hitsStat = subject.some((s) => s.includes('instrument-band__stat'));
-      if (!hitsNumeral && !hitsStat) continue;
       const interactive = /:hover|:focus/.test(selector);
       const flag = (what: string) => offenders.push(`${selector.trim().split('\n').pop()} { ${what} }`);
 
       // Attenuating properties, case-insensitively and including vendor
       // prefixes. Checked on the numeral ALWAYS (a base rule reading a custom
-      // property is half of the indirection trick) and on the stat only when
-      // interactive, since a resting stat-level opacity is not a hover fade.
+      // property is half of the indirection trick) and on an ancestor only when
+      // interactive, since a resting ancestor opacity is not a hover fade.
       if (hitsNumeral || interactive) {
         for (const d of body.matchAll(/(?:^|[;{\s])(-[a-z]+-)?(opacity|filter|animation[\w-]*)\s*:\s*([^;]+)/gi)) {
           const prop = `${d[1] ?? ''}${d[2]}`;

@@ -156,8 +156,18 @@ export type ShadowLayer = {
 
 /** `0`, or a px length. Nothing else is a length this design system writes. */
 const LENGTH = String.raw`(?:0|-?\d*\.?\d+px)`;
-/** Exactly one color, in one of the three notations the ring has ever used. */
-const COLOR = String.raw`(?:var\(\s*--[\w-]+\s*\)|#[0-9a-fA-F]{3,8}|rgba?\([^()]*\))`;
+/**
+ * Exactly one color, in one of the three notations the ring has ever used.
+ *
+ * The rgb()/rgba() form is spelled out rather than allowed as "anything between
+ * the parentheses", because CSS is stricter than JavaScript about numbers:
+ * `rgba(255,255,255,1.)` has no digit after the point, so the browser rejects
+ * the whole declaration and renders no ring — while `Number('1.')` is 1 and a
+ * lenient parser reports a perfectly opaque white layer.
+ */
+const CHANNEL = String.raw`\d{1,3}`;
+const ALPHA = String.raw`(?:0|1|0?\.\d+|1\.0+)`;
+const COLOR = String.raw`(?:var\(\s*--[\w-]+\s*\)|#[0-9a-fA-F]{3,8}|rgba?\(\s*${CHANNEL}\s*,\s*${CHANNEL}\s*,\s*${CHANNEL}\s*(?:,\s*${ALPHA}\s*)?\))`;
 /**
  * A whole layer: four lengths then one color, and nothing else.
  *
@@ -183,9 +193,11 @@ const CANONICAL_LAYER = new RegExp(String.raw`^${LENGTH}(?:\s+${LENGTH}){3}\s+${
  *                                the numbers still parse as sensible
  *   `calc(2px + 3em)`            a lenient scan reads some digits out of it
  *   a fifth length               silently ignored by a positional read
+ *   `0 0 0 2px var(--a) var(--b)` two colors, also invalid, and invisible to a
+ *                                check that strips colors before validating
  *
- * Colors are stripped BEFORE matching, so digits inside a token name
- * (`var(--ds-fs-1)`) can never be read as a length.
+ * Matching the whole layer is also what keeps digits inside a token name
+ * (`var(--ds-fs-1)`) from ever being read as a length.
  */
 function layerGeometry(layer: string): Omit<ShadowLayer, 'hex' | 'alpha'> {
   const inset = /\binset\b/i.test(layer);
@@ -199,9 +211,16 @@ function layerGeometry(layer: string): Omit<ShadowLayer, 'hex' | 'alpha'> {
   return { offsetX, offsetY, blur, spread, inset, badSyntax: null };
 }
 
-/** The color of one `box-shadow` layer, as {hex, alpha}. */
+/**
+ * The color of one `box-shadow` layer, as {hex, alpha}.
+ *
+ * Uses the SAME strict channel/alpha grammar as `COLOR`, so a value that the
+ * layer grammar rejects cannot be quietly re-read here as something valid.
+ */
 function layerColor(css: string, layer: string): { hex: string; alpha: number } {
-  const rgbaMatch = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(layer);
+  const rgbaMatch = new RegExp(
+    String.raw`rgba?\(\s*(${CHANNEL})\s*,\s*(${CHANNEL})\s*,\s*(${CHANNEL})\s*(?:,\s*(${ALPHA})\s*)?\)`
+  ).exec(layer);
   if (rgbaMatch) {
     const [, r, g, b, a] = rgbaMatch;
     const hex = '#' + [r, g, b].map((c) => Number(c).toString(16).padStart(2, '0')).join('');

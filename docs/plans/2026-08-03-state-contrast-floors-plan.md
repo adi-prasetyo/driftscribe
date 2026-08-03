@@ -148,18 +148,28 @@ human to add each dead name, and a token that never existed was never on a list.
   `filter` / `animation*` declaration (case-insensitively, vendor prefixes
   included), a custom property set under `:hover`/`:focus` that a base rule
   could read, and a translucent `color` — failing **closed** on anything it
-  cannot prove harmless, and scanning the `<style>` block rather than the whole
-  file so template markup cannot be mistaken for CSS
+  cannot prove harmless. Scoped to the numeral and every element that can
+  CONTAIN it (`.instrument-band`, `__stats`, `__stat`, `__num`), since opacity
+  on an ancestor fades it just as surely; siblings like `__label`, which carries
+  a legitimate hover fade for the hint swap, are excluded. Reads the `<style>`
+  block only, so template markup is never brace-matched as CSS
 
-Verified by **37 injections**, each reddening only its own test: the bead's
+Verified by **40 injections**, each reddening only its own test: the bead's
 proposed single-color ring; spreads swapped, equalised, sub-pixel, half-pixel,
 or 100000px; `inset` (upper and lower case), blur, offset; `1em` against `px`,
 `calc()`, a bare number, `%`, a fifth length, three layers, two colors in one
 layer, a trailing comma, unbalanced parentheses; `opacity: var(--x)`,
 `opacity: 1` then `filter: opacity(.5)`, `animation-name` alone,
 `Animation-Name`, `-webkit-animation-name`, a bare `:focus`, a custom property
-set on hover and read by a base rule, a translucent `color`, and the fade moved
-up to the parent stat.
+set on hover and read by a base rule, a translucent `color`, the fade moved up
+to the parent stat, and `opacity` on the `.instrument-band` / `__stats`
+ANCESTORS, which fade the numeral without naming it.
+
+Plus `rgba(255,255,255,1.)` — invalid CSS, because a decimal point needs a digit
+after it, so the browser drops the declaration; `Number('1.')` is 1 and a
+lenient parser reports a perfectly opaque white. Paired with a control
+(`rgba(255,255,255,1)`) that must still pass, so the pin is proven to reject the
+invalid number rather than the notation.
 
 **What the sweep does not prove.** It covers the 32 tokens declared as direct
 `#rrggbb`. It would not automatically see a token later written as `rgb()`,
