@@ -224,8 +224,28 @@ export const desk = {
     // suppression rule is an absence claim over the same lane: a later
     // successful rollback retires an older failure, and a stale list can omit
     // that success.
-    'desk.unresolved.staleNotice':
-      'This outcome could not be re-checked just now. A later rollback may already have settled it.',
+    // Two notices, not one, because the two phases can go false in DIFFERENT
+    // ways and a shared string would misdescribe one of them.
+    //
+    // `failed` is terminal for its own attempt (workers/rollback/main.py:1043),
+    // so its stated facts stay true. The only thing a retained list can get
+    // wrong is presenting it as the CURRENT open loop, because rule 2.5 retires
+    // an old failure via `newestAppliedAttempt` and a stale list can omit that
+    // later success.
+    //
+    // `outcome_unknown` is NONTERMINAL — /reconcile can promote the same attempt
+    // to applied or failed (workers/rollback/main.py:1025) — so it can be wrong
+    // in that way TOO, about itself. Its headline and body are replaced rather
+    // than annotated: "the outcome IS unconfirmed" is a live claim, and a notice
+    // underneath does not stop the sentence above from making it.
+    'desk.unresolved.stale.failedNotice':
+      'This could not be re-checked just now, so a later rollback may already have put the service right.',
+    'desk.unresolved.stale.unknownNotice':
+      'This could not be re-checked just now. The outcome may have been confirmed since, or a later rollback may already have settled it.',
+    'desk.unresolved.stale.unknownHeadline':
+      "The rollback's outcome was unconfirmed when this was last checked.",
+    'desk.unresolved.stale.unknownBody':
+      'The traffic change was accepted but took longer than we waited. That was the state at the last successful check, and it may have resolved since. Check the service in Cloud Run before acting on this.',
 
     // No second person — see the register note on desk.ledger.* above; the
     // approval doc records no actor, so this byline cannot name one.
@@ -427,8 +447,16 @@ export const desk = {
       'ロールバック提案は、最後に確認した時点ではあなたの対応を待っていました。',
     'desk.pending.staleNotice':
       'このカードの現在の状態を今は更新できませんでした。すでに処理済みの可能性があります。実際の状況は承認ページでご確認ください。',
-    'desk.unresolved.staleNotice':
-      'この結果を今は再確認できませんでした。その後のロールバックで既に解消されている可能性があります。',
+    // EN のコメント参照。failed と outcome_unknown では「古くなり方」が
+    // 異なるため、注記も分ける。outcome_unknown は見出しと本文ごと差し替える。
+    'desk.unresolved.stale.failedNotice':
+      'これを今は再確認できませんでした。その後のロールバックで既に復旧している可能性があります。',
+    'desk.unresolved.stale.unknownNotice':
+      'これを今は再確認できませんでした。その後に結果が確定した可能性も、後続のロールバックで既に解消された可能性もあります。',
+    'desk.unresolved.stale.unknownHeadline':
+      '最後に確認した時点では、ロールバックの結果を確認できていませんでした。',
+    'desk.unresolved.stale.unknownBody':
+      'トラフィックの切り替えは受理されましたが、待機時間内に完了を確認できませんでした。これは最後に確認できた時点の状態であり、その後に解消している可能性があります。対応の前に Cloud Run で当該サービスの状態をご確認ください。',
 
     'desk.stamped.who': '承認済み',
     'desk.stamped.rollback.detail': 'ロールバック適用',

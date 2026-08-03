@@ -612,9 +612,15 @@ describe('createOverviewStore — graphStale (ds-1vn)', () => {
   });
 });
 
-// ds-jk9. The third per-lane flag, and the one the desk hero needs: `degraded`
-// already fires when EITHER desk lane fails, so gating the hero's CTA on it
-// would discard a perfectly fresh listing whenever /decisions blinked.
+// ds-jk9. The third per-lane flag, and the one the desk hero needs.
+//
+// The asymmetry runs ONE WAY. A /decisions failure invalidates every pending
+// card the hero can select, the listing-derived one included — rule 2a admits a
+// listing row only via an absence check over `decisions`. What per-lane gating
+// buys is the converse: a pending-approvals failure says nothing about a
+// rollback or a decisions-derived card, and the aggregate `degraded` fires for
+// either lane, so gating on it would withdraw those two every time the GitHub
+// listing blinked.
 describe('createOverviewStore — decisionsStale (ds-jk9)', () => {
   it('is set when the decisions fetch fails', async () => {
     const { fn } = makeCall({ decisions: () => res({}, 500) });

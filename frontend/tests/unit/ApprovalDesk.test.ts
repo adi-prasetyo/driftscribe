@@ -1904,32 +1904,84 @@ describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds
     expect(getByTestId('approval-desk-pending').textContent).toContain('Anchor is proposing a fix');
   });
 
-  it('an unresolved outcome is qualified too, and keeps its phase distinction', () => {
-    const failed = rollbackDecision({
-      approval: { approval_url: '/approvals/rb-1?t=x', status: 'used', phase: 'failed' },
+  function unresolved(phase: 'failed' | 'outcome_unknown'): Decision {
+    return rollbackDecision({
+      approval: { approval_url: '/approvals/rb-1?t=x', status: 'used', phase },
     });
+  }
+
+  it('a stale outcome_unknown drops its live claim, not just its notice', () => {
+    // The case that makes rule 2.5 a blocker rather than a nicety.
+    // outcome_unknown is NONTERMINAL: /reconcile can promote the same attempt
+    // to applied or failed. So "the outcome IS unconfirmed" and "we cannot
+    // confirm it either way" are live claims a retained list cannot support.
+    //
+    // An earlier version of this test used only `phase: 'failed'` and asserted
+    // that the notice EXISTED. It passed while both sentences above went on
+    // asserting — a presence assertion blessing the copy it was meant to police,
+    // for the second time on this branch.
+    const fresh = render(ApprovalDesk, {
+      props: { ...base, decisions: [unresolved('outcome_unknown')], pendingApprovals: [] },
+    });
+    // Premise: the live claim really is there when the lane is good.
+    expect(fresh.getByTestId('approval-desk-unresolved').textContent).toMatch(
+      /outcome is unconfirmed/i,
+    );
+    cleanup();
+
     const { getByTestId } = render(ApprovalDesk, {
       props: {
         ...base,
-        decisions: [failed],
+        decisions: [unresolved('outcome_unknown')],
         pendingApprovals: [],
         decisionsStale: true,
         degraded: true,
       },
     });
     const card = getByTestId('approval-desk-unresolved');
-    // failed must never render as outcome_unknown, stale or not.
-    expect(card.getAttribute('data-phase')).toBe('failed');
-    expect(getByTestId('approval-desk-unresolved-stale-notice')).toBeTruthy();
+    expect(card.getAttribute('data-phase')).toBe('outcome_unknown');
+    expect(card.textContent).not.toMatch(/outcome is unconfirmed|cannot confirm it either way/i);
+    expect(card.textContent).toMatch(/was unconfirmed when this was last checked/i);
+    // Its notice names the reconciliation case, which the failed one cannot have.
+    expect(getByTestId('approval-desk-unresolved-stale-notice').textContent).toMatch(
+      /confirmed since/i,
+    );
   });
 
-  it('JA keeps the claim out too', async () => {
+  it('a stale failed keeps its terminal facts and gets the other notice', () => {
+    // failed is terminal for its own attempt, so its sentences stay true. The
+    // only thing a retained list gets wrong is presenting it as the CURRENT
+    // open loop, so the notice names a later rollback and must NOT offer the
+    // reconciliation escape that only outcome_unknown has.
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [unresolved('failed')],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-unresolved');
+    expect(card.getAttribute('data-phase')).toBe('failed');
+    expect(card.textContent).toMatch(/did not apply/i);
+    const notice = getByTestId('approval-desk-unresolved-stale-notice');
+    expect(notice.textContent).toMatch(/later rollback/i);
+    expect(notice.textContent).not.toMatch(/confirmed since/i);
+  });
+
+  it('JA keeps the claim out too, on BOTH sources', async () => {
     // A locale that keeps the present tense is the same defect in the language
     // the product is delivered in.
+    //
+    // Both fixtures, because an earlier version rendered only the rollback one:
+    // 確認が必要 and 承認済み belong to the IaC bylines, so against a rollback
+    // card those alternatives could never appear and mutation-proved nothing.
     const { locale } = await import('../../src/lib/i18n');
+    const CLAIMS = /待っています|確認が必要|承認済み|提案しています|適用を待って/;
     locale.set('ja');
     try {
-      const { getByTestId } = render(ApprovalDesk, {
+      const rb = render(ApprovalDesk, {
         props: {
           ...base,
           decisions: [rollbackDecision()],
@@ -1938,8 +1990,30 @@ describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds
           degraded: true,
         },
       });
-      const card = getByTestId('approval-desk-pending');
-      expect(card.textContent).not.toMatch(/待っています|確認が必要|承認済み|提案しています/);
+      expect(rb.getByTestId('approval-desk-pending').textContent).not.toMatch(CLAIMS);
+      cleanup();
+
+      // Premise check: this fixture's JA byline really does assert, when fresh.
+      const freshIac = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' })],
+          pendingApprovals: [],
+        },
+      });
+      expect(freshIac.getByTestId('approval-desk-pending').textContent).toMatch(CLAIMS);
+      cleanup();
+
+      const iac = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' })],
+          pendingApprovals: [],
+          decisionsStale: true,
+          degraded: true,
+        },
+      });
+      expect(iac.getByTestId('approval-desk-pending').textContent).not.toMatch(CLAIMS);
     } finally {
       locale.set('en');
     }

@@ -701,9 +701,30 @@
             >{$t(failed ? 'desk.unresolved.failed.detail' : 'desk.unresolved.unknown.detail')}</span
           >
         </div>
-        <h2>{$t(failed ? 'desk.unresolved.failed.headline' : 'desk.unresolved.unknown.headline')}</h2>
+        <!-- ds-jk9, Codex round 1 of #290. `failed` is TERMINAL for its own
+             attempt, so its headline and body stay historical and true even on
+             a retained list. `outcome_unknown` is NOT: /reconcile can promote
+             the same attempt, so "the outcome IS unconfirmed" and "we cannot
+             confirm it either way" are live claims that a stale list cannot
+             support. They are REPLACED, not annotated — a notice underneath
+             does not stop the sentence above from making the claim. -->
+        <h2>
+          {$t(
+            failed
+              ? 'desk.unresolved.failed.headline'
+              : model.stale
+                ? 'desk.unresolved.stale.unknownHeadline'
+                : 'desk.unresolved.unknown.headline',
+          )}
+        </h2>
         <p class="approval-desk__unresolved-body">
-          {$t(failed ? 'desk.unresolved.failed.body' : 'desk.unresolved.unknown.body')}
+          {$t(
+            failed
+              ? 'desk.unresolved.failed.body'
+              : model.stale
+                ? 'desk.unresolved.stale.unknownBody'
+                : 'desk.unresolved.unknown.body',
+          )}
         </p>
         <!-- ds-jk9. No CTA here, which is not a defence: the card's whole
              content is a verdict, and rule 2.5's own suppression is an absence
@@ -711,10 +732,16 @@
              failure once a LATER rollback applied). A stale list that omits
              that later success leaves a resolved failure standing as the
              current open loop. The phase distinction is untouched — a `failed`
-             must never soften into `outcome_unknown`, stale or not. -->
+             must never soften into `outcome_unknown`, stale or not, which is
+             also why the notice itself is phase-keyed: only the nonterminal
+             phase can have been confirmed since. -->
         {#if model.stale}
           <p class="approval-desk__notice" data-testid="approval-desk-unresolved-stale-notice">
-            {$t('desk.unresolved.staleNotice')}
+            {$t(
+              failed
+                ? 'desk.unresolved.stale.failedNotice'
+                : 'desk.unresolved.stale.unknownNotice',
+            )}
           </p>
         {/if}
         <DriftDiffCard decision={model.decision} />
