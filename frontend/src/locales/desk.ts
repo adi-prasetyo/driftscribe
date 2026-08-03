@@ -194,6 +194,39 @@ export const desk = {
     // `shared.rail.traceButton.viewReasoning` so one product means one phrase.
     'desk.pending.viewReasoning': 'view the reasoning behind this →',
 
+    // ---- ds-jk9. A card the desk selected from a lane that did not refresh in
+    // the last cycle. overviewStore RETAINS a failed lane's previous value, so
+    // the item may already be resolved: a spent single-use rollback token, a PR
+    // that has since closed or merged.
+    //
+    // Everything here is PAST TENSE and names the evidence ("when this was last
+    // checked") rather than the system state. The card keeps its identity - the
+    // PR title, the number, the proposed-at time, the diff - because identity
+    // survives a retained value. What it loses is every present-tense claim
+    // about where the item stands now, and the live CTA that acts on that claim.
+    'desk.pending.stale.who': 'Last seen waiting for you',
+    'desk.pending.stale.headlineFallback':
+      'Infrastructure change PR #{pr} was waiting for you when this was last checked.',
+    'desk.pending.stale.rollbackHeadline':
+      'A rollback proposal was waiting for you when this was last checked.',
+    // Lane-NEUTRAL on purpose. An earlier draft said "the decision record could
+    // not be re-read", which is simply false when only /infra/pending-approvals
+    // failed - one card can be stale from either lane, and the copy cannot name
+    // a lane it does not know.
+    //
+    // It sends the operator to the approval page rather than apologising,
+    // because that page is authoritative: it re-reads live state and renders
+    // either the real form or a spent-token banner. The operator loses no
+    // capability here. What they stop getting is the desk pre-judging which.
+    'desk.pending.staleNotice':
+      "This card's current status could not be refreshed just now, so it may already be resolved. Open the approval page to see where it actually stands.",
+    // Rule 2.5 has no CTA, but its whole content is a verdict and its
+    // suppression rule is an absence claim over the same lane: a later
+    // successful rollback retires an older failure, and a stale list can omit
+    // that success.
+    'desk.unresolved.staleNotice':
+      'This outcome could not be re-checked just now. A later rollback may already have settled it.',
+
     // No second person — see the register note on desk.ledger.* above; the
     // approval doc records no actor, so this byline cannot name one.
     'desk.stamped.who': 'Approved',
@@ -384,6 +417,18 @@ export const desk = {
     'desk.pending.viewDetailsCta': '承認の詳細を見る',
     'desk.pending.viewFailureCta': '失敗の詳細を見る',
     'desk.pending.viewReasoning': 'この提案に至った推論を見る →',
+
+    // ds-jk9. EN のコメント参照。すべて過去形で、「最後に確認した時点」という
+    // 根拠を名指す。現在形の断定は一切残さない。
+    'desk.pending.stale.who': '最後に確認した時点では待機中',
+    'desk.pending.stale.headlineFallback':
+      'インフラ変更 PR #{pr} は、最後に確認した時点ではあなたの対応を待っていました。',
+    'desk.pending.stale.rollbackHeadline':
+      'ロールバック提案は、最後に確認した時点ではあなたの対応を待っていました。',
+    'desk.pending.staleNotice':
+      'このカードの現在の状態を今は更新できませんでした。すでに処理済みの可能性があります。実際の状況は承認ページでご確認ください。',
+    'desk.unresolved.staleNotice':
+      'この結果を今は再確認できませんでした。その後のロールバックで既に解消されている可能性があります。',
 
     'desk.stamped.who': '承認済み',
     'desk.stamped.rollback.detail': 'ロールバック適用',

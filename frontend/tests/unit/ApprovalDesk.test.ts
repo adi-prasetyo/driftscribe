@@ -1780,3 +1780,168 @@ describe('ApprovalDesk — undelivered-notification notice (ds-hdt)', () => {
     expect(queryByTestId('approval-desk-notify-failed')).toBeNull();
   });
 });
+
+// ds-jk9 / ds-smr. deskModel stamps `stale` when the lane that produced the
+// card did not refresh (desk.test.ts covers WHICH lane stamps WHICH rule). This
+// block covers what the component owes a stale card: keep every piece of
+// identity, drop the live CTA, and drop every present-tense claim about the
+// item's current state.
+//
+// Suppressing only the button would be the half-fix: every byline and headline
+// fallback on this card is written in the present tense, so a silenced Approve
+// under "An infrastructure change is waiting for your review" still tells the
+// operator something the app just failed to establish.
+describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds-jk9)', () => {
+  const base = { graph: GRAPH, onShowEstate: vi.fn() };
+
+  it('rollback: identity survives, CTA and byline do not', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [rollbackDecision()],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-pending');
+    // Identity: the card is still here, still carries its diff evidence.
+    expect(card.getAttribute('data-source')).toBe('rollback');
+    expect(card.textContent).toContain('LOG_LEVEL');
+    // Verdict: gone.
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(getByTestId('approval-desk-view-stale')).toBeTruthy();
+    expect(getByTestId('approval-desk-stale-notice')).toBeTruthy();
+    // The rollback byline reaches the template through its OWN ternary, not
+    // through pendingWhoKey — so a stale arm added only to that helper would
+    // miss every rollback card. This assertion is what catches that.
+    expect(card.textContent).not.toMatch(/is proposing|waiting for your decision/i);
+  });
+
+  it('iac listing: identity survives, CTA and byline do not', () => {
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [],
+        pendingApprovals: [pendingIac()],
+        approvalsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-pending');
+    // Identity: the PR title and number are facts about WHICH item this is.
+    expect(card.textContent).toContain('Adopt orders-sub into IaC');
+    expect(card.textContent).toContain('PR #7');
+    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(getByTestId('approval-desk-view-stale')).toBeTruthy();
+  });
+
+  it('drops every present-tense variant, not just the ones the first draft listed', () => {
+    // A presence-only assertion blesses whatever copy it finds — twice over in
+    // #289. Assert the CLAIM. All six asserting strings on this card are
+    // covered, including iacMerged's "is approved and waiting to be applied",
+    // which an earlier regex here missed entirely.
+    const merged = iacDecision({ apply_status: 'waiting_for_rebake', merge_state: 'merged' });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [merged],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-pending');
+    expect(card.textContent).not.toMatch(
+      /waiting for your|waiting to be applied|needs attention|is proposing|is approved/i,
+    );
+    // and the positive: it says what it DID see, in the past tense.
+    expect(card.textContent).toMatch(/last (seen|checked)/i);
+  });
+
+  it('suppresses the notify-failed notice, which is itself a waiting claim', () => {
+    // "it has been waiting here unannounced" asserts the item is still waiting.
+    // It renders on its own path, independent of the CTA, so silencing the
+    // button does not silence it.
+    const d = rollbackDecision({
+      notify: { state: 'failed', error_code: 'worker_error', status_code: 503 },
+    });
+
+    // ASSERT THE FIXTURE'S PREMISE FIRST. The initial version of this test used
+    // a `notify_status` field that does not exist, so the notice never rendered
+    // and the test passed against the unfixed component — a suppression test
+    // whose subject was already absent proves nothing.
+    const fresh = render(ApprovalDesk, {
+      props: { ...base, decisions: [d], pendingApprovals: [] },
+    });
+    expect(fresh.getByTestId('approval-desk-notify-failed')).toBeTruthy();
+    cleanup();
+
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [d],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    expect(getByTestId('approval-desk-pending')).toBeTruthy();
+    expect(queryByTestId('approval-desk-notify-failed')).toBeNull();
+  });
+
+  it('a FRESH card is completely unchanged', () => {
+    // The negative that keeps this from being a blanket downgrade: with both
+    // lanes good the desk must still make its full, live claim.
+    const { getByTestId, queryByTestId } = render(ApprovalDesk, {
+      props: { ...base, decisions: [rollbackDecision()], pendingApprovals: [] },
+    });
+    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+    expect(queryByTestId('approval-desk-view-stale')).toBeNull();
+    expect(queryByTestId('approval-desk-stale-notice')).toBeNull();
+    expect(getByTestId('approval-desk-pending').textContent).toContain('Anchor is proposing a fix');
+  });
+
+  it('an unresolved outcome is qualified too, and keeps its phase distinction', () => {
+    const failed = rollbackDecision({
+      approval: { approval_url: '/approvals/rb-1?t=x', status: 'used', phase: 'failed' },
+    });
+    const { getByTestId } = render(ApprovalDesk, {
+      props: {
+        ...base,
+        decisions: [failed],
+        pendingApprovals: [],
+        decisionsStale: true,
+        degraded: true,
+      },
+    });
+    const card = getByTestId('approval-desk-unresolved');
+    // failed must never render as outcome_unknown, stale or not.
+    expect(card.getAttribute('data-phase')).toBe('failed');
+    expect(getByTestId('approval-desk-unresolved-stale-notice')).toBeTruthy();
+  });
+
+  it('JA keeps the claim out too', async () => {
+    // A locale that keeps the present tense is the same defect in the language
+    // the product is delivered in.
+    const { locale } = await import('../../src/lib/i18n');
+    locale.set('ja');
+    try {
+      const { getByTestId } = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [rollbackDecision()],
+          pendingApprovals: [],
+          decisionsStale: true,
+          degraded: true,
+        },
+      });
+      const card = getByTestId('approval-desk-pending');
+      expect(card.textContent).not.toMatch(/待っています|確認が必要|承認済み|提案しています/);
+    } finally {
+      locale.set('en');
+    }
+  });
+});
