@@ -611,3 +611,74 @@ describe('createOverviewStore — graphStale (ds-1vn)', () => {
     s.destroy();
   });
 });
+
+// ds-jk9. The third per-lane flag, and the one the desk hero needs: `degraded`
+// already fires when EITHER desk lane fails, so gating the hero's CTA on it
+// would discard a perfectly fresh listing whenever /decisions blinked.
+describe('createOverviewStore — decisionsStale (ds-jk9)', () => {
+  it('is set when the decisions fetch fails', async () => {
+    const { fn } = makeCall({ decisions: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(true);
+    s.destroy();
+  });
+
+  it('is set when /decisions answers a malformed body', async () => {
+    // fetchDecisionsList rejects a non-array `decisions` as `ok: false`, which
+    // retains the previous list exactly like a 500 does — so it must set the
+    // flag by the same route. A 200 that fails the shape check is still a
+    // failed refresh.
+    const { fn } = makeCall({ decisions: () => res({ decisions: 'nope' }) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(true);
+    s.destroy();
+  });
+
+  it('is NOT set when only pending or graph failed, though degraded IS', async () => {
+    // The distinction that earns this field its existence, in the direction
+    // that matters for the hero: a pending-approvals outage says nothing about
+    // whether the retained decisions are current.
+    const { fn } = makeCall({ pending: () => res({}, 500), graph: () => res({}, 500) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).degraded).toBe(true);
+    expect(get(s).decisionsStale).toBe(false);
+    s.destroy();
+  });
+
+  it('is NOT set by the pending-approvals soft-fail 200', async () => {
+    // /decisions has no soft-fail mode of its own; the sibling lane's must not
+    // leak across.
+    const { fn } = makeCall({ pending: () => res({ approvals: [], degraded: true }) });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).approvalsStale).toBe(true);
+    expect(get(s).decisionsStale).toBe(false);
+    s.destroy();
+  });
+
+  it('is NOT set on a clean cycle', async () => {
+    const { fn } = makeCall();
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(false);
+    s.destroy();
+  });
+
+  it('clears on the next successful cycle, while the retained list is replaced', async () => {
+    let fail = true;
+    const { fn } = makeCall({
+      decisions: () => (fail ? res({}, 500) : res({ decisions: [] })),
+    });
+    const s = createOverviewStore(fn);
+    await flush();
+    expect(get(s).decisionsStale).toBe(true);
+    fail = false;
+    await s.refresh();
+    await flush();
+    expect(get(s).decisionsStale).toBe(false);
+    s.destroy();
+  });
+});

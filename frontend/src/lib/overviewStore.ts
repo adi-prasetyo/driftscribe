@@ -126,6 +126,36 @@ export interface OverviewState {
    * degraded answer, and EstateView already replaces the whole panel for it.
    */
   graphStale: boolean;
+  /**
+   * The decisions lane SPECIFICALLY could not be trusted in the last completed
+   * cycle (ds-jk9). Third of the per-lane flags, same recompute-never-latch rule.
+   *
+   * The consumer is the desk HERO. What it asks is narrower than what `degraded`
+   * answers — not "may the ABSENCE of a card be wrong" but "may the card I am
+   * about to make actionable be wrong" — and only the lane that produced that
+   * card can answer it.
+   *
+   * The asymmetry runs ONE WAY, and getting it backwards is easy (an earlier
+   * draft of this comment did). A `/decisions` failure invalidates EVERY pending
+   * selection the hero can make, the listing-derived one included: rule 2a admits
+   * a listing row only when `resolvedIacPrNumbers(decisions)` does not already
+   * contain it, and ApprovalDesk then derives that card's whole
+   * Approve/Continue/Apply state from `decisions` too. So this flag is not here
+   * to spare rule 2a. It is here so the CONVERSE stays true: a
+   * pending-approvals failure says nothing about a rollback or a
+   * decisions-derived IaC card, and gating those on the aggregate `degraded`
+   * would withdraw two perfectly sound cards every time the GitHub listing
+   * blinked.
+   *
+   * Lane-level, so exactly `!d.ok`. That already covers a 200 whose body fails
+   * `fetchDecisionsList`'s array check, since that returns `ok: false` and
+   * retains the previous list just as a 500 does — pinned by its own test.
+   * `/decisions` does have a PER-ROW soft-fail (`approval.status_unavailable`,
+   * agent/main.py:4091) but it is not this: it rides on a successful fetch and
+   * is already handled where it belongs, in `approval.ts`'s actionability
+   * predicates. A lane flag must not try to absorb a row-level one.
+   */
+  decisionsStale: boolean;
 }
 
 export interface OverviewStore extends Readable<OverviewState> {
@@ -155,6 +185,7 @@ const INITIAL: OverviewState = {
   degraded: false,
   approvalsStale: false,
   graphStale: false,
+  decisionsStale: false,
 };
 
 type FetchResult<T> = { ok: true; value: T } | { ok: false };
@@ -269,6 +300,8 @@ export function createOverviewStore(
       // The approvals lane alone. Same recompute-never-latch rule.
       approvalsStale: !p.ok || p.value.degraded,
       graphStale: !g.ok,
+      // The decisions lane alone. No payload bit to consult — see the field doc.
+      decisionsStale: !d.ok,
     }));
   }
 
