@@ -697,8 +697,18 @@
       <div class="approval-desk__unresolved" data-testid="approval-desk-unresolved" data-phase={model.phase}>
         <div class="approval-desk__who">
           <span>{$t('desk.unresolved.who')}</span>
+          <!-- ds-jk9, Codex round 2. The detail chip is the shortest verdict on
+               the card, which is why it survived the first pass: "Outcome
+               unconfirmed" reads as a label. It is a claim, and /reconcile can
+               falsify it. `failed`'s chip stays - terminal for its attempt. -->
           <span class="approval-desk__meta"
-            >{$t(failed ? 'desk.unresolved.failed.detail' : 'desk.unresolved.unknown.detail')}</span
+            >{$t(
+              failed
+                ? 'desk.unresolved.failed.detail'
+                : model.stale
+                  ? 'desk.unresolved.stale.unknownDetail'
+                  : 'desk.unresolved.unknown.detail',
+            )}</span
           >
         </div>
         <!-- ds-jk9, Codex round 1 of #290. `failed` is TERMINAL for its own

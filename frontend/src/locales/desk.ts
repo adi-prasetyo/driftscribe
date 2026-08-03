@@ -244,8 +244,20 @@ export const desk = {
       'This could not be re-checked just now. The outcome may have been confirmed since, or a later rollback may already have settled it.',
     'desk.unresolved.stale.unknownHeadline':
       "The rollback's outcome was unconfirmed when this was last checked.",
+    // The DETAIL chip is a verdict too, and the shortest one on the card, which
+    // is exactly why it survived the first pass: "Outcome unconfirmed" reads as
+    // a label rather than a claim. It is a claim.
+    'desk.unresolved.stale.unknownDetail': 'Unconfirmed at the last check',
+    // Deliberately does NOT say "the traffic change was accepted", though the
+    // fresh copy this was derived from does. Acceptance is not established for
+    // every card that reaches outcome_unknown: rule 2.5 also synthesises the
+    // phase from a stuck `claimed` (desk.ts, STUCK_APPLYING_MS), where no
+    // operation handle exists, and the worker records it when starting the
+    // update itself throws (workers/rollback/main.py:846). The fresh string has
+    // the same overstatement and is left alone here - it is pre-existing, has
+    // its own trigger, and is filed rather than folded into this change.
     'desk.unresolved.stale.unknownBody':
-      'The traffic change was accepted but took longer than we waited. That was the state at the last successful check, and it may have resolved since. Check the service in Cloud Run before acting on this.',
+      'We could not confirm the outcome within the time we waited. That was the state at the last successful check, and it may have resolved since. Check the service in Cloud Run before acting on this.',
 
     // No second person — see the register note on desk.ledger.* above; the
     // approval doc records no actor, so this byline cannot name one.
@@ -455,8 +467,9 @@ export const desk = {
       'これを今は再確認できませんでした。その後に結果が確定した可能性も、後続のロールバックで既に解消された可能性もあります。',
     'desk.unresolved.stale.unknownHeadline':
       '最後に確認した時点では、ロールバックの結果を確認できていませんでした。',
+    'desk.unresolved.stale.unknownDetail': '最後の確認時点で未確定',
     'desk.unresolved.stale.unknownBody':
-      'トラフィックの切り替えは受理されましたが、待機時間内に完了を確認できませんでした。これは最後に確認できた時点の状態であり、その後に解消している可能性があります。対応の前に Cloud Run で当該サービスの状態をご確認ください。',
+      '待機時間内に結果を確認できませんでした。これは最後に確認できた時点の状態であり、その後に解消している可能性があります。対応の前に Cloud Run で当該サービスの状態をご確認ください。',
 
     'desk.stamped.who': '承認済み',
     'desk.stamped.rollback.detail': 'ロールバック適用',

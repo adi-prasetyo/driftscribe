@@ -1942,6 +1942,20 @@ describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds
     expect(card.getAttribute('data-phase')).toBe('outcome_unknown');
     expect(card.textContent).not.toMatch(/outcome is unconfirmed|cannot confirm it either way/i);
     expect(card.textContent).toMatch(/was unconfirmed when this was last checked/i);
+
+    // The DETAIL chip, asserted on its own element. The regex above cannot
+    // reach it: "Outcome unconfirmed" contains neither "is" nor "cannot", so a
+    // whole-card negative silently let the shortest verdict on the card through
+    // (Codex round 2). It reads as a label, which is exactly why it survived.
+    const detail = card.querySelector('.approval-desk__meta')?.textContent?.trim();
+    expect(detail).not.toBe('Outcome unconfirmed');
+    expect(detail).toMatch(/last check/i);
+
+    // And the body must not claim the traffic change was ACCEPTED: rule 2.5
+    // also synthesises outcome_unknown from a stuck `claimed`, where no
+    // operation handle exists at all.
+    expect(card.textContent).not.toMatch(/was accepted/i);
+
     // Its notice names the reconciliation case, which the failed one cannot have.
     expect(getByTestId('approval-desk-unresolved-stale-notice').textContent).toMatch(
       /confirmed since/i,
@@ -2014,6 +2028,32 @@ describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds
         },
       });
       expect(iac.getByTestId('approval-desk-pending').textContent).not.toMatch(CLAIMS);
+      cleanup();
+
+      // The UNRESOLVED card too. Restricting this test to pending cards is how
+      // 結果は未確認 survived round 2 in JA: it lives on a card this block was
+      // never rendering. Premise first, then the negative.
+      const freshUnknown = render(ApprovalDesk, {
+        props: { ...base, decisions: [unresolved('outcome_unknown')], pendingApprovals: [] },
+      });
+      expect(freshUnknown.getByTestId('approval-desk-unresolved').textContent).toMatch(
+        /結果は未確認/,
+      );
+      cleanup();
+
+      const staleUnknown = render(ApprovalDesk, {
+        props: {
+          ...base,
+          decisions: [unresolved('outcome_unknown')],
+          pendingApprovals: [],
+          decisionsStale: true,
+          degraded: true,
+        },
+      });
+      const jaCard = staleUnknown.getByTestId('approval-desk-unresolved');
+      expect(jaCard.textContent).not.toMatch(/結果は未確認/);
+      expect(jaCard.textContent).not.toMatch(/受理されました/);
+      expect(jaCard.textContent).toMatch(/最後の確認時点|最後に確認した時点/);
     } finally {
       locale.set('en');
     }
