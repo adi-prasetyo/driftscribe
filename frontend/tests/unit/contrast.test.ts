@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { colorTokens, composite, contrastOver, contrastRatio, readToken, resolveColor, shadowLayers } from './contrast';
@@ -381,8 +381,27 @@ describe('inset focus ring (autonomy segmented dial)', () => {
   const declaration = (body: string, prop: string) =>
     new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`, 'i').exec(body)?.[1].trim() ?? null;
 
-  /** The last compound of a selector — what the rule actually styles. */
-  const subject = (selector: string) => selector.split(',')[0].trim().split(/\s+/).pop() ?? '';
+  /**
+   * The fill a rule paints. `background` and `background-color` in one rule is
+   * rejected rather than resolved: reading the first and ignoring the second is
+   * how `background: var(--ds-surface); background-color: var(--ds-navy)` would
+   * render navy while measuring white. Same for a second declaration of either.
+   */
+  const fill = (body: string, where: string) => {
+    const shorthand = [...body.matchAll(/(?:^|;)\s*background\s*:/gi)].length;
+    const longhand = [...body.matchAll(/(?:^|;)\s*background-color\s*:/gi)].length;
+    if (shorthand + longhand > 1) {
+      throw new Error(`more than one background declaration in ${where} — the last one wins in the browser, so this test would measure the wrong fill`);
+    }
+    return declaration(body, 'background') ?? declaration(body, 'background-color');
+  };
+
+  /** The last compound of each comma-separated selector — what the rule styles.
+   *  All of them, not just the first: `.something, .autonomy-segment--x { … }`
+   *  targets the segment just as surely, and reading only `split(',')[0]` lets a
+   *  fill in through the second half of a selector list. */
+  const subjects = (selector: string) =>
+    selector.split(',').map((part) => part.trim().split(/\s+/).pop() ?? '').filter(Boolean);
 
   it('declares the token with the exact grammar the component relies on', () => {
     // Width and style are load-bearing: the component pairs this with
@@ -398,20 +417,21 @@ describe('inset focus ring (autonomy segmented dial)', () => {
     // Backgrounds that are not a plain colour depend on what is BEHIND them, so
     // a declaration parser cannot resolve them alone. Each is resolved here
     // explicitly, against a value also read from the source rather than assumed.
-    const popoverBg = resolveColor(
-      tokens,
-      declaration(rules(style).find((r) => subject(r.selector) === '.autonomy-popover')!.body, 'background')!,
-    );
-    const pillBg = resolveColor(
-      tokens,
-      declaration(rules(style).find((r) => subject(r.selector) === '.autonomy-segments__pill')!.body, 'background')!,
-    );
+    // LAST matching rule, not first: a later override is what the browser
+    // paints, and `.find()` would keep measuring the superseded one.
+    const lastFillFor = (name: string) => {
+      const matches = rules(style).filter((r) => subjects(r.selector).includes(name) && fill(r.body, r.selector));
+      expect(matches.length, `no background rule found for ${name}`).toBeGreaterThan(0);
+      return resolveColor(tokens, fill(matches[matches.length - 1].body, name)!);
+    };
+    const popoverBg = lastFillFor('.autonomy-popover');
+    const pillBg = lastFillFor('.autonomy-segments__pill');
 
     const substrates: { where: string; subject: string; hex: string }[] = [];
     for (const rule of rules(style)) {
-      const subj = subject(rule.selector);
-      if (!/^\.autonomy-segment(--|:|$)/.test(subj)) continue;
-      const bg = declaration(rule.body, 'background') ?? declaration(rule.body, 'background-color');
+      const subj = subjects(rule.selector).find((x) => /^\.autonomy-segment(--|:|$)/.test(x));
+      if (!subj) continue;
+      const bg = fill(rule.body, rule.selector);
       if (!bg) continue;
 
       if (bg === 'transparent') {
@@ -465,6 +485,47 @@ describe('inset focus ring (autonomy segmented dial)', () => {
       .filter((s) => s.ratio < FLOOR)
       .map((s) => `${s.where} -> ${s.hex} = ${s.ratio.toFixed(3)}:1`);
     expect(failures, `inset ring below ${FLOOR}:1 on a segment fill\n${failures.join('\n')}`).toEqual([]);
+  });
+
+  it('is used ONLY on controls whose own fill is light, wherever it is consumed', () => {
+    // The state sweep above proves the premise for the autonomy dial. It says
+    // nothing about the NEXT consumer, and the token grew one: CapabilityCard's
+    // workload summary. A precondition proven for one caller and assumed for the
+    // rest is exactly the shape of bug this whole file exists to stop, so find
+    // every consumer from the source and prove each one.
+    const ink = resolveColor(tokens, 'var(--ds-stream-ink)');
+    const dir = resolve(srcDir, 'components');
+    const consumers: { where: string; hex: string; ratio: number }[] = [];
+
+    for (const file of readdirSync(dir).filter((f) => f.endsWith('.svelte'))) {
+      const src = readFileSync(resolve(dir, file), 'utf8');
+      const block = /<style[^>]*>([\s\S]*)<\/style>/.exec(src)?.[1] ?? '';
+      if (!block.includes('--ds-ring-inset-on-light')) continue;
+      const rs = rules(block);
+
+      for (const rule of rs.filter((r) => /--ds-ring-inset-on-light/.test(r.body))) {
+        for (const subj of subjects(rule.selector)) {
+          // The control the ring is drawn ON, minus the focus pseudo-class.
+          const base = subj.replace(/:focus-visible/g, '');
+          const painting = rs.filter((r) => subjects(r.selector).includes(base) && fill(r.body, r.selector));
+          expect(
+            painting.length,
+            `${file}: ${base} takes the inset ring but declares no background, so what the ring is drawn on cannot be checked`,
+          ).toBeGreaterThan(0);
+          const hex = resolveColor(tokens, fill(painting[painting.length - 1].body, base)!);
+          consumers.push({ where: `${file} ${base}`, hex, ratio: contrastRatio(ink, hex) });
+        }
+      }
+    }
+
+    // Premise of the premise: if nobody consumes the token, this passes without
+    // measuring anything, and the day someone adds a consumer it stays quiet.
+    expect(consumers.length, 'no consumer of --ds-ring-inset-on-light found — did it get renamed?').toBeGreaterThanOrEqual(2);
+
+    const failures = consumers
+      .filter((c) => c.ratio < FLOOR)
+      .map((c) => `${c.where} -> ${c.hex} = ${c.ratio.toFixed(3)}:1`);
+    expect(failures, `inset ring used on a fill it cannot clear\n${failures.join('\n')}`).toEqual([]);
   });
 
   it('also clears the floor against the container border it sits beside', () => {

@@ -14,9 +14,16 @@ import { test, decisionsResponse, infraGraphResponse } from './fixtures';
 //
 // SCOPE, because the title overclaims if read loosely: Chromium only, and only
 // the states enumerated below. A control reachable solely through some other
-// state is unmeasured. Rounded-corner clipping, occlusion by siblings, and
-// transform scaling are NOT modelled — axis-aligned boxes cannot see them; the
-// corner case is covered by hand against AutonomyPill's r=4px arc instead.
+// state is unmeasured. Rounded-corner clipping, occlusion by siblings, clipping
+// at the visual viewport, and transform scaling are NOT modelled — axis-aligned
+// boxes against DOM ancestors cannot see any of them.
+//
+// AND ONE BLIND SPOT WORTH NAMING, because it is caused by the fix for (5)
+// below: everything here runs under prefers-reduced-motion, so a ring clipped
+// only DURING an animation cannot be seen by this suite. That is not
+// hypothetical — AutonomyPill focuses its reason input on the tick after the
+// confirm row mounts, so on the normal 200ms path the input is focused while
+// Svelte's own injected `overflow: hidden` is still on the row (ds-b74).
 //
 // FIVE ways this check reported confidently while being wrong. All five are
 // fixed below, and they are why the assertions carry positive controls. Note
@@ -151,31 +158,54 @@ const PROBE = () => {
     return out;
   };
 
-  // A colour that paints nothing is not an indicator (header note 4).
-  const isOpaque = (v: string) => {
-    const m = /rgba?\(([^)]*)\)/.exec(v);
-    if (!m) return !/transparent/i.test(v);
-    const parts = m[1].split(/[,/]/).map((s) => s.trim());
-    return parts.length < 4 || parseFloat(parts[3]) > 0;
+  /**
+   * Does this colour paint anything? Named for what it checks — an earlier
+   * version was called `isOpaque` while actually meaning "alpha > 0", and it
+   * only understood rgb()/rgba(). This app already emits
+   * `color(srgb 0.92 0.95 0.99 / 0.6)` for a color-mix fill, so a modern
+   * notation at zero alpha would have sailed through as a visible indicator.
+   * Unrecognised notations FAIL CLOSED (reported as painting nothing) so the
+   * gap surfaces as a test failure rather than a silent pass.
+   */
+  const paintsSomething = (v: string) => {
+    if (/\btransparent\b/i.test(v)) return false;
+    const fn = /\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(([^)]*)\)/i.exec(v);
+    if (fn) {
+      const slash = /\/\s*([\d.]+%?)\s*$/.exec(fn[2]);
+      if (slash) return parseFloat(slash[1]) > 0;
+      const parts = fn[2].split(',').map((x) => x.trim());
+      if (/^rgba|hsla$/i.test(fn[1]) && parts.length === 4) return parseFloat(parts[3]) > 0;
+      return true; // recognised notation, no alpha component -> opaque
+    }
+    if (/#[0-9a-fA-F]{3,8}\b/.test(v)) {
+      const hex = /#([0-9a-fA-F]{3,8})\b/.exec(v)![1];
+      if (hex.length === 4) return parseInt(hex[3] + hex[3], 16) > 0;
+      if (hex.length === 8) return parseInt(hex.slice(6), 16) > 0;
+      return true;
+    }
+    if (/\b(currentcolor|[a-z]{3,20})\b/i.test(v)) return true; // named colour
+    throw new Error(`cannot tell whether this colour paints anything: ${v}`);
   };
 
   const cs = getComputedStyle(el);
 
-  // `outset` is how far the indicator paints OUTSIDE the border box — the only
-  // part that can be clipped. `inset` records an indicator drawn inward, which
-  // is valid and by construction unclippable. Conflating them would score an
-  // inset ring as "no indicator".
+  // `outset` is how far the indicator paints OUTSIDE the border box — the part
+  // an ancestor's overflow can remove. `inset` records an indicator drawn
+  // inward, which is valid and which THIS check cannot fault. Not "unclippable":
+  // a rounded or shaped clip reaching inside the border box, or another painted
+  // layer on top, can still swallow it — see the scope note in the header.
+  // Conflating the two would score an inset ring as "no indicator".
   let outset = 0;
   let inset = false;
   const ow = parseFloat(cs.outlineWidth) || 0;
-  if (cs.outlineStyle !== 'none' && ow > 0 && isOpaque(cs.outlineColor)) {
+  if (cs.outlineStyle !== 'none' && ow > 0 && paintsSomething(cs.outlineColor)) {
     const eff = ow + (parseFloat(cs.outlineOffset) || 0);
     if (eff > 0) outset = Math.max(outset, eff);
     else inset = true;
   }
   if (cs.boxShadow && cs.boxShadow !== 'none') {
     for (const layer of splitLayers(cs.boxShadow)) {
-      if (!isOpaque(layer)) continue;
+      if (!paintsSomething(layer)) continue;
       const px = (layer.match(/-?\d*\.?\d+px/g) || []).map(parseFloat);
       const [ox = 0, oy = 0, blur = 0, spread = 0] = px;
       const extent = spread + blur + Math.max(Math.abs(ox), Math.abs(oy));
@@ -263,6 +293,7 @@ async function sweep(page: Page): Promise<{ rows: Stop[]; cycled: boolean; total
   const seen = new Set<string>();
   const rows: Stop[] = [];
   let cycled = false;
+  let first: string | null = null;
   for (let i = 0; i < TAB_CAP; i++) {
     await page.keyboard.press('Tab');
     const stop = await page.evaluate(PROBE);
@@ -271,9 +302,13 @@ async function sweep(page: Page): Promise<{ rows: Stop[]; cycled: boolean; total
     // truncated label and would end the traversal on the second one.
     const key = stop.idx ?? `${stop.sel}|${stop.text}`;
     if (seen.has(key)) {
-      cycled = true;
+      // Only a return to the FIRST stop proves the whole cycle was walked. Any
+      // repeat used to count, so a focus trap bouncing between two late controls
+      // ended the sweep with everything before them unvisited — and passing.
+      cycled = key === first;
       break;
     }
+    if (first === null) first = key;
     seen.add(key);
     rows.push(stop);
   }
@@ -285,12 +320,15 @@ async function assertFocusRingsIntact(
   label: string,
   opts: { minStops: number; sentinel?: string },
 ) {
-  const { rows, cycled } = await sweep(page);
+  const { rows, cycled, total } = await sweep(page);
 
   // ── Positive controls, FIRST. Every assertion below is satisfied by an empty
   // sweep, so without these a broken probe reads as a clean app.
   expect(rows.length, `${label}: sweep found ${rows.length} focus stops, expected ≥${opts.minStops}`).toBeGreaterThanOrEqual(opts.minStops);
-  expect(cycled, `${label}: traversal hit the ${TAB_CAP}-Tab cap without returning to a visited control, so coverage is unknown — a pass here would be silent truncation`).toBe(true);
+  expect(
+    cycled,
+    `${label}: Tab traversal never returned to its first stop (visited ${rows.length} of ${total} focusable elements in ${TAB_CAP} presses), so coverage is unknown and a pass here would be silent truncation`,
+  ).toBe(true);
   expect(
     rows.filter((r) => r.outset > 0 || r.inset).length,
     `${label}: not one control reported a focus indicator — the probe cannot see rings, so a pass proves nothing`,
@@ -314,9 +352,11 @@ async function assertFocusRingsIntact(
 
   const allowed = (r: Stop) => r.testid !== null && r.testid in NO_INDICATOR_ALLOWED;
   const missing = rows
-    .filter((r) => (r.outset === 0 && !r.inset) || r.changesOnFocus === false)
+    // `null` means the element was not present at snapshot time, so whether
+    // focus changes it is UNKNOWN — treated as missing, not as fine.
+    .filter((r) => (r.outset === 0 && !r.inset) || r.changesOnFocus !== true)
     .filter((r) => !allowed(r))
-    .map((r) => `  ${r.sel} "${r.text}"${r.changesOnFocus === false ? ' (identical focused and at rest)' : ''}`);
+    .map((r) => `  ${r.sel} "${r.text}"${r.changesOnFocus === false ? ' (identical focused and at rest)' : ''}${r.changesOnFocus === null ? ' (appeared after the resting snapshot — focus delta unknown)' : ''}`);
   expect(missing, `${label}: control has no focus indicator\n${missing.join('\n')}`).toEqual([]);
 }
 
@@ -467,6 +507,61 @@ test.describe('focus rings are never clipped (ds-2fp)', () => {
     await assertFocusRingsIntact(page, 'search modal', {
       minStops: 8,
       sentinel: 'conversations-search-input',
+    });
+  });
+
+  // The OTHER Modal consumer. It shares `.modal__body` with the search modal, so
+  // the scroll fix covers it, but CapabilityCard brings its own clipping
+  // containers (`.cap-workload` hidden, `.cap-prompt-pre` scrolling) that
+  // nothing else in the suite reaches.
+  test('capabilities modal', async ({ page, baseURL }) => {
+    await seed(page);
+    await mock(page, baseURL!);
+    await emptyConversations(page);
+    // A capabilities payload with a real workload. The shared `{ capabilities:
+    // [] }` mock renders no `<summary>` rows at all, so this state would have
+    // swept the modal chrome and silently missed the defect it exists to catch.
+    await page.route('**/capabilities', (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          version: 1,
+          provenance: 'focus-ring smoke',
+          iam_note: 'focus-ring smoke',
+          workloads: [
+            {
+              name: 'drift',
+              display_name: 'Anchor',
+              descriptor: 'Cloud Run config',
+              description: 'focus-ring smoke',
+              autonomous: true,
+              tools: [{ name: 'drift_read_live_env', description: 'smoke', write_capable: false }],
+              workers: [{ name: 'drift_reader', description: 'smoke' }],
+              actions: [{ name: 'no_op', display_name: 'No action needed', requires_approval: false }],
+            },
+          ],
+          // Required by the DTO. CapabilityCard deliberately routes a payload
+          // that parses as JSON but is missing structure to its error/retry row
+          // (Svelte 5 has no error boundary), and an error row renders NO
+          // workload summaries — which is exactly how the first version of this
+          // state passed while covering nothing.
+          human_gates: [],
+          denylist: { summary: 'focus-ring smoke', enforced_at: [], rules: [] },
+        }),
+      }),
+    );
+    // The trigger lives in the chat EMPTY state, so the thread must stay empty.
+    await page.goto('/?view=chat');
+    await page.getByTestId('capability-link').click();
+    await expect(page.getByTestId('capability-card')).toBeVisible();
+    await settle(page);
+    // Two, and that is the complete tab cycle: the dialog traps focus, so only
+    // its close button and the first workload's <summary> are reachable. The
+    // SENTINEL is what proves coverage here, not the count.
+    await assertFocusRingsIntact(page, 'capabilities modal', {
+      minStops: 2,
+      sentinel: 'cap-workload-drift-summary',
     });
   });
 

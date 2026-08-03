@@ -5,10 +5,11 @@ an ancestor, and every control has one. "No ring is clipped" becomes an enforced
 CI invariant rather than a one-off audit.
 
 **Scope, stated up front because the goal sentence overclaims if read loosely:**
-Chromium only, and only the enumerated states. Rounded-corner clipping, occlusion
-by siblings, and transform scaling are not modelled.
+Chromium only, and only the enumerated states. Rounded-corner clipping, occlusion,
+viewport clipping, transform scaling, and anything visible only *while animating*
+are not modelled — see the closing section.
 
-**Architecture:** Four CSS fixes plus a Playwright smoke test that measures the
+**Architecture:** Five CSS fixes plus a Playwright smoke test that measures the
 real thing — it Tabs through the built app and compares each control's settled
 focus indicator against the padding box of every ancestor that actually clips it.
 
@@ -18,7 +19,8 @@ focus indicator against the padding box of every ancestor that actually clips it
 
 The bead named one instance. A grep for `overflow: hidden` produced twelve
 candidate components. **Eleven of the twelve never clip anything**, and the
-measurement found four defects the grep could not have ranked:
+measurement found five defects the grep could not have ranked — including one in
+a component the grep never flagged at all:
 
 | # | control | clipped by | cut |
 |---|---|---|---|
@@ -26,11 +28,21 @@ measurement found four defects the grep could not have ranked:
 | 2 | `autonomy-confirm`, `autonomy-cancel`, `autonomy-reason` | `.autonomy-confirm-row` `overflow:hidden` | 4px |
 | 3 | `pause-confirm`, `pause-cancel` | `.pause-confirm-row` `overflow:hidden` | 4px |
 | 4 | a row at the scroll boundary | `.modal__body` `overflow:auto` | 4.2px |
+| 5 | `cap-workload-*-summary` | `.cap-workload` `overflow:hidden` | **all four sides** |
 
 (2) and (3) are the same defect in two components, and neither was reachable
 until the suite gained a state that opens a confirm row. (4) is a *scroll*
 container, which the bead did not consider at all: `scrollIntoView` aligns a
 focused element's border box, not its ring.
+
+(5) is the worst of the set and the last one found — a keyboard user tabbing the
+capabilities modal's workload list saw **no indicator at all**. It was missed
+twice over: the first version of that state used the shared `{ capabilities: [] }`
+mock, which renders no `<summary>` rows, so the test passed while covering
+nothing; and the second used a payload missing `human_gates`/`denylist`, which
+CapabilityCard correctly routes to its error row — again rendering no summaries.
+A state that cannot reach the thing it exists to check is worse than no state,
+because it reads as coverage.
 
 ## The fixes
 
@@ -68,6 +80,14 @@ dark tone clears the floor against all of them: surface `#ffffff` 5.635,
 surface-2 `#f6f5f1` 5.165, stream-surface `#ecf3fe` 5.050, armed-over-white
 `#f4f8fe` 5.288, border-strong `#d6d2ca` 3.738. **The name carries the
 precondition** so the token cannot be casually reused on a dark control.
+
+**5. The workload summary takes the same inset ring.** `.cap-workload`'s
+`overflow: hidden` rounds the summary's `--ds-neutral-surface` fill against the
+container border, so it is load-bearing exactly as the dial's is.
+`--ds-neutral-surface` (#efeeea) reads 4.854:1 against `--ds-stream-ink`, so the
+on-light precondition holds — and because the token now has **two** consumers,
+`contrast.test.ts` proves that precondition for *every* consumer it finds in the
+source, not just the one it was written for.
 
 **2 & 3. Delete `overflow: hidden` from both confirm rows.** It was only ever
 needed for `transition:slide`, and Svelte's slide emits its own `overflow: hidden`
@@ -107,28 +127,36 @@ safe is still lying, and three of these were false *negatives*:
 
 ## What is pinned
 
-- `tests/smoke/focus-ring.smoke.ts` — 10 states (desk, desk in **Japanese**, chat,
+- `tests/smoke/focus-ring.smoke.ts` — 11 states (desk, desk in **Japanese**, chat,
   the dial, an **armed** segment, the pause banner's confirm row, the pause
-  popover, the scrolled search modal, and both views at 390px). Asserts: nothing
-  clipped; every control has an indicator; every Tab-reached control really
+  popover, the scrolled search modal, the capabilities modal, and both views at
+  390px). Asserts: nothing clipped; every control has an indicator that actually
+  *changes* on focus and paints a non-zero alpha; every Tab-reached control really
   matches `:focus-visible`; and positive controls — minimum stop counts, a
-  per-state sentinel testid, and a required traversal cycle so hitting the Tab cap
-  cannot pass as coverage.
-- `tests/unit/contrast.test.ts` — the inset ring's **premise**: every background a
-  segment can take resolves to something clearing 3:1, with `transparent` and
-  `color-mix(…, transparent)` resolved explicitly against the pill and popover
-  behind them, and **fail-closed** on any notation it cannot resolve.
+  per-state sentinel testid, and a traversal that must return to its FIRST stop,
+  so neither the Tab cap nor a focus trap can pass as coverage.
+- `tests/unit/contrast.test.ts` — the inset ring's **premise**, at two levels.
+  Every background the dial can take resolves to something clearing 3:1, with
+  `transparent` and `color-mix(…, transparent)` resolved explicitly against the
+  pill and popover behind them. And separately, **every consumer of the token
+  found in the source** must be drawn on a light fill — because a precondition
+  proven for one caller and assumed for the rest is the shape of bug this file
+  exists to stop, and the token acquired its second caller inside this change.
+  Fail-closed on any colour notation it cannot resolve, and on any rule that
+  declares two competing backgrounds.
 - The one exemption (`chat-prompt`, no indicator by design) is allowlisted by
   testid and cites **ds-tr5**, so it is visible rather than silent.
 
 ## Verification
 
 - 1914 unit tests, `svelte-check` 0 errors, `npm run build`, full `test:smoke` 45/45
-- **9 defect injections**, each reddening only its own test: the outward ring
-  restored on segments; `outline-offset` flipped positive; `overflow:hidden` put
-  back on each confirm row; `scroll-padding` removed; a segment fill turned dark;
-  the token's grammar widened; a fill written in an unresolvable notation; and a
-  state renamed out of the premise sweep
+- **17 defect injections**, each reddening only its own test: the outward ring
+  restored on segments and on the workload summary; `outline-offset` flipped
+  positive; `overflow:hidden` put back on each confirm row; `scroll-padding`
+  removed; the composer allowlist entry deleted; a segment fill turned dark; the
+  token's grammar widened; a fill in an unresolvable notation; three states
+  renamed out of the premise sweep; a second consumer's fill turned dark, then
+  given no background at all, then given two competing background declarations
 - Pixel-walked screenshots of the focused dial at all three positions and armed
 
 Two of those injections found holes in **my own guards**, both on the coverage
@@ -142,8 +170,18 @@ stripped.
 
 - Chromium only; a ring clipped solely in WebKit passes.
 - Only the swept states. Coverage is exactly the state list.
-- Axis-aligned boxes only: no rounded-corner clipping, occlusion, or transform
-  scaling. The corner case is covered by hand — the container's arc is r=4px and
-  the band's outer corner sits 1.41px from the arc centre.
+- Axis-aligned boxes against DOM ancestors only: no rounded-corner clipping,
+  occlusion by siblings, clipping at the visual viewport, or transform scaling.
+  On the corner: the band spans 1px..3px inside the border box, and against the
+  r=4px arc its OUTER corner sits 0.243px outside — a quarter-pixel clip at the
+  extreme corner, invisible in the captures. An earlier note did this sum on the
+  inner edge (1.414px, comfortably inside) and drew the right conclusion from the
+  wrong edge.
+- **Anything that only happens while animating.** The suite runs under
+  `prefers-reduced-motion`, which is what makes popover geometry deterministic —
+  and which also means a ring clipped only mid-transition is invisible to it.
+  Not hypothetical: AutonomyPill focuses its reason input on the tick after the
+  confirm row mounts, so on the normal 200ms path that input is focused while
+  Svelte's own injected `overflow: hidden` is still on the row (**ds-b74**).
 - Nothing about whether an indicator is *attractive*, only that it exists, is
   unclipped, changes on focus, and clears 3:1.

@@ -602,8 +602,15 @@
      pixels: the edge walk reads border #d6d2ca, armed #4285f4, ring #2a63c9
      ×2, then the armed tint.
 
-     Corner check: the container's arc is r=4px and the band's outer corner sits
-     1.41px from the arc centre, comfortably inside the rounding. */
+     Corner check, corrected: the band spans 1px..3px inside the border box, and
+     the edge that matters is the OUTER one at 1px — nearest the clip. Against
+     the container's r=4px arc its corner point sits 4.243px from the arc centre,
+     i.e. 0.243px OUTSIDE it, so the extreme corner is clipped by a quarter of a
+     pixel. (An earlier version of this note did the arithmetic on the inner edge
+     at 3px — 1.414px, comfortably inside — and drew the wrong conclusion from a
+     correct sum.) Sub-pixel and not visible: the rendered band reads as
+     continuous in the captures of all three segments, which is the evidence this
+     rests on rather than the geometry. */
   .autonomy-segment:focus-visible {
     outline: var(--ds-ring-inset-on-light);
     outline-offset: -3px;
@@ -611,9 +618,14 @@
   }
   /* Armed is a state you can be focused IN — activate a segment, then Shift+Tab
      back to it — so its stroke has to survive the `box-shadow: none` above,
-     which outranks `.autonomy-segment--armed` on its own. Without this the armed
-     tint alone would carry the state, and that tint is #f4f8fe against #ffffff:
-     1.04:1, which is not a distinction anyone can see. */
+     which outranks `.autonomy-segment--armed` on its own.
+
+     Honest about what this buys: the stroke's pixels survive, but while focused
+     it is a weak signal — 1.581:1 against the ring inside it and 2.364:1 against
+     the container border outside it. It is kept because the alternative is
+     worse: the armed TINT alone is #f4f8fe on #ffffff, 1.04:1, invisible. The
+     state's real carrier is the confirm row that slides in below; this stroke is
+     reinforcement, not the distinction. */
   .autonomy-segment--armed:focus-visible {
     box-shadow: inset 0 0 0 1px var(--ds-stream);
   }
