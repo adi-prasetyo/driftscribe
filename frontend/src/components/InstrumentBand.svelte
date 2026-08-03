@@ -276,12 +276,23 @@
     text-align: left;
     cursor: pointer;
   }
-  /* The hover fade lands on the NUMERAL, not the whole stat: the hint below
-     appears on that same hover, and fading the stat as a whole would fade the
-     hint in and out at the same time (ds-7ag.2). */
-  .instrument-band__stat:not(.instrument-band__stat--static):hover .instrument-band__num {
-    opacity: 0.75;
-  }
+  /* There is deliberately NO hover fade on the numeral (ds-16e). It used to
+     drop to opacity:.75, which is not a lighter ink but the numeral MIXED with
+     the paper behind it.
+     Only three numerals could ever fade — the selector excluded --static, and
+     `awaiting` is interactive:false, so despite what ds-16e's title says the
+     AWAITING numeral never faded at all. Of the three that did, managed (navy,
+     7.05) and drift (warn, 3.23) held the 3:1 large-text floor. The one that
+     did not is the [data-unknown] placeholder: it takes --ds-faint, rests at
+     only 3.08:1, and fell to 2.23:1 — and it is reachable on BOTH interactive
+     stats, since ApprovalDesk passes null for managed and drift whenever the
+     graph is unavailable.
+     Raising the fade does not fix it. The often-suggested .91 still leaves the
+     placeholder at 2.73:1; it needs alpha >= ~.981, which is not a fade anyone
+     can see. Removing it is the only honest option.
+     The affordance is unaffected: the hover hint under the label (ds-7ag.2) is
+     a separate element with its own fade, which is why the fade was scoped to
+     the numeral in the first place. */
   /* An inert figure must not pretend to be a control (ds-7ag.2). It keeps the
      stat's layout and type, and loses only the affordances. */
   .instrument-band__stat--static {
