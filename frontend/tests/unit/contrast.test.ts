@@ -233,12 +233,29 @@ describe('palette declaration parsing (ds-spu)', () => {
   });
 
   it('is reading the WHOLE palette — no --ds-* is declared outside tokens.css', () => {
+    // Deliberately NOT tokenDeclarations(). That parser requires a declaration
+    // to end at `;` or `}`, which is true of a stylesheet rule and false of the
+    // two ways a stray token actually arrives:
+    //
+    //   <div style="--ds-x: #00ff00">      terminated by a QUOTE. Valid CSS,
+    //                                      paints, and invisible to that parser
+    //   el.style.setProperty('--ds-x', v)  no declaration syntax at all, and in
+    //                                      a .ts file the walk never even opened
+    //
+    // Both were verified to slip past the parser-based version of this test. So
+    // this scans SOURCE TEXT for a token in declaration position, in every file
+    // type that can carry one, and does no parsing it could get wrong.
+    //
+    // Blunt on purpose: it has no comment parser, so prose that puts a token
+    // name immediately before a colon trips it. That is the safe direction — it
+    // fails loudly and the fix is to reword. A comment stripper here would make
+    // the guard LESS sensitive, which is the direction that hides bugs.
     const files: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (/\.(svelte|css)$/.test(entry.name)) files.push(full);
+        else if (/\.(svelte|css|ts|js|html)$/.test(entry.name)) files.push(full);
       }
     };
     walk(srcDir);
@@ -248,20 +265,31 @@ describe('palette declaration parsing (ds-spu)', () => {
     const tokensFile = files.find((f) => f.endsWith(join('styles', 'tokens.css')));
     expect(tokensFile, 'walk never reached tokens.css').toBeDefined();
     expect(
-      tokenDeclarations(readFileSync(tokensFile!, 'utf8')).length,
-      'positive control: walker + parser find the palette where it lives'
-    ).toBeGreaterThan(60);
+      files.filter((f) => f.endsWith('.ts')).length,
+      'walk never reached a .ts file, where a CSSOM mutation would live'
+    ).toBeGreaterThan(0);
 
     const strays: string[] = [];
     for (const file of files) {
-      if (file === tokensFile) continue;
-      for (const { name } of tokenDeclarations(readFileSync(file, 'utf8'))) {
-        strays.push(`${relative(srcDir, file)} declares ${name}`);
+      const source = readFileSync(file, 'utf8');
+      const where = relative(srcDir, file);
+      if (file !== tokensFile) {
+        for (const m of source.matchAll(/--ds-[\w-]+(?=\s*:)/g)) {
+          strays.push(`${where} declares ${m[0]}`);
+        }
+      }
+      // Any CSSOM custom-property write at all, not just a --ds-* one: there
+      // are zero in src today, so "none" is a cheaper and stronger invariant
+      // than parsing the first argument — which is unknowable anyway when the
+      // property name is computed. That residual case is the one blind spot
+      // here, and it is named rather than papered over.
+      for (const m of source.matchAll(/\.setProperty\s*\(/g)) {
+        strays.push(`${where} calls setProperty (offset ${m.index}) — see the note in this test`);
       }
     }
     expect(
       strays,
-      `the ring sweep reads only tokens.css, so a --ds-* declared elsewhere is never measured:\n  ${strays.join('\n  ')}`
+      `the ring sweep reads only tokens.css, so a --ds-* that lives anywhere else is never measured:\n  ${strays.join('\n  ')}`
     ).toEqual([]);
   });
 });
@@ -346,12 +374,20 @@ describe('palette token classification (ds-spu)', () => {
     );
   });
 
-  it('refuses a fallback whose primary is declared but is not a colour', () => {
-    // The browser does NOT fall back here. `2px` substitutes fine and the
-    // consuming declaration goes invalid at computed-value time, so what paints
-    // is inherited/initial — unknowable from this file, so: throw.
+  it('ignores the fallback when the primary is declared as a NON-colour too', () => {
+    // The token is whatever the primary is. `--ds-a: 2px` substitutes fine, so
+    // --ds-b computes to `2px` and the fallback never renders — it is used only
+    // when the primary is unset entirely. An earlier draft threw here, on the
+    // theory that the consuming declaration goes invalid at computed-value time
+    // and paints something unknowable. That confuses the TOKEN with a
+    // DECLARATION that consumes it: `border-width: var(--ds-b)` is perfectly
+    // valid, and the same argument would have condemned the no-fallback form,
+    // which this classifies as not-a-colour without complaint.
     const p = P('--ds-a: 2px;');
-    expect(() => classifyTokenValue(p, '--ds-b', 'var(--ds-a, #ffffff)')).toThrow(/--ds-b/);
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a, #ffffff)')).toEqual(
+      classifyTokenValue(p, '--ds-b', 'var(--ds-a)')
+    );
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a, #ffffff)').kind).toBe('not-a-color');
   });
 
   it('refuses a fallback whose primary is not in the palette at all', () => {

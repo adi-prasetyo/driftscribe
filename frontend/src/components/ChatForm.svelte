@@ -253,8 +253,8 @@
     box-shadow: none;
   }
 
-  /* Filled controls take navy, not --ds-stream: white on #4285f4 is 3.56:1 and
-     fails AA, while white on navy is 15.7:1. This also makes Send and the
+  /* Filled controls take navy rather than --ds-stream. White on #4285f4 is
+     3.56:1 and fails AA, while white on navy is 15.7:1. This also makes Send and the
      desk's "approve" CTA the same control in two places, which is the point of
      the unification. Hover LIFTS instead of deepening: the old Send deepened
      #4285f4 -> #1858c0, which was visible because the base was light, but navy

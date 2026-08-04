@@ -460,6 +460,21 @@ export function classifyTokenValue(
   // `var()` is indirection, not a function to classify — and it must be handled
   // before the general function branch or it reads as an unknown function.
   //
+  // THE FALLBACK IS NEVER FOLLOWED, and the two halves of that have different
+  // reasons:
+  //
+  //   primary DECLARED   the browser ignores the fallback, whatever the primary
+  //                      holds. `--a: 2px; --b: var(--a, #fff)` computes --b to
+  //                      `2px`; the fallback is used only when the primary is
+  //                      the guaranteed-invalid value, i.e. not set at all. So
+  //                      --b is simply whatever --a is, and a fallback that can
+  //                      never render is not this sweep's business.
+  //   primary ABSENT     the browser WOULD use the fallback — but "absent from
+  //                      this string" is not "unset in the browser". Another
+  //                      stylesheet, an inline style or script may define it,
+  //                      and then the fallback never renders. Unknowable here,
+  //                      so: throw.
+  //
   // Cycles are detected by NAME, not by a recursion counter: a counter only
   // bounds the damage and its limit is arbitrary, while the visited set states
   // the actual invariant and its message names the loop.
@@ -477,16 +492,7 @@ export function classifyTokenValue(
             : ` It has a fallback, but "absent here" is not "undefined in the browser" — another stylesheet, an inline style or script may define ${ref}, and then the fallback never renders.`)
       );
     }
-    const target = classifyTokenValue(palette, `${name} -> ${ref}`, palette.get(ref)!, [
-      ...seen,
-      ref
-    ]);
-    if (target.kind === 'not-a-color' && fallback !== undefined) {
-      throw new Error(
-        `${name}: ${ref} is declared but is not a color (${target.why}), and a fallback is present. The browser does not use the fallback here — substitution succeeds and the consuming declaration becomes invalid at computed-value time, so what paints is an inherited or initial value this sweep cannot see.`
-      );
-    }
-    return target;
+    return classifyTokenValue(palette, `${name} -> ${ref}`, palette.get(ref)!, [...seen, ref]);
   }
 
   const fn = /^([a-z][-a-z0-9]*)\(([\s\S]*)\)$/i.exec(one);
