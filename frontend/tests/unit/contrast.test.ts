@@ -349,7 +349,14 @@ describe('palette declaration parsing (ds-spu)', () => {
         // custom-property name with exactly two constructs — a declaration and
         // this one — and unlike the DOM API surface, that pair is closed
         // grammar rather than an open list.
-        for (const m of source.matchAll(/@property\s+(--ds-[\w-]+)/g)) {
+        // The separator tolerates comments for the same reason the colon rule
+        // does: CSS lets a comment sit between the at-keyword and its prelude,
+        // and `@property/**/--ds-x { … }` normalises to a valid registration in
+        // the emitted build. Requiring literal whitespace here was recognising
+        // the construct with a character regex rather than by its grammar.
+        for (const m of source.matchAll(
+          /@property(?:\s|\/\*[\s\S]*?\*\/)+(--ds-[\w-]+)/g
+        )) {
           strays.push(`${where} registers ${m[1]} with @property`);
         }
       }
@@ -399,6 +406,35 @@ describe('palette declaration parsing (ds-spu)', () => {
         }
       }
     }
+    // The prune list above is only sound if nothing the build ships can live
+    // behind it. Pruning `tests/` was NOT a superset of Vite's graph: an
+    // `import '../tests/probe.css'` from main.ts really does ship, and really
+    // does win over tokens.css by declaration order. So rather than claim a
+    // superset, PIN THE PREMISE — every CSS import in the project must resolve
+    // to a file this walk actually visited. That also covers `node_modules`,
+    // which can never be walked: a bare CSS specifier is reported rather than
+    // waved through. There are exactly two CSS imports today, both in main.ts.
+    const walked = new Set(files.map((f) => resolve(f)));
+    for (const file of files) {
+      const where = relative(projectDir, file);
+      for (const m of readFileSync(file, 'utf8').matchAll(
+        /(?:@import\s+(?:url\()?|from\s*|import\s*)['"]([^'"]+\.s?css)['"]/g
+      )) {
+        const spec = m[1];
+        if (!spec.startsWith('.')) {
+          strays.push(`${where} imports CSS from a package (${spec}); the walk cannot see it`);
+        } else if (!walked.has(resolve(dirname(file), spec))) {
+          strays.push(`${where} imports ${spec}, which this walk never visited`);
+        }
+      }
+    }
+    // Premise: the import scan found the imports we know exist. If the pattern
+    // silently matched nothing, the check above would pass while proving zero.
+    expect(
+      files.filter((f) => /\.s?css['"]/.test(readFileSync(f, 'utf8'))).length,
+      'import scan found no CSS imports at all; main.ts has two'
+    ).toBeGreaterThan(0);
+
     expect(
       strays,
       `the ring sweep reads only tokens.css, so a --ds-* that lives anywhere else is never measured:\n  ${strays.join('\n  ')}`
