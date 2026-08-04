@@ -209,11 +209,26 @@ no cost. But the review's sharper point stands: one more rule is one more
 spelling, and equivalent routes (a generic serializer, an imported helper) will
 keep existing.
 
-So the guard's **claim** was narrowed to match what it can actually prove. The
-test is no longer called "is reading the WHOLE palette"; it is *"no `--ds-*` is
-declared outside tokens.css by any **statically visible** route"*, and it states
-in full what it does not cover — any write whose name or declaration is assembled
-at runtime. That is ds-ley, and per the same review it should **instrument
+So the guard's **claim** was narrowed to match what it can actually prove.
+
+**Round 9 then showed the narrowed claim was still too broad**, twice over: the
+walk used an extension allowlist that omitted `.mts` (a first-class Vite/TS
+build input), and CSS Typed OM (`attributeStyleMap.set`) is a mutation API no
+name in the list matched. Adding `.mts` and `attributeStyleMap` would have been
+the enumeration reflex again, so the instrument changed instead:
+
+- **the walk lost its allowlist** and now visits every file under `src/`;
+- **outside CSS and Svelte, a file may not contain the string `--ds-` at all.**
+
+That second rule is what carries the JS side, and it is API-agnostic by
+construction: setProperty, setAttribute, cssText, Typed OM and whatever ships
+next all need the NAME. Ban the name and the API list stops mattering. Zero
+mentions exist across all 52 `.ts` files today, so it costs nothing. Both
+round-9 routes are caught by it rather than by any API rule.
+
+The test is now called *"no `--ds-*` name appears outside tokens.css, by any
+route that names it"*, and states exactly what it does not cover: a name
+assembled at runtime and never written literally. That is ds-ley, and per the same review it should **instrument
 writes** during the Playwright flows rather than enumerate final rendered
 properties, which would miss unexercised branches and properties written then
 removed.
@@ -294,12 +309,14 @@ is the #293 lesson repeating: that review found the consumer scan reading only
 `src/components/` while `App.svelte` and `base.css` already consumed the tokens
 it checked.
 
-**Enumerating the spellings was the wrong idea, and it took four attempts to
-admit it.** Ten distinct ways to declare a token were verified here — an
-ordinary rule, an inline `style=`, a Svelte `style:--x` directive, a Svelte
-style *object*, that object reached through a `const`, a CSSOM write spelled
-with a dot, with brackets, or with an optional call, a comment between name and
-colon, and an escaped identifier. Each guard was written, believed complete,
+**Enumerating the spellings was the wrong idea, and it took five attempts to
+admit it.** Thirteen routes were probed here — an ordinary rule, an inline
+`style=`, a Svelte `style:--x` directive, a Svelte style *object* and that
+object reached through a `const` (neither of which actually writes in the
+installed Svelte — see the round-8 correction), a CSSOM write spelled with a
+dot, with brackets or with an optional call, `setAttribute`, CSS Typed OM, a
+`.mts` build input, a comment between name and colon, and an escaped
+identifier. Each guard was written, believed complete,
 and then shown to pass one nobody had thought of. The ways to spell a style
 write are bounded only by the language, so a scanner over surface syntax cannot
 enforce this premise at all.
@@ -1154,7 +1171,7 @@ source-scanning for Svelte templates entirely. Read the shipped file for the
 authoritative body — the point of this section is the rule set and its proofs.
 
 ```ts
-it('is reading the WHOLE palette — no --ds-* is declared outside tokens.css', () => {
+it('no --ds-* name appears outside tokens.css, by any route that names it', () => {
   const files: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -1241,7 +1258,12 @@ printf '\n:root { --d\\73 -esc-escaped: #00ff00; }\n'  >> src/styles/base.css
 # K. setAttribute — declares the property without touching .style at all
 #    el.setAttribute('style', '--ds-x: #ff0000')          in src/main.ts
 
-npm run test:unit -- --run tests/unit/contrast.test.ts -t 'WHOLE palette'   # each must FAIL, naming the file
+# NO -t FILTER, deliberately. The filter used to be -t 'WHOLE palette'; the
+# tests were renamed and it then matched NOTHING — vitest skipped all 45 and
+# exited 0, so eleven injections "passed". A filter that selects nothing is
+# indistinguishable from a guard that holds. Run the file, and check the
+# ran-count in the output is the full suite before believing any result.
+npm run test:unit -- --run tests/unit/contrast.test.ts   # each must FAIL, naming the file
 ```
 
 Restore with `cp` from a backup rather than `git checkout` if anything else in

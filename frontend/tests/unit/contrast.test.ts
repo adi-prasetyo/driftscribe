@@ -234,7 +234,7 @@ describe('palette declaration parsing (ds-spu)', () => {
     ).toBe(3);
   });
 
-  it('no --ds-* is declared outside tokens.css by any STATICALLY VISIBLE route', () => {
+  it('no --ds-* name appears outside tokens.css, by any route that names it', () => {
     // Deliberately NOT tokenDeclarations(). That parser requires a declaration
     // to end at `;` or `}` — true of a stylesheet rule, false of most of the
     // ways a stray token actually arrives. FIVE spellings were verified in a
@@ -266,21 +266,31 @@ describe('palette declaration parsing (ds-spu)', () => {
     // safe direction — it fails loudly and the fix is to reword. A comment
     // stripper here would make the guard LESS sensitive, which hides bugs.
     //
-    // WHAT THIS DOES NOT PROVE, stated because four rewrites of this guard each
-    // believed they were complete and each was wrong: a static check cannot see
-    // a write whose property name, or whose whole declaration, is assembled at
-    // runtime — `style[m]('--ds-' + key, v)`, a generic serializer, a helper
-    // imported from elsewhere. The rules here cover every route that is visible
-    // in source or in a compiled component, which is why the name says
-    // STATICALLY VISIBLE rather than "the whole palette". Closing the rest needs
-    // a runtime check that instruments writes during the Playwright flows;
-    // that is ds-ley, and it is filed rather than pretended away.
+    // WHAT THIS PROVES, AND WHAT IT DOES NOT — stated precisely, because five
+    // rewrites of this guard each believed they were complete and each was
+    // wrong, and twice the overclaim was in the test's own NAME.
+    //
+    // Proves: no file under src/ outside tokens.css and the components' own CSS
+    // contains a `--ds-*` name at all, and no file calls a style-mutation API.
+    // Because every route to declaring a custom property needs the NAME, that
+    // covers every API — present or future — for any STATICALLY NAMED write.
+    // The walk has no extension allowlist, so it holds for `.mts`, `.d.ts` or
+    // anything else added later.
+    //
+    // Does not prove: a name assembled at runtime and never written literally,
+    // e.g. `style[m]('-' + '-ds-' + key, v)` or a name arriving from the server.
+    // The API rule catches the common shape of that, but is an enumeration and
+    // is not claimed to be complete. Closing it properly needs a runtime check
+    // that instruments writes during the Playwright flows: ds-ley, filed rather
+    // than pretended away.
     const files: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (/\.(svelte|css|ts|js|html)$/.test(entry.name)) files.push(full);
+        // EVERY file, no extension allowlist. An allowlist is an enumeration,
+        // and this one missed `.mts` — a first-class Vite/TS build input.
+        else files.push(full);
       }
     };
     walk(srcDir);
@@ -316,20 +326,28 @@ describe('palette declaration parsing (ds-spu)', () => {
       for (const m of source.matchAll(/\bstyle:--[\w-]*/g)) {
         strays.push(`${where} sets ${m[0]} via a Svelte style directive`);
       }
-      // Any CSSOM style write at all, not just a --ds-* one: there are zero in
-      // src today, so "none" is cheaper and stronger than parsing the first
-      // argument. Matched by NAME, never as a dotted call, because the same
-      // write is spellable as `style.setProperty(…)`, `style['setProperty'](…)`
-      // and `style.setProperty?.(…)`; an earlier version matched only the first.
-      // Bracketed `.style[…]` is flagged for the same reason — the five real
-      // uses in src are all plain `.style.overflow` / `.style.height`.
-      //
-      // `setAttribute` is here because `el.setAttribute('style', '--ds-x: red')`
-      // really does declare the property (verified in jsdom), reaching it
-      // without touching `.style` or `setProperty` at all. Zero in src, so the
-      // blanket name costs nothing.
+      // THE RULE THAT CARRIES THE JS SIDE, and the one that stopped the
+      // enumeration: outside CSS and Svelte, a file may not contain the string
+      // `--ds-` at all. Every way to write a custom property — setProperty,
+      // setAttribute, cssText, attributeStyleMap, CSS Typed OM, anything added
+      // to the platform next year — needs the NAME. Ban the name and the API
+      // list stops mattering. There are zero mentions across all 52 .ts files
+      // today, so it costs nothing, and it holds for `.mts`, `.d.ts`, `.json`
+      // or any extension nobody has thought of yet because the walk above has
+      // no allowlist. Deliberately blunt: a .ts file that so much as names a
+      // token in a comment trips it, which is the safe direction.
+      if (!/\.(css|svelte)$/.test(file)) {
+        for (const m of source.matchAll(/--ds-[\w-]*/g)) {
+          strays.push(`${where} names ${m[0]} (offset ${m.index}); only CSS and components may`);
+        }
+      }
+      // Style-mutation APIs by name. This IS an enumeration and is no longer
+      // load-bearing: for a statically named write the rule above already has
+      // it, whatever API is used. This adds the case that rule cannot see — a
+      // name assembled at runtime — for the handful of APIs worth naming. Zero
+      // in src, so a blanket match costs nothing. Not a completeness claim.
       for (const m of source.matchAll(
-        /\bsetProperty\b|\bcssText\b|\bsetAttribute\b|\.style\s*\??\s*\[/g
+        /\bsetProperty\b|\bcssText\b|\bsetAttribute\b|\battributeStyleMap\b|\bstyleMap\b|\.style\s*\??\s*\[/g
       )) {
         strays.push(`${where} writes style via CSSOM (offset ${m.index}) — see the note in this test`);
       }
@@ -358,7 +376,10 @@ describe('palette declaration parsing (ds-spu)', () => {
     // The rules above scan SOURCE, and source scanning is spelling-by-spelling:
     // three separate reviews each produced a new way to write a declaration that
     // the previous scan missed. `style:--ds-x={…}` and `style={{'--ds-x': …}}`
-    // look nothing alike in source and do the same thing.
+    // look nothing alike in source and compile to the same call. (They do NOT
+    // behave the same: the installed Svelte stringifies the object and only the
+    // directive actually writes the property. That is exactly the distinction an
+    // earlier revision of this file got wrong — see the controls below.)
     //
     // So this checks the COMPILER'S OUTPUT instead — one mechanism rather than a
     // list of spellings. Every Svelte style write, whatever its surface syntax,
@@ -367,7 +388,10 @@ describe('palette declaration parsing (ds-spu)', () => {
     //
     // It PARSES the emitted module with acorn and reads its string literals,
     // rather than pattern-matching the text. An earlier version paren-matched
-    // the arguments of `set_style` and was fail-open twice over:
+    // the arguments of `set_style` and missed both of these. Neither turned out
+    // to write the property in the installed Svelte, so neither was a live
+    // fail-open — but a matcher that loses a literal it was pointed at is broken
+    // regardless of whether that literal happened to matter:
     //
     //   <div style={styles}>          with `const styles = {'--ds-bg': …}` emits
     //                                 `set_style(div, styles)`. The literal is
