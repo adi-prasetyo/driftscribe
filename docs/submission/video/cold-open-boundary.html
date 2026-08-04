@@ -5,45 +5,49 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>DriftScribe — cold open (boundary rework)</title>
 <!--
-  DriftScribe demo cold-open v2 — "the boundary" (segment 0, 34.9s, silent, JA captions).
-  Design: docs/plans/2026-08-01-cold-open-boundary-rework-design.md (decisions closed
-  2026-08-01 in an operator / Claude / Codex review round — this file implements THAT
-  revision, incl. §4's solid-vs-dashed rule and §"Depicted scale").
-  Round-2 punch list: docs/plans/2026-08-02-cold-open-boundary-punch-list.md.
-  Socket rework: docs/plans/2026-08-03-cold-open-socket-build-plan.md.
-  FIX-FORWARD ROUND (2026-08-04): docs/plans/2026-08-04-cold-open-socket-fix-forward-plan.md,
-  bead ds-22b.1.1. The socket build shipped a regression — see WHAT THE FIX-FORWARD
-  ROUND CHANGED below before touching beats 0-5 or the ring.
+  DriftScribe demo cold-open v4 — "the census" (segment 0, 43.9s, silent, JA captions).
+  v4 (2026-08-05, bead ds-22b.3): docs/plans/2026-08-05-cold-open-v4-census-build-plan.md.
+  Lineage: boundary rework design docs/plans/2026-08-01-cold-open-boundary-rework-design.md
+  (its §4 solid-vs-dashed rule and §"Depicted scale" still bind) -> round-2 punch
+  list 2026-08-02 -> socket build 2026-08-03 -> fix-forward 2026-08-04
+  (ds-22b.1.1) -> THIS: the socket grammar retired for the census (see WHAT V4
+  CHANGED below, and the cold-open-socket-decision memory for why the peg died —
+  do not re-propose it).
   Supersedes cold-open.html (the drift-gap story). That file stays renderable and is
   the shippable fallback.
 
-  RUNTIME: 34.9s. The 35s cap was WAIVED for the punch-list round (operator decision,
-  2026-08-02): the round adds five substantive gestures — a leader line, micro-labels,
-  an explicit refusal, a re-staged key with a visible execution path, and the ring
-  lift-off — and the instruction was to build them at their natural length and record
-  the real number rather than trim elsewhere to hide the growth. A separate streamline
-  pass cuts fat later. The fix-forward round spent another +300ms, all of it in beat 5,
-  which is where the thesis is: proposer cannot, minter will not, human does.
-  Beats are sized to CAPTION READING TIME, not to their motion — see the MARKS comment.
+  RUNTIME: 43.9s. The 35s cap is WAIVED for the v4 round (operator, 2026-08-04:
+  "need the idea and story to be right before the optimization"). v4 adds the
+  census (+4.7s), a dedicated drift-edit beat (+3.9s), a longer approach-refusal
+  (+600ms), a slower/larger seal (+500ms and slower inside) and a dedicated fix
+  beat (+3.2s); a separate streamline pass cuts fat once the structure is
+  approved. Beats are sized to CAPTION READING TIME, not to their motion — see
+  the MARKS comment.
 
-  WHAT THE FIX-FORWARD ROUND CHANGED, and why each one is not a preference:
-  - The subject's label arrives at beat 0 WITH its square (it used to wait until
-    beat 1 + 1500ms, i.e. 2.4s after the field stopped moving). See .mklbl.
-  - The inside group is magnified 1.55x and kept ALIVE at beats 2-5 instead of
-    hidden. Hiding it meant the socket predicate was off screen during its own
-    payoff and beats 3-4 played as a void once the 実際 card was deleted. See .sock.
-  - The displaced peg stays ONE colour. It used to turn red at beats 3-4 while its
-    own vacated socket stayed amber, so the tether joined two semantics. See .mk.subj.
-  - Beat 4's refusal is sequenced (a bare transition-delay was hiding both the reach
-    and the recoil), aimed at the LOCK rather than at open space, and labelled. See
-    .lnk-blocked.
-  - Beat 5 is re-staged around who opens the lock: the worker places the key and
-    WITHDRAWS, the 判子 lands alone, and only then does the key turn and the shackle
-    lift. See the BEAT 5 block. The padlock had never opened; the key had never turned.
-  - The 判子 moved out of the gate card so it can break its edge. See .stamp.
-  - The ring now BECOMES the socket (one morphed path) instead of crossfading into a
-    separate dashed div. See .ring / ringLand(). There is no .tgt-sock any more.
-  - The gate's `live -> mock` is de-texted to 定義値に戻す. See .gate .gchange.
+  WHAT V4 CHANGED (ds-22b.3), and why each one is not a preference:
+  - THE SOCKET GRAMMAR IS RETIRED. Three viewings failed to read "displaced
+    from its socket = config drift"; measurement showed 95% of the peg's travel
+    ran inside the beat-2 zoom (no frame where the peg moved alone), and the
+    operator judged the motion distracting even if isolated. The subject never
+    leaves its seat now; there are no sockets to reintroduce.
+  - THE CENSUS is the definition metaphor: ten REAL resource names fly out of
+    the circle into an `iac/` card (beat 2) and stay on it through beat 7.
+    Titled iac/, never iac/cloudrun.tf — the ten span eight .tf files.
+  - DRIFT IS AN EDIT (beat 3): an unseen cursor backspaces the chip's mock and
+    types live, in neutral ink, against a static camera; then square + chip +
+    census line flare amber TOGETHER. Silent change, loud detection — the flare
+    is Anchor/Eventarc noticing, so the edit itself must never be coloured.
+  - THE FIX IS THE EDIT REVERSED (beat 7), a full beat after approval
+    completes: lnk-act touches, live backspaces, mock returns, and square +
+    chip + census line flip green together. 定義値に戻す made literal.
+  - ANCHOR WALKS TO THE GATE (beat 5) instead of a dashed reach popping in and
+    shaking; the rebuff lands ON the badge (鍵は出せない). The key invariants
+    are unchanged: worker -> lock only, placed unturned, turned by the 判子.
+  - THE SEAL IS SLOWER AND LARGER (beat 6): 2.6em lock, 44px key, and real air
+    between place · withdraw · 判子 · turn · open — the operator could not
+    follow the old tempo without replays.
+  - The beat-1 tail carries the zoom (body.prezoom, from 5900), so beat 2
+    opens already magnified and settled, and beat 1 has no dead air.
 
   THE ARGUMENT (why this replaces v1): v1 spent its 20s on detect -> propose ->
   approve -> revert, which is the shape every DevOps agent in the field has. What
@@ -52,6 +56,17 @@
   drift is only visible inside it, and ends by MOVING the line outward. The arc
   ends larger than it started instead of returning to zero.
 
+  ACCURACY NOTES — every claim on screen is checked:
+  - The census names are REAL: the ten resources declared in iac/*.tf, verified
+    at source 2026-08-05. RE-VERIFY AT RECORD TIME — the estate moves (the
+    tenth, adopt-probe-topic, only joined iac/ on 2026-08-04), and the INSIDE
+    mark count, the census lines and the counter must all agree with iac/.
+  - The chip's mock -> live -> mock is the real drift story: PAYMENT_MODE is
+    defined "mock" in iac/cloudrun.tf:41-44 (pinned by demo/ops-contract.yaml).
+    v3 deliberately kept the drifted value OFF screen; v4 deliberately shows
+    it — the census gives the string its before-state, which is what the v2
+    diff always lacked. Recorded in the socket-decision memory; NOT a
+    regression to be "fixed".
   ACCURACY NOTES — every claim on screen is checked:
   - The proposing crew never mints its own approval. Anchor detects and proposes
     (agent/main.py:1688 — "an HMAC-bound approval URL minted by the Rollback
@@ -107,6 +122,9 @@
 
   Playback:
     - default: autoplays once after fonts are ready, holds the final frame.
+    - ?hold=N : freeze at end-state of beat N (0..10) for screenshot review
+      (hold=1 is ZOOMED — the tail zoom lands on the beat-2 cut).
+    - ?dev : scrubbable review transport (see DEV TRANSPORT at the bottom).
     - ?hold=N : freeze at end-state of beat N (0..8) for screenshot review.
     - ?manual : suppress autoplay so a recorder can call window.play().
     - ?managed=9&grown=10 : override the counter with live counts (see above).
@@ -114,16 +132,17 @@
 
   Beats (data-beat on <body>), with cumulative ms:
     0  0      field     the estate blooms in; the subject is named    cap A
-    1  3200   line      the SOLID boundary draws; 3 outside names     cap B
-    2  7400   drift     the subject slides out of its socket; one HCL card cap C  <- the hinge
-    3  11300  propose   the watcher detects and proposes              cap D
-    4  14400  key       its reach is refused at the lock — an x       cap E
-    5  18300  seal      the key is PLACED and the hand withdraws; a
-                        human seals it; only then does the lock open  cap F
-    6  22300  pullback  the field again — seen, but with no definition cap G
-    7  26300  write     the file bursts out; a ring closes and lands  cap H
-    8  31500  commit    approval snaps the line SOLID; 管理下 rolls up cap I
-       34900  end
+    1  3200   line      the SOLID boundary draws; zoom rides the tail cap B
+    2  7400   census    ten names fly out of the circle into iac/     cap C
+    3  12100  drift     the silent edit, then the three-way flare     cap D  <- the hinge
+    4  16000  propose   the ripple reaches the watcher; it proposes   cap E
+    5  19100  refuse    Anchor walks to the gate; 鍵は出せない        cap F
+    6  23600  seal      key placed · 判子 alone · turn · open         cap G
+    7  28100  fix       the edit reversed; the three-way green flip   cap H
+    8  31300  sweep     the field again — seen, with no definition    cap I
+    9  35300  write     the file bursts out; a ring closes and lands  cap J
+    10 40500  commit    approval snaps the line SOLID; 管理下 rolls   cap K
+       43900  end
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -1900,33 +1919,26 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
   /* =====================================================================
      TIMELINE
      ===================================================================== */
-  /* 34.6s (was 31.9s; the 35s cap is waived for this round — see the header).
+  /* 43.9s (was 34.9s; the 35s cap is waived for the v4 round — see the header).
      Every beat is sized to its CAPTION's reading time AND to what the viewer has
      to watch — the captions are the only narration in a silent piece nobody can
      pause. Caption budget: chars / (duration - 0.5s stagger) <= ~5.2 per second;
-     NOTES.md's conservative figure is 4/s. Every beat below is at or under 4.2.
-       beat 0  3200  unchanged — the field blooms in
-       beat 1  4200  +800: the line draws for 1.5s and only THEN do four resource
-                     names fade up. Caption B was already at the 5.2 ceiling.
-       beat 2  3900  +500: there is now a mark, a leader stroke and a pair to read
-       beat 3  3100  unchanged
-       beat 4  3900  unchanged; the refusal fits inside it (x lands at ~1.26s,
-                     its label at ~1.62s, both well clear of the cut)
-       beat 5  4000  +300 (fix-forward round): the beat is fully serial now and
-                     it carries the thesis — key placed and the hand WITHDRAWN
-                     0-0.9s, 判子 alone 0.9-1.52s, key turned 1.52-1.8s, shackle
-                     lifted 1.75-1.98s, the worker's second path 2.0-2.65s, the
-                     gap closing 2.65-3.35s. That leaves ~0.65s of settle; at
-                     3700 the re-seat would have ended ~0.35s before the cut,
-                     which is the same mistake the +600 above was fixing.
-                     Caption F is 13 chars -> 13/(4.0-0.5) = 3.7/s, still under.
-       beat 6  4000  +400: the pullback now has to LAND on the target
-       beat 7  5200  +400: burst -> highlight -> ring -> lift-off -> lobe. The
-                     definition must finish being written BEFORE the line reaches
-                     out or the causality inverts, and this is the one beat no
-                     rival's demo can show. Never trim it first.
-       beat 8  3400  unchanged
-     Only the beat-7 chain's ANCHOR (26800) is coupled to these numbers; the rest
+     NOTES.md's conservative figure is 4/s. Every beat is at or under 4.2 except
+     F (17 chars / 4.0s = 4.25 — better than the 5.0 it ran at its old 3900ms).
+       beat 0  3200   field blooms (unchanged)
+       beat 1  4200   line draws; the tail zoom starts at 5900, lands on the cut
+       beat 2  4700   census: 260ms stagger x 10 names + 700ms flight; chip 3700
+       beat 3  3900   summon 0-500 · edit 800-2600 · flare 3000 · settle
+       beat 4  3100   ripple 100-1000; badge, ping, proposal card
+       beat 5  4500   approach 250-3650; contact 1750; label 2050
+       beat 6  4500   place 0-1100 · 判子 1500-2120 · turn 2600 · open 2950-3250
+                      · crumble 3400-4000 (the THE KEY block is the source of truth)
+       beat 7  3200   lnk-act 200-850 · reverse edit 900-2300 · green flip 2500
+       beat 8  4000   pullback + sweep (unchanged from v2/v3)
+       beat 9  5200   burst -> highlight -> ring -> lift-off -> lobe. The one
+                      beat no rival's demo can show. Never trim it first.
+       beat 10 3400   commit (unchanged)
+     Only the beat-9 chain's ANCHOR (35800) is coupled to these numbers; the rest
      of that beat is serial, so a burst-speed change cannot open a hole in it. */
   var MARKS=[[0,'0'],[3200,'1'],[7400,'2'],[12100,'3'],[16000,'4'],
              [19100,'5'],[23600,'6'],[28100,'7'],[31300,'8'],
