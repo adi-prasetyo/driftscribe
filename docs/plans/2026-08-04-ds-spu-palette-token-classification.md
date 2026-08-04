@@ -245,9 +245,17 @@ name:
 - `import '../reviewProbe.css'` from `main.ts` is a production build input that
   a `src/`-rooted walk never opens. Verified: the build emits `--ds-bg` twice
   and the later one wins while the sweep measures the first. The walk now roots
-  at the **project**, with a prune list. The true boundary is the build graph;
-  a project-rooted walk is a deliberate **superset** of it, which is the safe
-  direction — a superset can only produce a false positive, never a miss.
+  at the **project**, with a prune list.
+
+  ⚠️ **Round 11 disproved the justification I gave for that.** I called the
+  project-rooted walk "a deliberate superset of the build graph". It is not:
+  `import '../tests/probe.css'` ships and wins, and `tests/` is pruned. The same
+  holds for every pruned directory, `node_modules` included. So the *claim* is
+  gone and a **premise is enforced** in its place — every CSS import in the
+  project must resolve to a file the walk visited, and a bare specifier (which
+  can only resolve into `node_modules`, unwalkable by construction) is reported
+  rather than waved through. Reachability into pruned directories is now
+  forbidden and pinned, not assumed.
 
 Both were caught by naming the thing rather than by widening a list, and a
 premise assertion now pins that the walk actually leaves `src/`. That is ds-ley, and per the same review it should **instrument
@@ -319,8 +327,8 @@ specific proof like the ds-2fp premise test. Recorded on that bead.
 
 ## Scope premise this also has to pin
 
-> **Read the instrument table below before adding a rule here.** Eleven routes
-> were found across five review rounds, four of them in guards written *during*
+> **Read the instrument table below before adding a rule here.** Eighteen routes
+> were found across seven review rounds, most of them in guards written *during*
 > this change. If the answer to a new one looks like "add another regex", it is
 > probably the wrong answer.
 
@@ -1187,7 +1195,7 @@ git commit -m "fix(ui): the palette sweep discovers colours in any notation, or 
 
 **Step 1: Write the test**
 
-**This is the round-8 version, and there are now TWO tests.** The first draft
+**This is the round-11 version, and there are now TWO tests.** The first draft
 used `tokenDeclarations()` over `.svelte`/`.css` only; rounds 4, 5 and 6 each
 proved the then-current guard fail-open. The source test below keeps the rules
 that suit a textual substrate; the compiled test that follows it replaces
@@ -1389,6 +1397,10 @@ the scope guard had been passing while three real spellings walked through it.
 | 31 | scope guard: `@property --ds-x { initial-value: #f00 }` in `base.css` | the **@property** rule REDDENS | round 10. Binds the name with `{`, so the declaration rule was blind to it. A registered property really does supply that colour |
 | 32 | scope guard: `frontend/probe.css` imported from `src/main.ts` | the declaration rule REDDENS, naming `../probe.css` | round 10. A production build input outside `src/`. Proof the walk root is the project, not a directory that happens to hold the entry point |
 | 33 | the walk root drops back to `srcDir` | the **leaves-src/ premise** REDDENS | round 10. Without it, row 32 silently returns and nothing says so |
+| 34 | scope guard: `@property/**/--ds-x { … }` in `base.css` | the **@property** rule REDDENS | round 11. A comment may separate the at-keyword from its prelude, and the build normalises it to a real registration. Requiring literal whitespace was recognising the construct by characters, not grammar |
+| 35 | scope guard: `import '../tests/probe.css'` from `main.ts` | the **reachability** rule REDDENS | round 11. Ships and wins over tokens.css, from behind the prune list. This is what disproved "the walk is a superset" |
+| 36 | scope guard: `import 'some-pkg/theme.css'` from `main.ts` | the **reachability** rule REDDENS | round 11. A bare specifier resolves into `node_modules`, which can never be walked, so it is reported rather than waved through |
+| 37 | the CSS-import scan pattern stops matching | its own **found-something premise** REDDENS | round 11. A scan that matches nothing passes while proving zero — the defect this whole PR is about |
 
 Record each outcome in the PR body, including #14's honest "unproven".
 
