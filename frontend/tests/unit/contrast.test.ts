@@ -432,6 +432,44 @@ describe('palette token classification (ds-spu)', () => {
     // closes the escaped-quote gap, which the scanner does not model.
     expect(() => classifyTokenValue(P(), '--ds-x', 'r\\67 b(18, 21, 28)')).toThrow(/backslash/);
   });
+
+  it('sweeps a colour token written in a non-hex notation', () => {
+    const css = '--ds-base: #12151c;\n--ds-alias: var(--ds-base);\n--ds-rgb: rgb(66, 133, 244);\n';
+    expect(colorTokens(css)).toEqual({
+      '--ds-base': '#12151c',
+      '--ds-alias': '#12151c',
+      '--ds-rgb': '#4285f4'
+    });
+  });
+
+  it('propagates the failure instead of skipping the token', () => {
+    // Directly, not via today's palette — every current declaration classifies
+    // cleanly, so a `try {} catch {}` inside colorTokens would otherwise leave
+    // the whole suite green.
+    expect(() => colorTokens('--ds-x: oklch(0.6 0.2 250);')).toThrow(/--ds-x[\s\S]*oklch/);
+  });
+
+  it('still sweeps every hex token it swept before, with the same value', () => {
+    // The change must move no cheese on today's palette. A property rather than a
+    // count: a count would need editing on every legitimate palette addition, and
+    // would stop meaning anything the first time it was.
+    const swept = colorTokens(tokens);
+    const hexes = tokenDeclarations(tokens).filter((d) => /^#[0-9a-fA-F]{6}$/.test(d.value));
+    expect(hexes.length).toBeGreaterThan(25); // premise: found the palette
+    for (const { name, value } of hexes) {
+      expect(swept[name], `${name} left the sweep`).toBe(value.toLowerCase());
+    }
+  });
+
+  it('resolveColor accepts any notation the sweep accepts', () => {
+    // Otherwise the palette cannot actually adopt one: --ds-navy is swept here
+    // AND resolved by the instrument-band test.
+    expect(resolveColor('--ds-a: rgb(14, 27, 95);', 'var(--ds-a)')).toBe('#0e1b5f');
+    expect(() => resolveColor('', 'rgba(0, 0, 0, 0.5)')).toThrow(/translucent/);
+    expect(() => resolveColor('', '2px solid #fff')).toThrow(/not a colou?r|shorthand/i);
+    // Pre-existing hole: /^#[0-9a-fA-F]{3,8}$/ accepted invalid 5- and 7-digit hex.
+    expect(() => resolveColor('', '#abcde')).toThrow();
+  });
 });
 
 describe('instrument band numerals', () => {

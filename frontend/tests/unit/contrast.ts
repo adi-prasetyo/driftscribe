@@ -98,22 +98,23 @@ export function readToken(css: string, name: string): string {
 }
 
 /**
- * Resolve a token to a hex color, following `var(--x)` indirection.
+ * Resolve a value to a hex color, following `var(--x)` indirection.
  *
- * Throws on a non-opaque result, which is deliberate: a caller asking for "the
- * color of this thing" cannot be handed something whose real color depends on
- * what is behind it. Composite it explicitly instead.
+ * Routed through `classifyTokenValue`, so it accepts every notation the palette
+ * sweep accepts. That is not incidental: this is the file's dominant resolver
+ * (13 non-definition call sites), and leaving it hex-only would mean a palette
+ * entry written as `rgb()` swept correctly here and then threw in the
+ * instrument-band test — the palette able to be measured but not to be written.
+ *
+ * Keeps its contract: throws on a non-opaque or unresolvable result, because a
+ * caller asking for "the color of this thing" cannot be handed something whose
+ * real color depends on what is behind it. Composite it explicitly instead.
  */
-export function resolveColor(css: string, value: string, depth = 0): string {
-  if (depth > 8) throw new Error(`var() indirection too deep: ${value}`);
-  const v = value.trim();
-  const varRef = /^var\(\s*(--[\w-]+)\s*\)$/.exec(v);
-  if (varRef) return resolveColor(css, readToken(css, varRef[1]), depth + 1);
-  if (/^#[0-9a-fA-F]{3,8}$/.test(v)) {
-    if (v.length === 9 || v.length === 5) throw new Error(`color has alpha: ${v}`);
-    return v;
-  }
-  throw new Error(`not an opaque color: ${v}`);
+export function resolveColor(css: string, value: string): string {
+  const classified = classifyTokenValue(paletteOf(css), '(value)', value);
+  if (classified.kind !== 'color')
+    throw new Error(`not a color: "${value}" (${classified.why})`);
+  return classified.hex;
 }
 
 /**
@@ -534,13 +535,20 @@ export function classifyTokenValue(
   );
 }
 
-/** Every `--ds-*` token in the palette whose value is an opaque hex color. */
+/**
+ * Every `--ds-*` token in the palette that is an opaque color, in any notation.
+ *
+ * Was `/^#[0-9a-fA-F]{6}$/` and a silent skip for everything else (ds-spu), so
+ * the first palette entry written as `rgb()`, `oklch()`, `color-mix()` or
+ * `var(--other)` would have left the ring sweep with the test still green. Now
+ * every declaration is classified: a color, a reasoned non-color, or a throw.
+ */
 export function colorTokens(css: string): Record<string, string> {
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const palette = paletteOf(css);
   const out: Record<string, string> = {};
-  for (const m of stripped.matchAll(/(--ds-[\w-]+)\s*:\s*([^;]+);/g)) {
-    const value = m[2].trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(value)) out[m[1]] = value;
+  for (const [name, value] of palette) {
+    const classified = classifyTokenValue(palette, name, value);
+    if (classified.kind === 'color') out[name] = classified.hex;
   }
   return out;
 }
