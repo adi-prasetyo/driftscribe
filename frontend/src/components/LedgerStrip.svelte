@@ -259,10 +259,15 @@
   // Ordering is deliberate. pr_title/pr_number stay first — a PR title is a
   // better subject than anything derivable — and the derived arms only ever
   // fill a gap those left empty.
+  // ds-3em removed a `#${d.pr_number}` arm that sat directly under the
+  // pr_title one. The dedicated PR marker below owns that presentation now, and
+  // keeping both rendered the number twice in a single row ("取り込みを適用 #43
+  // … PR #43"). The ds-bch reason the arm existed is preserved, not discarded:
+  // what that incident needed was that a row with identity NAME it, and a
+  // pr_number-only decision still does — one cell over.
   function subtitleFor(row: LedgerRow): string | undefined {
     const d = row.decision;
     if (typeof d.pr_title === 'string' && d.pr_title !== '') return d.pr_title;
-    if (typeof d.pr_number === 'number') return `#${d.pr_number}`;
     const subject = rollbackSubject(d);
     if (subject !== undefined) return subject;
     // Last resort, and a real one: prod holds a rollback doc (2026-07-29) with
@@ -272,6 +277,31 @@
       return fmtPreview(d.target_revision, SUBJECT_MAX);
     }
     return undefined;
+  }
+
+  /** The PR this decision rode in on, if any (ds-3em).
+   *
+   *  The number is a SCOPE cue, not decoration. The desk hero names one PR, and
+   *  for as long as this ledger rendered inside the hero's card every row
+   *  beneath it inherited that reading. Its own card fixes the structure; a row
+   *  reading "PR #164" under a hero reading "PR #168" fixes the content, and
+   *  the two hold independently.
+   *
+   *  Only some rows have one, and that is what makes it informative: a rollback
+   *  and a no-action note genuinely carry no PR, so they return null and no
+   *  marker renders. A marker on every row would say nothing.
+   *
+   *  `pr_number` is the ONLY field to read here. `iac_pr` belongs to
+   *  ConversationTurn, not to Decision — do not reach for it.
+   *
+   *  Validated, not merely type-checked: the decision doc is an open server
+   *  shape, and a 0, a negative or a float is not a PR. "PR #0" on an audit
+   *  surface names something that does not exist, which is the same class of
+   *  claim the subtitle's "omit, never placeholder" rule refuses above. */
+  function prFor(d: Decision): number | null {
+    return typeof d.pr_number === 'number' && Number.isInteger(d.pr_number) && d.pr_number > 0
+      ? d.pr_number
+      : null;
   }
 </script>
 
@@ -285,6 +315,15 @@
   >
   <span class="ledger-strip__title">
     {titleFor(row, $t)}
+    <!-- In the TITLE cell, not a fifth grid column: the row's fourth column
+         belongs to the mini SealStamp on applied rows. Before the subtitle
+         rather than after it, because `<small>` is display:block — after it the
+         marker would open a THIRD line of its own, and this belongs on the
+         title's line (the mockup gives it the row's own fourth cell, which is
+         the same reading). -->
+    {#if prFor(row.decision) !== null}
+      <span class="ledger-strip__pr">{$t('desk.ledger.pr', { pr: prFor(row.decision) as number })}</span>
+    {/if}
     {#if subtitleFor(row) !== undefined}
       <small>{subtitleFor(row)}</small>
     {/if}
@@ -489,5 +528,18 @@
     font-size: 11.5px;
     color: var(--ds-fg-soft);
     margin-top: 1px;
+  }
+
+  /* Quiet, mono, tabular — it is a reference number, not a heading, and it sits
+     beside the title rather than competing with it. `white-space: nowrap` keeps
+     "PR" and the number together: broken across a line the marker reads as two
+     fragments, and at a narrow width the title cell is the one that wraps. */
+  .ledger-strip__pr {
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+    color: var(--ds-fg-soft);
+    margin-left: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 </style>

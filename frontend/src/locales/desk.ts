@@ -97,6 +97,12 @@ export const desk = {
     // have succeeded with the response lost. Saying "failed" here would be a
     // second false claim in the opposite direction (ds-2mc).
     'desk.ledger.unconfirmedTitle': 'Approved · outcome unconfirmed',
+    // ds-3em. The row's scope cue: a row reading "PR #164" under a hero reading
+    // "PR #168" cannot be that hero's history. Identical in both locales, and
+    // deliberately the same string as `desk.pending.prMeta` above — the hero and
+    // the ledger name a PR the same way, or the comparison the operator has to
+    // make costs them a translation step.
+    'desk.ledger.pr': 'PR #{pr}',
     // One-way: the strip opens to the whole snapshot and does not re-collapse.
     // `n` is every decision the snapshot holds, not the number still hidden —
     // "Show all 12" says what you will get; "Show 8 more" makes you do the sum.
@@ -412,6 +418,9 @@ export const desk = {
     'desk.ledger.mergingTitle': '承認済み → 未適用',
     'desk.ledger.failedTitle': '承認済み → 適用されず',
     'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',
+    // ds-3em。EN と同一文字列。ヒーローの `desk.pending.prMeta` と同じ表記に
+    // 揃えることで、「#168」と「#164」が別物だと一目で分かる。
+    'desk.ledger.pr': 'PR #{pr}',
     'desk.ledger.showMore': '{n}件すべて表示',
     'desk.record.prose': '判断の内容',
     'desk.record.incomplete': 'このトレースには判断の記録が紐づいていません。',

@@ -137,7 +137,7 @@ describe('LedgerStrip', () => {
   });
 
   describe('subtitle: best-effort identity, never a placeholder', () => {
-    it('prefers pr_title when present', () => {
+    it('prefers pr_title when present, with the number on its own marker', () => {
       const d = decision({
         decision_id: 's1',
         action: 'iac_apply',
@@ -145,20 +145,31 @@ describe('LedgerStrip', () => {
         pr_number: 42,
         pr_title: 'Adopt orders-sub into IaC',
       });
-      const { getByText, queryByText } = render(LedgerStrip, { props: { decisions: [d] } });
+      const { getByText, getByTestId } = render(LedgerStrip, { props: { decisions: [d] } });
+      // The title is the subject; the number is the scope cue. Separate cells,
+      // separate jobs — and the number appears once, not once per job.
       expect(getByText('Adopt orders-sub into IaC')).toBeTruthy();
-      expect(queryByText('#42')).toBeFalsy();
+      expect(getByText('PR #42')).toBeTruthy();
+      expect(getByTestId('ledger-strip-row').textContent?.match(/#42/g)).toHaveLength(1);
     });
 
-    it('falls back to #{pr_number} when pr_title is absent', () => {
+    // ds-3em: this used to assert a `#43` SUBTITLE. The dedicated PR marker
+    // owns that presentation now, and the subtitle's `#${pr_number}` fallback
+    // arm went with it — keeping both rendered the number twice in one row
+    // ("取り込みを適用 #43 … PR #43").
+    it('names the PR through the marker when pr_title is absent', () => {
       const d = decision({
         decision_id: 's2',
         action: 'iac_apply',
         apply_status: 'applied',
         pr_number: 43,
       });
-      const { getByText } = render(LedgerStrip, { props: { decisions: [d] } });
-      expect(getByText('#43')).toBeTruthy();
+      const { getByText, getByTestId } = render(LedgerStrip, { props: { decisions: [d] } });
+      expect(getByText('PR #43')).toBeTruthy();
+      // Exactly once. Two renderings of one number read as two PRs.
+      const row = getByTestId('ledger-strip-row');
+      expect(row.textContent?.match(/#43/g)).toHaveLength(1);
+      expect(row.querySelector('.ledger-strip__title small')).toBeNull();
     });
 
     it('omits the <small> entirely when neither pr_title nor pr_number is present (no placeholder text)', () => {
@@ -169,6 +180,56 @@ describe('LedgerStrip', () => {
       expect(row.textContent).not.toMatch(/—|unknown/i);
     });
   });
+
+  // ds-3em — the PR number as the row's SCOPE cue.
+  //
+  // The desk hero names one PR ("PR #168"). With the ledger inside the desk's
+  // card, every row beneath it inherited that reading. The card split fixes the
+  // structure; this fixes the content, and the two are independent — a row
+  // reading "PR #164" directly under a hero reading "PR #168" cannot be that
+  // hero's history, whatever the borders say.
+  describe('the PR marker', () => {
+    it('shows the PR number on rows whose decision carries one', () => {
+      const d = decision({
+        decision_id: 'p1',
+        action: 'iac_apply',
+        apply_status: 'applied',
+        pr_number: 164,
+        pr_title: 'Adopt notifier-topic into IaC',
+      });
+      const { getByText } = render(LedgerStrip, { props: { decisions: [d] } });
+      expect(getByText('PR #164')).toBeTruthy();
+    });
+
+    // Not every decision rode in on a PR, and this is the half that makes the
+    // marker informative: a rollback and a no-action note genuinely have no PR,
+    // so a marker on every row would carry no signal at all.
+    it('renders no marker on rollback or no-action rows', () => {
+      const rows: Decision[] = [
+        decision({ decision_id: 'p2', action: 'rollback', target_revision: 'payment-demo-00015-sgt' }),
+        decision({ decision_id: 'p3', action: 'no_op' }),
+      ];
+      for (const d of rows) {
+        const { queryByText } = render(LedgerStrip, { props: { decisions: [d] } });
+        expect(queryByText(/PR #/)).toBeNull();
+        cleanup();
+      }
+    });
+
+    // `pr_number` is server data on an open shape. A zero, a negative or a
+    // float is not a PR, and "PR #0" on an audit surface names a thing that
+    // does not exist.
+    it('renders no marker for a pr_number that is not a positive integer', () => {
+      for (const pr of [0, -1, 4.5, Number.NaN] as number[]) {
+        const { queryByText } = render(LedgerStrip, {
+          props: { decisions: [decision({ decision_id: `p-${pr}`, action: 'iac_apply', pr_number: pr })] },
+        });
+        expect(queryByText(/PR #/)).toBeNull();
+        cleanup();
+      }
+    });
+  });
+
 
   // ds-bch. A rollback carries neither pr_title nor pr_number, so an APPLIED
   // rollback row rendered "Approved · applied" with no subject at all — and on
@@ -325,18 +386,36 @@ describe('LedgerStrip', () => {
     // The honest invariant. NOT "an applied row never renders without a
     // subject" — v1 of the plan asserted that while the implementation could
     // still return undefined, so the test and the code disagreed. What is
-    // actually true: identity present ⇒ subject rendered.
-    it('renders a subject whenever the decision carries identity', () => {
-      const carriers: Decision[] = [
-        rollback({
-          decision_id: 'i1',
-          diffs: [{ name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' }],
-        }),
-        rollback({ decision_id: 'i2', target_revision: 'payment-demo-00015-sgt' }),
-        decision({ decision_id: 'i3', action: 'iac_apply', apply_status: 'applied', pr_number: 42 }),
+    // actually true: identity present ⇒ the ROW names it.
+    //
+    // ds-3em widened "names it" from the <small> to the row, and that widening
+    // is exactly what licenses deleting subtitleFor's `#${pr_number}` arm. The
+    // ds-bch failure was a row with NO SUBJECT AT ALL borrowing the eye's
+    // memory of the row above it; which cell carries the subject was never the
+    // point. A pr_number-only decision now renders it as the PR marker, so the
+    // invariant survives the deletion — assert it where it actually holds, or
+    // this test would license removing the marker too.
+    it('names the subject in the row whenever the decision carries identity', () => {
+      const carriers: Array<[Decision, string]> = [
+        [
+          rollback({
+            decision_id: 'i1',
+            diffs: [{ name: 'PAYMENT_MODE', contract_status: 'present_disallow_manual' }],
+          }),
+          'PAYMENT_MODE',
+        ],
+        [
+          rollback({ decision_id: 'i2', target_revision: 'payment-demo-00015-sgt' }),
+          'payment-demo-00015-sgt',
+        ],
+        [
+          decision({ decision_id: 'i3', action: 'iac_apply', apply_status: 'applied', pr_number: 42 }),
+          'PR #42',
+        ],
       ];
-      for (const d of carriers) {
-        expect(subtitleOf(d)).toBeTruthy();
+      for (const [d, subject] of carriers) {
+        const { getByTestId } = render(LedgerStrip, { props: { decisions: [d] } });
+        expect(getByTestId('ledger-strip-row').textContent).toContain(subject);
         cleanup();
       }
     });
