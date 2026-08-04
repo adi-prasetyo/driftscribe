@@ -1563,11 +1563,17 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
      Offset computed explicitly rather than leaning on any centring layout: see
      the .stage rule for the grid-centring bug this replaced. */
   var stageEl=document.querySelector('.stage');
+  /* Height reserved BELOW the stage. Always 0 except under ?dev, which parks its
+     transport bar there rather than over the frame — a review tool that covers
+     the bottom of the thing being reviewed is worse than no tool. At 0 this is
+     the original expression exactly, so recording is untouched. */
+  var fitPad=0;
   function fit(){
-    var s=Math.min(window.innerWidth/1920, window.innerHeight/1080);
+    var vh=window.innerHeight-fitPad;
+    var s=Math.min(window.innerWidth/1920, vh/1080);
     stageEl.style.transform=
       'translate('+((window.innerWidth-1920*s)/2)+'px,'
-                 +((window.innerHeight-1080*s)/2)+'px) scale('+s+')';
+                 +((vh-1080*s)/2)+'px) scale('+s+')';
   }
   window.addEventListener('resize', fit); fit();
 
@@ -1817,8 +1823,11 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
   /* The line moves in TWO steps, because that is what the system actually does.
      Driven off performance.now() so a wall-clock step (WSL2 NTP, see NOTES.md
      "Recorder timestamps must be MONOTONIC") cannot distort either one. */
-  function morph(draw, from, to, ms, done){
-    var t0=performance.now();
+  /* `off` = start this gesture already `off` ms in, with its easing intact. Only
+     the ?dev transport passes it (entering a run mid-gesture); 0/undefined is the
+     normal path and is byte-identical to what it replaced. */
+  function morph(draw, from, to, ms, done, off){
+    var t0=performance.now()-(off||0);
     (function step(){
       var t=Math.min(1,(performance.now()-t0)/ms);
       var e=t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;   /* easeInOutCubic */
@@ -1829,14 +1838,14 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     })();
   }
   /* 1. beat 7 — the DASHED proposal reaches out toward the resource */
-  function proposeBoundary(){ morph(drawProposal, baseR, growR, 1300); }
+  function proposeBoundary(off){ morph(drawProposal, baseR, growR, 1300, null, off); }
   /* 2. beat 8 — the human approves and the solid line SNAPS out to meet it.
      Also flips .tgt-sock to solid (see there) from the SAME call, so the two
      beat-8 snaps share one trigger instant instead of the socket (gated on
      the data-beat attribute) leading the lobe (gated on this later timer). */
-  function commitBoundary(){
+  function commitBoundary(off){
     body.classList.add('boundary-committed');
-    morph(drawBoundary, baseR, growR, 620);
+    morph(drawBoundary, baseR, growR, 620, null, off);
   }
 
   /* the definition types itself; the full text stays in the markup so
@@ -1844,7 +1853,7 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
   var tfEl=document.querySelector('.tf'), codeEl=document.querySelector('.tf .code');
   var CODE_HTML=codeEl.innerHTML;
   var CODE_TEXT=codeEl.textContent;
-  function typeCode(done){
+  function typeCode(done, off){
     tfEl.classList.remove('done');
     codeEl.textContent='';
     /* A BURST: 4.5ms/char x ~266 chars = ~1.2s (was 8ms = ~2.17s). Speed is
@@ -1853,7 +1862,7 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
        At 60fps this lands ~4 characters per frame, which is what a burst looks
        like. `done` is the chain's next link: nothing downstream is on a fixed
        clock, so changing `per` can never open a hole or an overlap. */
-    var i=0, t0=performance.now(), per=4.5;
+    var i=0, t0=performance.now()-(off||0), per=4.5;
     (function step(){
       var n=Math.min(CODE_TEXT.length, Math.floor((performance.now()-t0)/per));
       if(n!==i){ i=n; codeEl.textContent=CODE_TEXT.slice(0,i); }
@@ -1901,8 +1910,11 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     return {cx:x+imp.offsetWidth/2,       rx:imp.offsetWidth*0.64+20,
             cy:y+imp.offsetHeight/2,      ry:imp.offsetHeight*0.64+16};
   }
-  function ringClose(done){
-    var g=ringGeom(); if(!g){ if(done) done(); return; }
+  /* The pen stroke's geometry and starting state, with no clock in it — so the
+     ?dev transport can put the ring on screen at an arbitrary time without also
+     arming the 460ms link to the next chain step. */
+  function ringDraw(){
+    var g=ringGeom(); if(!g) return false;
     /* Hand-drawn = LOW-frequency deviation. A per-sample jitter array (32 points,
        alternating +/-4%) produced a 16-cycle ripple that read as a cloud, not a
        pen stroke; two slow harmonics read as a hand. Deterministic and NOT drawn
@@ -1922,6 +1934,10 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     ringEl.style.setProperty('--rl', L+'px');
     body.classList.remove('ring-land','ring-landed');
     body.classList.add('ring-draw');
+    return true;
+  }
+  function ringClose(done){
+    if(!ringDraw()){ if(done) done(); return; }
     timers.push(setTimeout(done, 460));
   }
   /* THE LAND. The ring does not lift and fade; it travels to the resource and
@@ -1930,14 +1946,14 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
      straight per-point lerp, and the hand-drawn wobble anneals out of the path
      on the way: a drawn circle becoming a printed socket, which is the thesis
      (the code draws the line) at the scale of a single resource. */
-  function ringLand(done){
+  function ringLand(done, off){
     if(!ringPts){ if(done) done(); return; }
     var from=ringPts, to=sockPts(TGT.x, TGT.y, SOCK_HALF, from.length, RING_PHASE);
     body.classList.remove('ring-draw');
     body.classList.add('ring-land');
     /* hand the dash pattern back to CSS — see body.ring-landed .ring */
     ringEl.style.strokeDasharray='';
-    var t0=performance.now(), MS=1000;
+    var t0=performance.now()-(off||0), MS=1000;
     (function step(){
       var t=Math.min(1,(performance.now()-t0)/MS);
       var e=t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
@@ -1961,19 +1977,13 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
        burst completes -> the import block highlights -> a ring closes on it ->
        the ring TRAVELS TO THE RESOURCE AND BECOMES ITS SOCKET while the DASHED
        lobe extends -> (beat 8) approval snaps the solid line out to meet it.
-     Every timeout goes through `timers`, so a replay cancels the whole chain. */
-  function beat7Chain(){
-    typeCode(function(){
-      timers.push(setTimeout(function(){
-        ringClose(function(){
-          timers.push(setTimeout(function(){
-            ringLand();
-            proposeBoundary();
-          }, 340));
-        });
-      }, 260));
-    });
-  }
+     Every timeout goes through `timers`, so a replay cancels the whole chain.
+     The links are NAMED rather than nested closures so the ?dev transport can
+     enter the chain at any one of them; the order and the delays are unchanged. */
+  function chainLand(){ ringLand(); proposeBoundary(); }
+  function chainRing(){ ringClose(function(){ timers.push(setTimeout(chainLand, 340)); }); }
+  function chainType(){ timers.push(setTimeout(chainRing, 260)); }
+  function beat7Chain(){ typeCode(chainType); }
 
   window.play=function(){
     clear();
@@ -2029,6 +2039,9 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
         closedPath(sockPts(TGT.x, TGT.y, SOCK_HALF, RING_N, RING_PHASE)));
       body.classList.add('ring-landed');
     }
+  } else if(qp.has('dev')){
+    /* review transport — see DEV TRANSPORT at the bottom of this script */
+    devTransport(+qp.get('t') || 0);
   } else if(!qp.has('manual')){
     /* fonts.ready is the trigger; the 1400ms timer is only a fallback for when it
        never settles. Both used to fire — fonts.ready started the piece, then the
@@ -2041,6 +2054,275 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     else { go(); }
   } else {
     drawBoundary(baseR); drawProposal(baseR);          /* manual: park at beat 0 */
+  }
+
+/* =========================================================================
+   DEV TRANSPORT (?dev) — A REVIEW TOOL, NOT PART OF THE PIECE
+   -------------------------------------------------------------------------
+   Delete this whole function and the `qp.has('dev')` branch above to remove it.
+   It is inert on every other URL: nothing below runs unless ?dev is present.
+
+   WHY IT EXISTS: ?hold=N gives 9 frames — the END STATE of each beat. Everything
+   this piece got wrong in the last two rounds was a TRANSITION, not an end state
+   (the refusal recoil, the key's travel, the ring's land), and each check cost a
+   page reload. This gives every millisecond, scrubbable, plus play-from-here.
+
+   HOW IT WORKS — one primitive, render(T), used for BOTH holding and playing, so
+   a scrubbed frame and a played frame at the same T cannot disagree:
+     1. reset to the same state window.play() resets to;
+     2. replay every discrete event at or before T *in time order*, and after each
+        one, pause every animation that event just created and set its currentTime
+        to (T - that event's time). Staging is what makes the origins right: an
+        animation's origin is whichever event first brought it into existence, and
+        a WeakSet keeps one that spans several beats on its FIRST origin.
+     3. gestures driven by rAF rather than CSS (the two morphs, the ring lerp, the
+        typing burst) are re-entered at an offset via their new `off` argument and
+        cut after a single frame — the same code path playback uses, at the same
+        easing, so the held frame is the played frame.
+   Playing from T is then: render(T), un-pause, and arm only the events after T.
+
+   ⚠ It reconstructs from MARKS and the beat-7 chain constants. If you retime the
+   piece, the C_* constants below are derived, but TYPE_MS assumes typeCode's
+   4.5ms/char — change one, change the other, or the ring lands in the wrong place.
+   ========================================================================= */
+  function devTransport(startAt){
+    /* A gesture driven by rAF does not end at its nominal duration — it ends at
+       the first frame boundary AFTER it, so each one hands the next link of the
+       serial chain a fraction of a frame late, and the error accumulates. The
+       burst and the ring lerp are the two that gate later links. Measured over
+       three runs (2026-08-04, 271 chars): .tf.done 28039, ring-draw 28300,
+       ring-land 29101, ring-landed 30110, committed 31601 — spread under 10ms
+       run to run. Nominal arithmetic alone lands ~20ms early by ring-land and
+       ~30ms early by ring-landed; one frame of tail at each rAF gesture brings
+       every mark within 6ms. Re-measure with a MutationObserver on body.class
+       if you retime the chain. */
+    var RAF_TAIL  = 16;
+    var TYPE_MS   = CODE_TEXT.length*4.5 + RAF_TAIL;   /* typeCode: 4.5ms/char */
+    var C_TYPE    = 26800,                        /* beat7Chain anchor */
+        C_DONE    = C_TYPE + TYPE_MS,             /* burst ends, .tf.done */
+        C_RING    = C_DONE + 260,                 /* chainType -> chainRing */
+        C_LAND    = C_RING + 460 + 340,           /* ringClose 460 -> chainLand */
+        C_LANDED  = C_LAND + 1000 + RAF_TAIL,     /* ringLand MS */
+        C_PROPEND = C_LAND + 1300,                /* proposeBoundary ms */
+        C_COMMIT  = 31600,                        /* commitBoundary timer */
+        C_CMTEND  = C_COMMIT + 620;
+
+    function beatAt(t){ var b=0; for(var i=0;i<MARKS.length;i++) if(t>=MARKS[i][0]) b=i; return b; }
+    function beatEnd(b){ return b+1<MARKS.length ? MARKS[b+1][0] : TOTAL; }
+    function isDev(a){
+      var t=a.effect && a.effect.target;
+      return !!(t && t.closest && t.closest('#devbar'));
+    }
+    /* run a gesture for exactly one frame at `off`, then cut its rAF */
+    function once(k, fn){ fn(); if(rafs[k]!=null){ cancelAnimationFrame(rafs[k]); delete rafs[k]; } }
+
+    function render(T){
+      clear();
+      body.classList.remove('no-anim','playing','ring-draw','ring-land','ring-landed','boundary-committed');
+      body.setAttribute('data-beat','0');
+      codeEl.innerHTML=CODE_HTML; tfEl.classList.remove('done');
+      ringEl.removeAttribute('d'); ringPts=null;
+      ringEl.style.strokeDasharray=''; ringEl.style.strokeDashoffset='';
+      drawBoundary(baseR); drawProposal(baseR);
+      void body.offsetWidth;
+
+      var seen=new WeakSet();
+      function freeze(origin){
+        document.getAnimations().forEach(function(a){
+          if(isDev(a) || seen.has(a)) return;
+          seen.add(a); a.pause();
+          try{ a.currentTime = Math.max(0, T-origin); }catch(e){}
+        });
+      }
+      function at(origin, apply){
+        if(T < origin) return;
+        apply(); void body.offsetWidth; freeze(origin);
+      }
+      /* anything already running belongs to the reset itself (and to base-state
+         loops like the caret). Origin 0 — the reset's transitions freeze at their
+         settled end, which is the value the reset just wrote. */
+      freeze(0);
+
+      var ev=[[0, function(){ body.classList.add('playing'); }]];
+      MARKS.forEach(function(m){
+        ev.push([m[0], function(){ body.setAttribute('data-beat', m[1]); }]);
+      });
+      ev.push([C_TYPE,  function(){ tfEl.classList.remove('done'); codeEl.textContent=''; }]);
+      ev.push([C_DONE,  function(){ codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); }]);
+      ev.push([C_RING,  function(){ ringDraw(); }]);
+      ev.push([C_LAND,  function(){
+        /* clamped below MS so ringLand cannot self-complete here — the landed
+           state is its own event below, and its transitions want ITS origin */
+        once('ring',  function(){ ringLand(null, Math.min(T-C_LAND, 999)); });
+        once('morph', function(){ proposeBoundary(Math.min(T-C_LAND, 1300)); });
+      }]);
+      ev.push([C_LANDED, function(){
+        ringEl.setAttribute('d', closedPath(sockPts(TGT.x, TGT.y, SOCK_HALF, RING_N, RING_PHASE)));
+        body.classList.remove('ring-land'); body.classList.add('ring-landed');
+      }]);
+      ev.push([C_COMMIT, function(){
+        body.classList.add('boundary-committed');
+        once('morph', function(){ morph(drawBoundary, baseR, growR, 620, null, Math.min(T-C_COMMIT, 620)); });
+      }]);
+      ev.sort(function(a,b){ return a[0]-b[0]; });     /* stable: .playing before beat 0 */
+      ev.forEach(function(e){ at(e[0], e[1]); });
+
+      /* the burst is a partial string, not a class — apply it after its event */
+      if(T>=C_TYPE && T<C_DONE) once('type', function(){ typeCode(null, T-C_TYPE); });
+    }
+
+    /* un-pause. An animation already past its end must NOT be play()ed: play()
+       auto-rewinds a finished animation to 0, which would replay beats the
+       viewer has already watched. Leave it paused; its fill renders the same. */
+    function resume(){
+      document.getAnimations().forEach(function(a){
+        if(isDev(a)) return;
+        var end=Infinity;
+        try{ end=a.effect.getComputedTiming().endTime; }catch(e){}
+        if(!(a.currentTime >= end)) a.play();
+      });
+    }
+    /* arm only what is still ahead of T */
+    function armFrom(T){
+      MARKS.forEach(function(m){
+        if(m[0] > T) timers.push(setTimeout(function(){ body.setAttribute('data-beat', m[1]); }, m[0]-T));
+      });
+      if(T < C_TYPE)       timers.push(setTimeout(beat7Chain, C_TYPE-T));
+      else if(T < C_DONE)  typeCode(chainType, T-C_TYPE);
+      else if(T < C_RING)  timers.push(setTimeout(chainRing, C_RING-T));
+      else if(T < C_LAND)  timers.push(setTimeout(chainLand, C_LAND-T));   /* ring-draw is CSS */
+      else {
+        if(T < C_LANDED)  ringLand(null, T-C_LAND);
+        if(T < C_PROPEND) proposeBoundary(T-C_LAND);
+      }
+      if(T < C_COMMIT)          timers.push(setTimeout(commitBoundary, C_COMMIT-T));
+      else if(T < C_CMTEND)     commitBoundary(T-C_COMMIT);
+    }
+
+    /* ---- transport state ---- */
+    var T=0, playing=false, base=0, wall0=0, loopBeat=false;
+    function cur(){ return playing ? Math.min(TOTAL, base + (performance.now()-wall0)) : T; }
+    function go(t, run){
+      T = Math.max(0, Math.min(TOTAL, t));
+      render(T);
+      playing = !!run && T < TOTAL;
+      if(playing){ resume(); armFrom(T); base=T; wall0=performance.now(); }
+      paint();
+    }
+    function toggle(){ go(cur(), !playing); }
+    function step(d){ go(cur()+d, false); }
+
+    /* ---- bar ---- */
+    var css=document.createElement('style');
+    css.textContent=
+      '#devbar{position:fixed;left:0;right:0;bottom:0;z-index:99999;display:flex;gap:8px;'+
+      'align-items:center;padding:7px 12px;background:rgba(12,14,20,.93);color:#e8ecf4;'+
+      "font:12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:0 -2px 12px rgba(0,0,0,.4)}"+
+      '#devbar.hid{display:none}'+
+      '#devbar button{font:inherit;color:#e8ecf4;background:#242a38;border:1px solid #3a4257;'+
+      'border-radius:4px;padding:3px 7px;cursor:pointer}'+
+      '#devbar button:hover{background:#333c4f}'+
+      '#devbar button.on{background:#3b6ef5;border-color:#3b6ef5}'+
+      '#devseek{flex:1;min-width:180px;accent-color:#3b6ef5}'+
+      '#devbar .ro{min-width:150px;color:#9fb0cc}'+
+      '#devbar .grp{display:flex;gap:3px}'+
+      '#devbar label{display:flex;gap:4px;align-items:center;color:#9fb0cc;cursor:pointer}';
+    document.head.appendChild(css);
+
+    var bar=document.createElement('div');
+    bar.id='devbar';
+    bar.innerHTML=
+      '<button data-a="replay" title="restart (r)">&#9198;</button>'+
+      '<button data-a="pp" title="play / pause (space)">&#9654;</button>'+
+      '<input type="range" id="devseek" min="0" max="'+TOTAL+'" step="10" value="0">'+
+      '<span class="ro" id="devro">0.00s / beat 0</span>'+
+      '<span class="grp">'+
+        '<button data-s="-1000">-1s</button><button data-s="-100">-.1</button>'+
+        '<button data-s="-33" title="one frame back (,)">&#9664;|</button>'+
+        '<button data-s="33" title="one frame on (.)">|&#9654;</button>'+
+        '<button data-s="100">+.1</button><button data-s="1000">+1s</button>'+
+      '</span>'+
+      '<span class="grp" id="devbeats"></span>'+
+      '<label><input type="checkbox" id="devloop"> loop beat</label>';
+    document.body.appendChild(bar);
+    fitPad=bar.offsetHeight; fit();      /* sit below the frame, not over it */
+
+    var beatsEl=bar.querySelector('#devbeats');
+    MARKS.forEach(function(m, i){
+      var b=document.createElement('button');
+      b.textContent=m[1]; b.dataset.beat=i;
+      b.title='beat '+m[1]+' @ '+(m[0]/1000).toFixed(2)+'s';
+      beatsEl.appendChild(b);
+    });
+    var seek=bar.querySelector('#devseek'), ro=bar.querySelector('#devro'),
+        pp=bar.querySelector('[data-a="pp"]'), loopEl=bar.querySelector('#devloop');
+
+    function paint(){
+      var t=cur(), b=beatAt(t);
+      seek.value=Math.round(t);
+      /* frame index at 30fps — the grain the piece is reviewed and cut at, and
+         what the ,/. steps move by */
+      ro.textContent=(t/1000).toFixed(2)+'s  f'+Math.round(t/33.34)+'  beat '+MARKS[b][1];
+      pp.innerHTML = playing ? '&#10074;&#10074;' : '&#9654;';
+      Array.prototype.forEach.call(beatsEl.children, function(el, i){
+        el.classList.toggle('on', i===b);
+      });
+    }
+
+    bar.addEventListener('click', function(e){
+      var el=e.target.closest('button'); if(!el) return;
+      if(el.dataset.s)     step(+el.dataset.s);
+      else if(el.dataset.beat!=null) go(MARKS[+el.dataset.beat][0], playing);
+      else if(el.dataset.a==='replay') go(0, true);
+      else if(el.dataset.a==='pp') toggle();
+    });
+    seek.addEventListener('input', function(){ go(+seek.value, false); });
+    loopEl.addEventListener('change', function(){ loopBeat=loopEl.checked; });
+
+    document.addEventListener('keydown', function(e){
+      if(e.target.tagName==='INPUT' && e.target.type!=='checkbox') return;
+      var k=e.key, big=e.shiftKey;
+      if(k===' '){ e.preventDefault(); toggle(); }
+      else if(k==='ArrowLeft')  step(big?-1000:-100);
+      else if(k==='ArrowRight') step(big? 1000: 100);
+      else if(k===',') step(-33.34);
+      else if(k==='.') step(33.34);
+      else if(k==='r') go(0, true);
+      else if(k==='l'){ loopEl.checked=!loopEl.checked; loopBeat=loopEl.checked; }
+      else if(k==='h'){
+        /* hiding gives the frame the full window back — the state to check a
+           composition in, since that is the geometry the recorder sees */
+        bar.classList.toggle('hid');
+        fitPad = bar.classList.contains('hid') ? 0 : bar.offsetHeight;
+        fit();
+      }
+      else if(k>='0' && k<='8') go(MARKS[+k][0], playing);
+      else return;
+      e.preventDefault();
+    });
+
+    /* the UI clock. Also owns the two ways a run ends: the loop-beat wrap, and
+       the end of the piece — which parks rather than restarting, so the last
+       frame stays on screen to be looked at. */
+    (function ui(){
+      if(playing){
+        var t=cur();
+        if(loopBeat){
+          var b=beatAt(base), e=beatEnd(b);
+          if(t>=e){ go(MARKS[b][0], true); }
+          else paint();
+        }
+        else if(t>=TOTAL){ go(TOTAL, false); }
+        else paint();
+      }
+      requestAnimationFrame(ui);
+    })();
+
+    /* geometry inside beat 7 is measured from laid-out text — wait for fonts, or
+       the first render can size the ring against a fallback face */
+    var first=function(){ go(startAt, false); };
+    if(document.fonts && document.fonts.ready) document.fonts.ready.then(first);
+    else first();
   }
 })();
 </script>
