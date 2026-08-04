@@ -162,20 +162,25 @@ looks nothing like the directive in source), `style['setProperty'](…)`, and
 Six spellings found across three rounds is not a list that was nearly complete —
 it is evidence that **scanning source text for surface syntax cannot enforce this
 premise**, because the number of ways to spell a style write is bounded only by
-the language. So the Svelte side changed mechanism: the guard now **compiles each
-`.svelte` and inspects the arguments of every emitted `set_style(...)` call**.
-Directive, object literal, and any future dynamic Svelte spelling funnel through
-that one function, so they are covered by construction rather than by
-enumeration. (The static `style="--ds-x: …"` form does not reach `set_style` — it
-is baked into a `from_html` template — but it is a literal declaration, so the
-source rule already had it.)
+the language. So the Svelte side changed mechanism: compile, then **parse**.
 
-Scanning only the *arguments* is what makes it usable: `--ds-*` also appears in
-compiled output as ordinary prose, because doc comments in `<script>` survive
-compilation, and `CrewGlyph`/`SealStamp` both do that. Both emit no `set_style`
-at all. The extractor has a positive control asserting it still finds a known
-style write, because if a Svelte upgrade renamed `set_style` this guard would
-report clean while checking exactly zero writes.
+The first attempt at that was still wrong, and round 7 caught it. It compiled
+each `.svelte` and paren-matched the arguments of every `set_style(...)` call —
+which fails two ways. `<div style={styles}>` with `const styles = {'--ds-bg': …}`
+emits `set_style(div, styles)`, putting the literal elsewhere in the module. And
+a paren matcher is not a JS tokenizer: in `{ t: /[)]/.source, '--ds-x': … }` it
+reads the `)` inside a regex character class as structural and stops early.
+Hand-rolling a JS scanner is the same mistake as hand-rolling a CSS one, made one
+layer down.
+
+What ships parses the emitted module with **acorn** and reads its string
+literals. No pattern-matching over code, so indirection and regex literals are
+both non-issues, and comments — which survive compilation, and which `CrewGlyph`
+and `SealStamp` both use to name tokens in prose — are gone for free. The name
+match is anchored so a BEM modifier (`btn--ds-primary`, ~120 in `src/`) cannot
+read as a custom property. Positive controls cover each spelling plus the BEM
+negative, because a pipeline that silently yielded nothing would report clean
+while inspecting nothing.
 
 The CSSOM rule was generalised the same way, from `\.setProperty\s*\(` to the
 *name* `setProperty`/`cssText` plus any bracketed `.style[…]` access — one rule
@@ -188,14 +193,15 @@ at runtime (`` `--ds-${key}` `` fed to a bracketed call) is invisible to every
 rule here. Only a runtime check — rendering the app and enumerating the custom
 properties actually set — would close it, and that is filed rather than bodged.
 
-The pattern across all six rounds is worth naming: **every round, the weakest
+The pattern across all seven rounds is worth naming: **every round, the weakest
 thing was a test that could not fail.** The classifier itself was wrong twice
-(round 1's denylist, round 4's fallback row); the instruments were wrong twelve
-times — and the last six were a guard added *in this change*, found in the three
-rounds *after* the reviews had already started finding exactly that. Three times
-running, the fix for a fail-open guard was itself fail-open, and the thing that
-finally worked was not a better regex but **giving up on source text** for the
-part where source text was the wrong instrument.
+(round 1's denylist, round 4's fallback row); the instruments were wrong fourteen
+times — and the last eight were a guard added *in this change*, found in the four
+rounds *after* the reviews had already started finding exactly that. Four times
+running, the fix for a fail-open guard was itself fail-open. What finally worked
+was not a better pattern but **matching the instrument to the substrate**: text
+rules where the substrate is text, a real parser where it is code, and a reported
+backslash where the scanner honestly cannot read what CSS reads.
 
 ## Design decisions, and what was rejected
 
@@ -243,19 +249,32 @@ specific proof like the ds-2fp premise test. Recorded on that bead.
 ## Scope premise this also has to pin
 
 The sweep reads exactly one file. True today — 74 declarations in
-`src/styles/tokens.css` and zero elsewhere in `src/` by **any** of the five
-spellings that can declare a token: an ordinary rule, an inline `style=`
-attribute, a Svelte `style:--x` directive, a CSSOM write (`setProperty` /
-`cssText`), and an escaped identifier. Nothing enforces it. This is the #293
-lesson repeating: that review found the consumer scan reading only
+`src/styles/tokens.css` and zero elsewhere in `src/`. Nothing enforced it. This
+is the #293 lesson repeating: that review found the consumer scan reading only
 `src/components/` while `App.svelte` and `base.css` already consumed the tokens
 it checked.
 
-Enumerating those five is the whole difficulty, and it took three attempts —
-each guard was written, believed complete, and then shown to pass a spelling
-nobody had thought of. Which is why the escape rule does not try to be clever:
-it reports a backslash rather than decoding one, because "I cannot read this"
-is a claim a text scanner can actually make good on.
+**Enumerating the spellings was the wrong idea, and it took four attempts to
+admit it.** Ten distinct ways to declare a token were verified here — an
+ordinary rule, an inline `style=`, a Svelte `style:--x` directive, a Svelte
+style *object*, that object reached through a `const`, a CSSOM write spelled
+with a dot, with brackets, or with an optional call, a comment between name and
+colon, and an escaped identifier. Each guard was written, believed complete,
+and then shown to pass one nobody had thought of. The ways to spell a style
+write are bounded only by the language, so a scanner over surface syntax cannot
+enforce this premise at all.
+
+What works is picking an instrument that matches the substrate:
+
+| substrate | instrument | why |
+|---|---|---|
+| CSS text | anchored source rules | declarations really are textual there |
+| CSS escapes | report the backslash, never decode it | "I cannot read this" is a claim a text scanner can make good on |
+| Svelte templates | **compile, then parse the emitted JS** | every spelling funnels into one module; acorn reads its string literals |
+| CSSOM from JS | one rule on the method NAME | dot, bracket and optional-call are the same call |
+
+The residual after all that is a name computed at runtime, which no static
+instrument can see. Filed as **ds-ley**, not papered over.
 
 ---
 
@@ -1087,9 +1106,12 @@ git commit -m "fix(ui): the palette sweep discovers colours in any notation, or 
 
 **Step 1: Write the test**
 
-**This snippet is the round-5 version.** The first draft used
-`tokenDeclarations()` over `.svelte`/`.css` only; rounds 4 and 5 each proved it
-fail-open, so it now carries one narrow rule per spelling and uses no parser.
+**This is the round-6 version, and there are now TWO tests.** The first draft
+used `tokenDeclarations()` over `.svelte`/`.css` only; rounds 4, 5 and 6 each
+proved the then-current guard fail-open. The source test below keeps the rules
+that suit a textual substrate; the compiled test that follows it replaces
+source-scanning for Svelte templates entirely. Read the shipped file for the
+authoritative body — the point of this section is the rule set and its proofs.
 
 ```ts
 it('is reading the WHOLE palette — no --ds-* is declared outside tokens.css', () => {
@@ -1162,6 +1184,14 @@ token before being used as an injection.
 printf '\n:root { --ds-esc-comment/**/: #00ff00; }\n' >> src/styles/base.css
 # E. an escaped identifier: \73 decodes to "s", so this IS --ds-...
 printf '\n:root { --d\\73 -esc-escaped: #00ff00; }\n'  >> src/styles/base.css
+# F. Svelte style OBJECT — nothing like C in source, identical after compiling
+#    <div style={{ '--ds-x': '#00ff00' }}></div>          in any .svelte
+# G. the same object reached through a const (STATIC INDIRECTION)
+#    <script>const s={'--ds-x':'#0f0'}</script><div style={s}></div>
+# H. a regex literal beside it, which broke the hand-rolled paren matcher
+#    <div style={{ t: /[)]/.source, '--ds-x': '#0f0' }}></div>
+# I. bracketed CSSOM       style['setProperty']('--ds-x', v)   in src/main.ts
+# J. optional-call CSSOM   style.setProperty?.('--ds-x', v)    in src/main.ts
 
 npm run test:unit -- --run tests/unit/contrast.test.ts -t 'WHOLE palette'   # each must FAIL, naming the file
 ```
@@ -1233,7 +1263,10 @@ the scope guard had been passing while three real spellings walked through it.
 | 20 | scope guard: `<div style={{ '--ds-x': '#f00' }}>` in a `.svelte` | the **compiled-output** test REDDENS | round 6. A Svelte style *object* — nothing like the directive in source, identical after compilation. This is the row that justifies compiling instead of scanning |
 | 21 | scope guard: `style['setProperty']('--ds-x', …)` in a `.ts` | CSSOM rule REDDENS | round 6. Bracketed access; the old `\.setProperty\s*\(` regex required a dot |
 | 22 | scope guard: `style.setProperty?.('--ds-x', …)` in a `.ts` | CSSOM rule REDDENS | round 6. Optional call; same regex, same miss |
-| 23 | `set_style` renamed in the extractor's probe | the compiled-output test REDDENS on its **positive control** | round 6. Without this, a Svelte upgrade that renamed the emitted helper would leave the guard checking zero writes and reporting clean |
+| 23 | the compiled-output pipeline yields nothing (parse returns an empty body) | the compiled-output test REDDENS on its **positive controls** | round 6/7. Without them, a compiler or parser change would leave the guard inspecting zero writes and reporting clean |
+| 24 | scope guard: `<script>const s={'--ds-x':…}</script><div style={s}>` | compiled-output test REDDENS | round 7. **Static indirection** — not a computed name. The literal is in the module but not in the `set_style` call, which is why argument-scanning was replaced by a full parse |
+| 25 | scope guard: `<div style={{ t: /[)]/.source, '--ds-x': … }}>` | compiled-output test REDDENS | round 7. The `)` in a regex character class ended the hand-rolled paren match early. Pinned by a positive control so the parser cannot regress to a matcher |
+| 26 | the name match drops its `(?:^\|[^\w-])` anchor | the BEM **negative control** REDDENS | round 7. ~120 `btn--ds-*` class names would flag; an unusable guard gets deleted, not fixed |
 
 Record each outcome in the PR body, including #14's honest "unproven".
 

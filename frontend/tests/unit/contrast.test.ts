@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, resolve } from 'node:path';
 import { compile } from 'svelte/compiler';
+import { parse as acornParse } from 'acorn';
 import {
   classifyTokenValue,
   colorTokens,
@@ -344,17 +345,26 @@ describe('palette declaration parsing (ds-spu)', () => {
     // the previous scan missed. `style:--ds-x={…}` and `style={{'--ds-x': …}}`
     // look nothing alike in source and do the same thing.
     //
-    // So this checks the COMPILER'S OUTPUT instead, which is one mechanism
-    // rather than a list: every dynamic Svelte style write, whatever its
-    // surface syntax, funnels into a `set_style(...)` call. A future Svelte
-    // spelling lands here automatically. (The static `style="--ds-x: …"` form
-    // does NOT reach set_style — it is baked into a from_html template — but it
-    // is a literal declaration, so the source rule above already has it.)
+    // So this checks the COMPILER'S OUTPUT instead — one mechanism rather than a
+    // list of spellings. Every Svelte style write, whatever its surface syntax,
+    // ends up in the emitted module: a `set_style(...)` call for the dynamic
+    // forms, a `from_html` template for the static attribute.
     //
-    // Scanning only the ARGUMENTS of set_style matters: `--ds-*` also appears in
-    // emitted JS as ordinary prose, because doc comments in <script> survive
-    // compilation. CrewGlyph and SealStamp both do exactly that, and both emit
-    // no set_style at all.
+    // It PARSES the emitted module with acorn and reads its string literals,
+    // rather than pattern-matching the text. An earlier version paren-matched
+    // the arguments of `set_style` and was fail-open twice over:
+    //
+    //   <div style={styles}>          with `const styles = {'--ds-bg': …}` emits
+    //                                 `set_style(div, styles)`. The literal is
+    //                                 elsewhere in the module, so scanning the
+    //                                 call's arguments never saw it
+    //   { t: /[)]/.source, '--ds-x': … }  the `)` inside a regex character class
+    //                                 read as structural, ending extraction early
+    //
+    // Hand-rolling a JS scanner is the same mistake as hand-rolling a CSS one,
+    // made one layer down. A real parse also removes comments for free, which
+    // matters because doc comments in <script> survive compilation and both
+    // CrewGlyph and SealStamp name tokens in prose.
     const svelteFiles: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -366,52 +376,70 @@ describe('palette declaration parsing (ds-spu)', () => {
     walk(srcDir);
     expect(svelteFiles.length).toBeGreaterThan(30);
 
-    /** The argument text of every `set_style(` call, paren-matched, quote-aware. */
-    const setStyleArgs = (js: string): string[] => {
-      const out: string[] = [];
-      for (const m of js.matchAll(/set_style\s*\(/g)) {
-        let i = m.index! + m[0].length;
-        let depth = 1;
-        let quote: string | null = null;
-        const start = i;
-        for (; i < js.length && depth > 0; i++) {
-          const c = js[i];
-          if (quote) {
-            if (c === '\\') i++;
-            else if (c === quote) quote = null;
-          } else if (c === '"' || c === "'" || c === '`') quote = c;
-          else if (c === '(') depth++;
-          else if (c === ')') depth--;
+    /** Every string the compiled module actually contains, via a real JS parse. */
+    const stringLiterals = (node: unknown, out: string[] = []): string[] => {
+      if (!node || typeof node !== 'object') return out;
+      if (Array.isArray(node)) {
+        for (const child of node) stringLiterals(child, out);
+        return out;
+      }
+      const n = node as Record<string, unknown> & { type?: string };
+      if (n.type === 'Literal' && typeof n.value === 'string') out.push(n.value);
+      if (n.type === 'TemplateLiteral') {
+        for (const q of n.quasis as { value: { cooked?: string; raw: string } }[]) {
+          out.push(q.value.cooked ?? q.value.raw);
         }
-        out.push(js.slice(start, i - 1));
+      }
+      for (const key of Object.keys(n)) {
+        if (key !== 'loc' && key !== 'range') stringLiterals(n[key], out);
       }
       return out;
     };
+    // Anchored so a BEM modifier cannot read as a custom property: in
+    // `btn--ds-primary` the `--ds-` is preceded by a word character. There are
+    // ~120 such class names in src, and matching them would have made this
+    // guard unusable — which is how a guard ends up deleted rather than fixed.
+    const NAME = /(?:^|[^\w-])(--ds-[\w-]+)/g;
+    const namesIn = (source: string): string[] =>
+      stringLiterals(
+        acornParse(compile(source, { generate: 'client' }).js.code, {
+          ecmaVersion: 'latest',
+          sourceType: 'module'
+        })
+      ).flatMap((s) => [...s.matchAll(NAME)].map((m) => m[1]));
+
+    // Premise, and the one that matters most here: if this pipeline ever yielded
+    // nothing — a compiler change, a parse that silently returns an empty body —
+    // every file below reports clean while inspecting nothing. So pin it on
+    // fixtures whose answers are known, one per spelling, plus the negative.
+    for (const [spelling, src] of [
+      ['directive', `<div style:--ds-probe={'#f00'}></div>`],
+      ['object literal', `<div style={{ '--ds-probe': '#f00' }}></div>`],
+      ['static attribute', `<div style="--ds-probe: #f00"></div>`],
+      ['static indirection', `<script>const s={'--ds-probe':'#f00'}</script><div style={s}></div>`],
+      // A `)` inside a regex character class broke the hand-rolled paren matcher
+      // this replaced. A real parser is the point; this pins that it stays one.
+      ['regex-literal neighbour', `<div style={{ t: /[)]/.source, '--ds-probe': '#f00' }}></div>`]
+    ] as const) {
+      expect(namesIn(src), `positive control: a ${spelling} style write is no longer seen`).toContain(
+        '--ds-probe'
+      );
+    }
+    expect(
+      namesIn(`<div class="btn btn--ds-primary">x</div>`),
+      'negative control: a BEM modifier must not read as a custom property'
+    ).toEqual([]);
 
     const strays: string[] = [];
-    let sawSetStyle = 0;
     for (const file of svelteFiles) {
-      const { js } = compile(readFileSync(file, 'utf8'), { generate: 'client' });
-      for (const args of setStyleArgs(js.code)) {
-        sawSetStyle++;
-        for (const m of args.matchAll(/--[\w-]+/g)) {
-          strays.push(`${relative(srcDir, file)} sets ${m[0]} from a Svelte template`);
-        }
+      for (const name of namesIn(readFileSync(file, 'utf8'))) {
+        strays.push(`${relative(srcDir, file)} names ${name} in compiled output`);
       }
     }
-    // Premise: the extractor works on THIS compiler's output. If a Svelte
-    // upgrade renamed set_style, every file above would silently yield nothing
-    // and this guard would report clean while checking exactly zero writes.
-    const probe = compile(`<div style:--ds-probe={'#f00'}></div>`, { generate: 'client' });
-    expect(
-      setStyleArgs(probe.js.code).join(' '),
-      'positive control: the extractor no longer finds a known style write — has set_style been renamed?'
-    ).toMatch(/--ds-probe/);
-    expect(sawSetStyle, 'no set_style calls anywhere; src uses style:flex/style:width').toBeGreaterThan(0);
 
     expect(
       strays,
-      `a custom property set from a template is never in tokens.css, so the sweep cannot see it:\n  ${strays.join('\n  ')}`
+      `a custom property named in a component is never in tokens.css, so the sweep cannot see it:\n  ${strays.join('\n  ')}`
     ).toEqual([]);
   });
 });
