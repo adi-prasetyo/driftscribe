@@ -806,58 +806,30 @@ body[data-beat="4"] .ripple{
   100%{opacity:0; transform:translate(-295px,-238px) scale(.65)}
 }
 
-/* refused reach: marches out toward the LOCK, is stopped short of it, withdraws.
-   RETARGETED 2026-08-04 (fix-forward plan §E). It used to end at (906,394), a
-   point in open space beside the gate, which reads as "Anchor cannot reach the
-   worker" — false, and not the claim: Anchor proposes to the worker routinely.
-   What it cannot get is the KEY. So the reach now aims at the padlock in the
-   gate header (world ~984,490) and is stopped ~66px short of it.
-   ⚠ This is a DOTTED stroke, so animating stroke-dashoffset marches the dots
-   along a fully-present line — it does not draw progressively and it cannot
-   retract the endpoint. The recoil therefore lives in .lnk-tip, which is the
-   real last 10% of this same cubic (split at t=0.90) moved by a transform. */
-.lnk-blocked, .lnk-tip{
-  fill:none; stroke:var(--crew-anchor); stroke-width:2.5; stroke-linecap:round;
-  stroke-dasharray:7 6; stroke-dashoffset:0; opacity:0;
-  transition:opacity 500ms ease, stroke 700ms ease;
+/* THE APPROACH (v4, ds-22b.3 — operator decision 2026-08-04). The dashed
+   reach that used to pop in and shake is retired: an abstract relation drawn
+   in dots read as noise, where an ACTION reads instantly. The badge itself now
+   walks to the gate — lean back, glide, jab at the lock zone, get rebuffed,
+   hold, withdraw to its post. One animation on one transform, keylife-style:
+   split declarations on the same property cannot compose. The invariants
+   hold: the rebuff lands ON Anchor (鍵は出せない), nothing touches the lock,
+   and the key never appears in this beat at all — the worker brings it next.
+   Travel: rest (180,310) -> (470,156) puts the badge's right edge ~60px short
+   of the gate's left edge, centred on the header lock (world ~991,497).
+   Contact = 44% of 3400ms + 250ms delay ~= 1750, which is when the x pops,
+   the label speaks and the lock rattles. */
+body[data-beat="5"] .b-watch{animation:approach 3400ms cubic-bezier(.4,0,.2,1) 250ms both}
+@keyframes approach{
+  0%{transform:translate(0,0)}
+  8%{transform:translate(-14px,4px)}
+  38%{transform:translate(470px,156px)}
+  44%{transform:translate(490px,163px)}
+  50%,62%{transform:translate(478px,159px)}
+  100%{transform:translate(0,0)}
 }
-body[data-beat="5"] .lnk-blocked{opacity:1; animation:reach 900ms cubic-bezier(.4,0,.25,1) 250ms backwards}
-@keyframes reach{from{stroke-dashoffset:420} to{stroke-dashoffset:0}}
-/* it greys the moment the refusal lands.
-   ⚠ TWO delays, one per transitioned property, and that is the entire point:
-   `transition-delay:1450ms` with no property list applied to OPACITY as well, so
-   the line stayed transparent until 1450ms while its own `reach` ran 250-1150ms
-   and the tip's `tipjab` ran 1000-1560ms. Measured live 2026-08-04: at beat4+1300
-   the line was at opacity 0 while the x was already at 0.15 — the x appeared out
-   of nothing and THEN grew a tail, and the recoil this file has carried since the
-   punch-list round had never once been visible.
-   Every other bare transition-delay in this file was audited 2026-08-04 and all
-   of them are safe — either the element transitions one property, or every
-   property it transitions is meant to share the delay, or the extra properties
-   do not change across that beat boundary. This was the only instance. Re-run
-   that audit if you add a property to any transition list, because a delay that
-   was correct becomes a bug the moment the list grows under it. */
-body[data-beat="5"] .lnk-blocked{stroke:var(--muted); transition-delay:0ms, 1450ms}
-/* the tip fades up as it extends (900ms, just under the jab) rather than sitting
-   present-but-retracted, which would double the stroke over the reach's own tail */
-body[data-beat="5"] .lnk-tip{stroke:var(--muted); transition-delay:900ms, 1450ms}
-/* the jab: extends to the contact point, is stopped, and settles ~9px short.
-   The residual gap between the tip and the x IS the refusal (invariant: the
-   refusal must not touch its target). Offsets run along the curve's END TANGENT
-   — (13,15.2) normalised = (.65,.76) — so the tip retracts back along itself
-   rather than diagonally off it, which the old 45° offsets assumed. */
-body[data-beat="5"] .lnk-tip{opacity:1; transform:translate(-5.9px,-6.8px);
-  animation:tipjab 560ms cubic-bezier(.3,0,.2,1) 1000ms backwards}
-@keyframes tipjab{
-  0%{transform:translate(-38.5px,-45px)}
-  46%{transform:translate(0,0)}
-  72%{transform:translate(-8.5px,-9.9px)}
-  100%{transform:translate(-5.9px,-6.8px)}
-}
-/* the padlock RATTLES at the contact instant (1000+.46*560 = 1258ms, the same
-   instant the x pops). "It cannot be opened", said by the lock itself, in the
-   header where the key will be placed one beat later. */
-body[data-beat="5"] .gate .lock{animation:lockshake 240ms ease-in-out 1258ms 1 both}
+/* the padlock RATTLES at the contact instant — "it cannot be opened", said by
+   the lock itself, in the header where the key will be placed one beat later. */
+body[data-beat="5"] .gate .lock{animation:lockshake 240ms ease-in-out 1750ms 1 both}
 @keyframes lockshake{
   0%,100%{transform:translateX(0)}
   22%{transform:translateX(-2.6px)}
@@ -872,7 +844,7 @@ body[data-beat="5"] .gate .lock{animation:lockshake 240ms ease-in-out 1258ms 1 b
 .stopx{stroke:var(--ink); stroke-width:5; stroke-linecap:round; opacity:0;
   transform-box:fill-box; transform-origin:center; transition:opacity 400ms ease}
 body[data-beat="5"] .stopx{opacity:1;
-  animation:xpop 300ms cubic-bezier(.3,1.6,.4,1) 1258ms backwards}
+  animation:xpop 300ms cubic-bezier(.3,1.6,.4,1) 1750ms backwards}
 @keyframes xpop{from{opacity:0; transform:scale(.35) rotate(-14deg)} to{opacity:1; transform:none}}
 /* ...and it says what it means. 鍵は出せない, NOT 拒否 / "rejected": rejected
    says Anchor asked and was told no, when the truth is stronger — there is no
@@ -882,22 +854,19 @@ body[data-beat="5"] .stopx{opacity:1;
    ⚠ Do NOT stack a shake on the x as well: xpop already overshoots
    (cubic-bezier(.3,1.6,.4,1), scale .35 -> 1) and the lock is already rattling. */
 .xlbl{
-  position:absolute; left:912px; top:466px; transform:translateX(-100%);
+  position:absolute; left:912px; top:545px; transform:translateX(-100%);
   font-family:var(--ui); font-weight:700; font-size:17px; letter-spacing:.04em;
   color:var(--muted); white-space:nowrap; opacity:0;
   background:var(--bg); padding:2px 7px; border-radius:5px;
   transition:opacity 380ms ease;
 }
-body[data-beat="5"] .xlbl{opacity:1; transition-delay:1620ms}
+body[data-beat="5"] .xlbl{opacity:1; transition-delay:2050ms}
 /* beat 5 — Anchor's refused reach WITHDRAWS, x and label with it. It used to
    grey and linger at opacity .45/.5, so a dead x and a live navy line shared the
    frame with the approval; the reach animation also silently RE-RAN at beat 5,
    marching the dots a second time. All of it is gone before the key lands. */
-body[data-beat="6"] .lnk-blocked,
-body[data-beat="6"] .lnk-tip,
 body[data-beat="6"] .stopx,
 body[data-beat="6"] .xlbl{opacity:0; transition-delay:0ms}
-body[data-beat="6"] .lnk-tip{transform:translate(-5.9px,-6.8px)}
 
 /* =======================================================================
    BEAT 5 — WHO OPENS THE LOCK. Three parties, in this order, and the ORDER
@@ -1352,10 +1321,9 @@ body.no-anim[data-beat="4"] .prop,
 body.no-anim[data-beat="5"] .prop,
 body.no-anim[data-beat="6"] .prop,
 body.no-anim[data-beat="7"] .prop{opacity:1; transform:none}
-body.no-anim[data-beat="5"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
-/* the tip's SETTLED (recoiled) position — without this the hold frame shows it
-   fully extended and touching the x, i.e. a refusal that never recoiled */
-body.no-anim[data-beat="5"] .lnk-tip{opacity:1; stroke:var(--muted); transform:translate(-5.9px,-6.8px)}
+/* the approach's settled state is the badge back at its post, which is the
+   base transform — killing the animation IS that state. Only the x and its
+   label persist. */
 body.no-anim[data-beat="5"] .stopx{opacity:1; transform:none}
 body.no-anim[data-beat="5"] .xlbl{opacity:1}
 /* beat 5's settled state for all four of those is ABSENCE — the reach withdraws
@@ -1421,13 +1389,9 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
 
 
       <!-- Annotation strokes, all in world coordinates (viewBox 1:1 with .world).
-           - lnk-blocked + lnk-tip: ONE cubic, split at t=0.90 by de Casteljau, so
-             the tip is genuinely the last ~59px of the reach and can be moved
-             independently. Original: M430 342 C 580 260, 800 300, 930 452 —
-             retargeted 2026-08-04 from the old ...906 394 (open space beside the
-             gate) to a point ~66px short of the header padlock at (984,490), so
-             what the reach is denied is legibly the KEY. See .lnk-blocked.
-           - stopx: the two arms of the refusal x, centred on the contact point.
+           - stopx: the two arms of the refusal x, centred where the badge's
+             approach is stopped, just short of the header lock (the refusal
+             itself is the .b-watch `approach` animation — see there).
            - lnk-key   the seal beat: the 実行側 worker -> the LOCK, where it
              sets the key down and then withdraws. It ends at the key's bow, not
              at the padlock body, because what the hand is holding is the key.
@@ -1437,10 +1401,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
              which is correct: the worker is outside the line, the resource is
              inside it. Both start at the relocated badge (620,240 w280). -->
       <svg class="links" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
-        <path class="lnk-blocked" d="M430 342 C 565 268.2, 756.7 293.22, 888.46 409.77"></path>
-        <path class="lnk-tip" d="M888.46 409.77 C 903.1 422.72, 917 436.8, 930 452"></path>
-        <line class="stopx" x1="917.8" y1="462.3" x2="942.2" y2="441.7"></line>
-        <line class="stopx" x1="919.7" y1="439.8" x2="940.3" y2="464.2"></line>
+        <!-- centred (940,495): between the badge's jab edge (~920) and the
+             header lock (~991,497), and clear of the .tgt mark at (900,470) —
+             an x that lands beside the adopt target reads as marking IT -->
+        <line class="stopx" x1="927.8" y1="505.3" x2="952.2" y2="484.7"></line>
+        <line class="stopx" x1="929.7" y1="482.8" x2="950.3" y2="507.2"></line>
         <path class="lnk-key" d="M760 302 C 810 350, 900 424, 964 480"></path>
         <path class="lnk-act" d="M700 302 C 660 400, 628 490, 606 566"></path>
       </svg>
