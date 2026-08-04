@@ -337,6 +337,62 @@ describe('palette token classification (ds-spu)', () => {
     // stack would also throw, and would tell the next reader nothing.
     expect(() => classifyTokenValue(p, '--ds-a', 'var(--ds-b)')).toThrow(/cycle/i);
   });
+
+  it('converts the rgb() form it can convert exactly', () => {
+    expect(classifyTokenValue(P(), '--ds-x', 'rgb(18, 21, 28)')).toEqual({
+      kind: 'color',
+      hex: '#12151c'
+    });
+    expect(classifyTokenValue(P(), '--ds-x', 'rgba(18, 21, 28, 1)').kind).toBe('color');
+    // CSS clamps out-of-range channels rather than dropping the declaration, so
+    // this matches the browser instead of inventing a failure.
+    expect(classifyTokenValue(P(), '--ds-x', 'rgb(300, 0, 0)')).toEqual({
+      kind: 'color',
+      hex: '#ff0000'
+    });
+  });
+
+  it('names the token AND the notation for a colour it will not convert', () => {
+    // Asserts the SPECIFIC diagnostic, not just "it threw". Otherwise dropping a
+    // name from COLOR_FUNCTIONS still lands on the unknown-function throw, whose
+    // message also contains the token and the function — and the test would not
+    // notice that the notation-specific guidance had disappeared.
+    for (const [value, notation] of [
+      ['oklch(0.6 0.2 250)', 'oklch'],
+      ['color-mix(in srgb, #4285f4 42%, transparent)', 'color-mix'],
+      ['hsl(210, 90%, 60%)', 'hsl'],
+      ['lab(50% 40 59.5)', 'lab'],
+      ['contrast-color(#4285f4)', 'contrast-color']
+    ] as const) {
+      expect(() => classifyTokenValue(P(), '--ds-accent', value), value).toThrow(
+        new RegExp(`--ds-accent[\\s\\S]*${notation}\\(\\) color notation`)
+      );
+    }
+  });
+
+  it('throws on an UNKNOWN function rather than calling it not-a-colour', () => {
+    // Round 1's actual bug. Substitution and conditional functions can produce
+    // colours, so no denylist of colour functions is complete and "unknown" must
+    // never resolve to "safe to skip".
+    for (const v of ['env(--brand, #fff)', 'attr(data-c type(<color>), red)', 'whatever(1)']) {
+      expect(() => classifyTokenValue(P(), '--ds-x', v), v).toThrow(/unknown function/);
+    }
+  });
+
+  it('rejects a translucent colour rather than measuring the wrong thing', () => {
+    expect(() => classifyTokenValue(P(), '--ds-x', 'rgba(18, 21, 28, 0.42)')).toThrow(/translucent/);
+    expect(() => classifyTokenValue(P(), '--ds-x', '#12151c6b')).toThrow(/alpha channel/);
+  });
+
+  it('rejects an rgb() form it does not parse instead of guessing', () => {
+    expect(() => classifyTokenValue(P(), '--ds-x', 'rgb(18 21 28)')).toThrow(/--ds-x/);
+  });
+
+  it('lets a known non-colour function through', () => {
+    expect(classifyTokenValue(P(), '--ds-ease', 'cubic-bezier(0.2, 0.7, 0.2, 1)').kind).toBe(
+      'not-a-color'
+    );
+  });
 });
 
 describe('instrument band numerals', () => {

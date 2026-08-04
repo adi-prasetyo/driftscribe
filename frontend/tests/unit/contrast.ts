@@ -288,6 +288,51 @@ export function paletteOf(css: string): Palette {
 export type TokenClass = { kind: 'color'; hex: string } | { kind: 'not-a-color'; why: string };
 
 /**
+ * Functions that certainly do not produce a color.
+ *
+ * An ALLOWLIST, and the direction is the whole point. The first draft of this
+ * change denylisted the color functions and let every other function through as
+ * not-a-color — silently dropping `var(--x, #fff)`, `env(…, #fff)`, typed
+ * `attr()` and `contrast-color()`, reproducing the bug being fixed. Once CSS
+ * has general substitution and conditional functions, no color-function
+ * denylist can be complete, so anything not listed here THROWS.
+ */
+const NON_COLOR_FUNCTIONS = new Set([
+  'cubic-bezier',
+  'steps',
+  'linear',
+  'calc',
+  'clamp',
+  'min',
+  'max'
+]);
+
+/**
+ * Color functions, so the failure can name the notation and say what to do.
+ *
+ * DIAGNOSTIC, not a safety boundary: a color function missing from here still
+ * throws, via the unknown-function branch. The tests assert the specific
+ * message so the distinction cannot rot.
+ */
+const COLOR_FUNCTIONS = new Set([
+  'rgb',
+  'rgba',
+  'hsl',
+  'hsla',
+  'hwb',
+  'lab',
+  'lch',
+  'oklab',
+  'oklch',
+  'color',
+  'color-mix',
+  'light-dark',
+  'device-cmyk',
+  'contrast-color',
+  'color-contrast'
+]);
+
+/**
  * A value's top-level components, splitting on whitespace and commas outside
  * `()` and outside quotes.
  *
@@ -427,6 +472,44 @@ export function classifyTokenValue(
       );
     }
     return target;
+  }
+
+  const fn = /^([a-z][-a-z0-9]*)\(([\s\S]*)\)$/i.exec(one);
+  if (fn) {
+    const f = fn[1].toLowerCase();
+    if (NON_COLOR_FUNCTIONS.has(f)) return { kind: 'not-a-color', why: `${f}()` };
+
+    if (f === 'rgb' || f === 'rgba') {
+      // The SAME strict grammar the box-shadow layer parser uses, so a value
+      // rejected there cannot be quietly re-read as valid here.
+      const m = new RegExp(
+        String.raw`^rgba?\(\s*(${CHANNEL})\s*,\s*(${CHANNEL})\s*,\s*(${CHANNEL})\s*(?:,\s*(${ALPHA})\s*)?\)$`
+      ).exec(one);
+      if (!m)
+        throw new Error(
+          `${name}: "${one}" is an rgb()/rgba() form this sweep does not parse — only the comma-separated 0-255 form. Declare it as #rrggbb.`
+        );
+      if (m[4] !== undefined && Number(m[4]) !== 1) {
+        throw new Error(
+          `${name}: "${one}" is translucent (alpha ${m[4]}). Its rendered color depends on what is behind it, so no ring can be proven against it in isolation — composite it explicitly, or declare an opaque value.`
+        );
+      }
+      // CSS clamps out-of-range channels; this matches the browser.
+      const hex = [m[1], m[2], m[3]]
+        .map((c) => Math.min(255, Number(c)).toString(16).padStart(2, '0'))
+        .join('');
+      return { kind: 'color', hex: '#' + hex };
+    }
+
+    if (COLOR_FUNCTIONS.has(f)) {
+      throw new Error(
+        `${name}: "${one}" uses the ${f}() color notation, which this sweep does not convert. Conversion is standards-defined, but matching the browser's gamut mapping for out-of-sRGB values is untested surface here, and a verdict computed from a differently-mapped color is confidently wrong rather than absent. Declare the token as #rrggbb, or add a TESTED conversion and extend this branch.`
+      );
+    }
+
+    throw new Error(
+      `${name}: "${one}" uses the unknown function ${f}(). It is not classified as a non-color, because substitution and conditional functions can produce colors and a silent skip is exactly the defect this guard exists to prevent. Add ${f} to NON_COLOR_FUNCTIONS if it certainly is not a color.`
+    );
   }
 
   throw new Error(`${name}: unclassifiable value "${one}"`);
