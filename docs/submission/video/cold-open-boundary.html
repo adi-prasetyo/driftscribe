@@ -221,13 +221,15 @@ body[data-beat="1"] .rig{transform:translate(0px,0px) scale(1)}
    x ~180 (b-watch badge left edge) .. ~1240 (card right edge) and y ~310
    (badge top) .. ~720 (mark field bottom), centre (710,515), placed at
    screen centre (960,540): T = (960-1.7*710, 540-1.7*515) = (-247,-335.5). */
-body[data-beat="2"] .rig{transform:translate(-247px,-335.5px) scale(1.7)}
-body[data-beat="3"] .rig{transform:translate(-66px,-216px) scale(1.35)}
-body[data-beat="4"] .rig{transform:translate(-104px,-224px) scale(1.4)}
-body[data-beat="5"] .rig{transform:translate(-142px,-272px) scale(1.45)}
+body[data-beat="2"] .rig,
+body[data-beat="3"] .rig{transform:translate(-247px,-335.5px) scale(1.7)}
+body[data-beat="4"] .rig{transform:translate(-66px,-216px) scale(1.35)}
+body[data-beat="5"] .rig{transform:translate(-104px,-224px) scale(1.4)}
 body[data-beat="6"] .rig,
-body[data-beat="7"] .rig{transform:translate(0px,0px) scale(1)}
-body[data-beat="8"] .rig{transform:translate(-57.6px,-32.4px) scale(1.06)}
+body[data-beat="7"] .rig{transform:translate(-142px,-272px) scale(1.45)}
+body[data-beat="8"] .rig,
+body[data-beat="9"] .rig{transform:translate(0px,0px) scale(1)}
+body[data-beat="10"] .rig{transform:translate(-57.6px,-32.4px) scale(1.06)}
 
 .world{position:absolute; inset:0}
 
@@ -251,7 +253,7 @@ body[data-beat="8"] .rig{transform:translate(-57.6px,-32.4px) scale(1.06)}
     rgba(101,108,122,.17) 50%, rgba(101,108,122,.11) 55%, rgba(101,108,122,0) 100%);
   opacity:0; pointer-events:none;
 }
-body[data-beat="6"] .sweep{
+body[data-beat="8"] .sweep{
   animation:sweepacross 1900ms cubic-bezier(.4,0,.3,1) 100ms 1 both;
 }
 @keyframes sweepacross{
@@ -344,27 +346,33 @@ body:not([data-beat="0"]) .sock{opacity:var(--sock-op)}
 body[data-beat="2"] .sock,
 body[data-beat="3"] .sock,
 body[data-beat="4"] .sock,
-body[data-beat="5"] .sock{transform:scale(1.55)}
+body[data-beat="5"] .sock,
+body[data-beat="6"] .sock,
+body[data-beat="7"] .sock{transform:scale(1.55)}
 /* the eight siblings stay as CONTEXT — dimmed, never gone. "One of these has
    moved" is only a readable sentence if the others are in the frame; with them
    hidden, a single square was doing mime. */
 body[data-beat="2"] .mk.in,
 body[data-beat="3"] .mk.in,
 body[data-beat="4"] .mk.in,
-body[data-beat="5"] .mk.in{opacity:.45; transform:scale(1.55)}
+body[data-beat="5"] .mk.in,
+body[data-beat="6"] .mk.in,
+body[data-beat="7"] .mk.in{opacity:.45; transform:scale(1.55)}
 /* ...but the subject is at full strength at every one of beats 2-5 (the beat-5
    worker path re-anchors to THIS mark, so it must be on screen there too).
    ⚠ Same specificity as the dim rule (both 0,3,1) — this MUST stay after it. */
 body[data-beat="2"] .mk.subj,
-body[data-beat="3"] .mk.subj,
 body[data-beat="4"] .mk.subj,
-body[data-beat="5"] .mk.subj{opacity:1}
+body[data-beat="5"] .mk.subj,
+body[data-beat="6"] .mk.subj,
+body[data-beat="7"] .mk.subj{opacity:1}
 /* the subject's socket stays lit the WHOLE time it is displaced (beats 2-4) —
    invariant 2, "a vacated socket stays lit and tethered". Still recessed: an
    amber HOLE, not an amber ring. */
 body[data-beat="2"] .sock.subj,
 body[data-beat="3"] .sock.subj,
-body[data-beat="4"] .sock.subj{
+body[data-beat="4"] .sock.subj,
+body[data-beat="5"] .sock.subj{
   opacity:.9; border-color:var(--amber); transform:scale(1.55);
   box-shadow:inset 0 2px 5px rgba(154,91,18,.26), 0 0 0 4px rgba(154,91,18,.12);
 }
@@ -374,7 +382,7 @@ body[data-beat="4"] .sock.subj{
    ⚠ bare transition-delay, i.e. it applies to transform too — safe ONLY because
    the scale is identical at beats 4 and 5, so transform has nothing to animate.
    If that ever stops being true, list the properties (see .lnk-blocked). */
-body[data-beat="5"] .sock.subj{
+body[data-beat="6"] .sock.subj{
   opacity:var(--sock-op); border-color:var(--navy); transform:scale(1.55);
   box-shadow:inset 0 1px 3px rgba(18,21,28,.13);
   transition-delay:2650ms;
@@ -386,9 +394,9 @@ body[data-beat="5"] .sock.subj{
    The dim is not simultaneous: --sw staggers it per mark so it reads as the
    .sweep band CAUSING it (build plan §3 beat 6), not an unrelated fade. Beats
    7-8 inherit the same .58 with no delay — the sweep already happened. */
-body[data-beat="6"] .mk:not(.in){opacity:.58; transition-delay:var(--sw,0ms)}
-body[data-beat="7"] .mk:not(.in),
-body[data-beat="8"] .mk:not(.in){opacity:.58}
+body[data-beat="8"] .mk:not(.in){opacity:.58; transition-delay:var(--sw,0ms)}
+body[data-beat="9"] .mk:not(.in),
+body[data-beat="10"] .mk:not(.in){opacity:.58}
 /* a brief grey tick as the sweep band passes each mark — an inspection flash,
    not a state change. It shares --sw with the dim above so both fire together.
    ⚠ :not(.tgt) too: `.mk.tgt` also matches `:not(.in)`, and an animated
@@ -397,7 +405,7 @@ body[data-beat="8"] .mk:not(.in){opacity:.58}
    erasing the target's own grey focus halo for all of beat 6 (Codex review,
    2026-08-03). Same trap this file's own no-anim comment already warns about:
    an animation always outranks a normal rule on the same property. */
-body[data-beat="6"] .mk:not(.in):not(.tgt){
+body[data-beat="8"] .mk:not(.in):not(.tgt){
   animation:sweeptick 260ms ease-out var(--sw,0ms) 1 both;
 }
 @keyframes sweeptick{
@@ -405,9 +413,9 @@ body[data-beat="6"] .mk:not(.in):not(.tgt){
   40%{box-shadow:0 0 0 3px rgba(101,108,122,.24)}
   100%{box-shadow:0 1px 2px rgba(18,21,28,.06)}
 }
-body[data-beat="6"] .mk.in,
-body[data-beat="7"] .mk.in,
-body[data-beat="8"] .mk.in{box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgba(14,27,95,.16)}
+body[data-beat="8"] .mk.in,
+body[data-beat="9"] .mk.in,
+body[data-beat="10"] .mk.in{box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgba(14,27,95,.16)}
 
 /* the drift subject — one of the nine. It carries the whole beat 2-5 arc by
    itself now: slides out of its socket at beat 2 (amber, displaced), stays out
@@ -432,7 +440,8 @@ body[data-beat="8"] .mk.in{box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgb
    inside the line is where having a definition is true. */
 body[data-beat="2"] .mk.subj,
 body[data-beat="3"] .mk.subj,
-body[data-beat="4"] .mk.subj{transform:translate(155px,-41px) scale(1.55)}
+body[data-beat="4"] .mk.subj,
+body[data-beat="5"] .mk.subj{transform:translate(155px,-41px) scale(1.55)}
 /* ONE colour for the whole displacement (fix-forward plan §D). Beats 3-4 used to
    turn the peg RED while its own vacated socket stayed AMBER (.sock.subj), so the
    tether — the thing that says "belongs there, isn't there" — joined two different
@@ -443,12 +452,14 @@ body[data-beat="4"] .mk.subj{transform:translate(155px,-41px) scale(1.55)}
    it is tethered to rather than as a second flat outline standing beside it. */
 body[data-beat="2"] .mk.subj,
 body[data-beat="3"] .mk.subj,
-body[data-beat="4"] .mk.subj{background:var(--amber-surface); border-color:var(--amber);
+body[data-beat="4"] .mk.subj,
+body[data-beat="5"] .mk.subj{background:var(--amber-surface); border-color:var(--amber);
   box-shadow:0 5px 12px -3px rgba(18,21,28,.26), 0 0 0 3px rgba(154,91,18,.10)}
-body[data-beat="5"] .mk.subj,
-body[data-beat="6"] .mk.subj{background:var(--green-surface); border-color:var(--green);
+body[data-beat="6"] .mk.subj,
+body[data-beat="7"] .mk.subj,
+body[data-beat="8"] .mk.subj{background:var(--green-surface); border-color:var(--green);
   box-shadow:0 0 0 4px rgba(26,107,82,.14)}
-body[data-beat="5"] .mk.subj{transform:scale(1.55); transition-delay:2650ms}
+body[data-beat="6"] .mk.subj{transform:scale(1.55); transition-delay:2650ms}
 
 /* the resource that gets a definition written for it */
 .mk.tgt{transition:background 800ms ease, border-color 800ms ease, box-shadow 800ms ease,
@@ -460,10 +471,10 @@ body[data-beat="5"] .mk.subj{transform:scale(1.55); transition-delay:2650ms}
    ⚠ Same specificity as the beat-6 dim rule above (0,3,1) — order decides, and
    this block already sits after it. Grey, not navy: navy is "managed", and the
    argument at beat 6 is that this thing is NOT. */
-body[data-beat="6"] .mk.tgt{opacity:1; border-color:var(--ink-soft);
+body[data-beat="8"] .mk.tgt{opacity:1; border-color:var(--ink-soft);
   box-shadow:0 0 0 5px rgba(18,21,28,.09)}
-body[data-beat="7"] .mk.tgt,
-body[data-beat="8"] .mk.tgt{
+body[data-beat="9"] .mk.tgt,
+body[data-beat="10"] .mk.tgt{
   opacity:1 !important;
   background:#eef0f8; border:1.5px solid var(--navy);
   box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgba(14,27,95,.16);
@@ -485,11 +496,11 @@ body[data-beat="8"] .mk.tgt{
 /* delayed to 3.1s so the halo pulses as the LINE REACHES the resource, not while
    the definition is still being typed (the beat-7 chain starts the morph at
    ~+2.76s and it runs 1.3s) */
-body[data-beat="7"] .tgt-halo{animation:halo 1.9s cubic-bezier(.25,.6,.35,1) 3.1s 1 backwards}
+body[data-beat="9"] .tgt-halo{animation:halo 1.9s cubic-bezier(.25,.6,.35,1) 3.1s 1 backwards}
 @keyframes halo{0%{opacity:.55; transform:scale(.35)} 70%,100%{opacity:0; transform:scale(1)}}
 /* the same pulse, in grey, at beat 6 — the pullback's landing gesture. Settles at
    opacity 0, which is the base state, so hold mode needs no restatement. */
-body[data-beat="6"] .tgt-halo{border-color:var(--faint);
+body[data-beat="8"] .tgt-halo{border-color:var(--faint);
   animation:halo 2.2s cubic-bezier(.25,.6,.35,1) 800ms 1 backwards}
 
 /* =======================================================================
@@ -525,8 +536,8 @@ body[data-beat="0"] .mklbl.inlbl{opacity:1; transition-delay:300ms}
 body[data-beat="1"] .mklbl{opacity:1; transition-delay:calc(1500ms + var(--ls,0ms))}
 /* beat 6: the outside is the subject, so the outside keeps its names and the
    inside one has said its piece. The target is brought up to full ink. */
-body[data-beat="6"] .mklbl.out{opacity:.85; transition-delay:700ms}
-body[data-beat="6"] .mklbl.tgtlbl{opacity:1; color:var(--ink-soft); transition-delay:900ms}
+body[data-beat="8"] .mklbl.out{opacity:.85; transition-delay:700ms}
+body[data-beat="8"] .mklbl.tgtlbl{opacity:1; color:var(--ink-soft); transition-delay:900ms}
 /* beats 7-8: dropped. The card names the bucket twice in its own code, and the
    label's screen space is where the .tf card now sits. */
 
@@ -543,7 +554,7 @@ body[data-beat="6"] .mklbl.tgtlbl{opacity:1; color:var(--ink-soft); transition-d
 }
 body:not([data-beat="0"]) .bd .bfill{opacity:1}
 body:not([data-beat="0"]) .bd .bline{opacity:1}
-body[data-beat="8"] .bd .bline{stroke-width:3.2}
+body[data-beat="10"] .bd .bline{stroke-width:3.2}
 /* the line draws itself on at beat 1 */
 body[data-beat="1"] .bd .bline{animation:bdraw 1500ms cubic-bezier(.5,0,.2,1) backwards}
 @keyframes bdraw{from{opacity:0; stroke-dasharray:2 26} to{opacity:1; stroke-dasharray:2000 0}}
@@ -560,8 +571,8 @@ body[data-beat="1"] .bd .bline{animation:bdraw 1500ms cubic-bezier(.5,0,.2,1) ba
   animation:march 2.4s linear infinite;   /* in flight, therefore never still */
 }
 @keyframes march{to{stroke-dashoffset:-38}}
-body[data-beat="7"] .bd .bprop{opacity:.9}
-body[data-beat="7"] .bd .bpropfill{opacity:1}
+body[data-beat="9"] .bd .bprop{opacity:.9}
+body[data-beat="9"] .bd .bpropfill{opacity:1}
 
 /* small label riding the boundary */
 /* NOT uppercased — text-transform turns "IaC" into "IAC" */
@@ -577,9 +588,11 @@ body:not([data-beat="0"]) .bd-tag{opacity:.85}
 body[data-beat="2"] .bd-tag,
 body[data-beat="3"] .bd-tag,
 body[data-beat="4"] .bd-tag,
-body[data-beat="5"] .bd-tag{opacity:0; transition-delay:0ms}
-body[data-beat="7"] .bd-tag,
-body[data-beat="8"] .bd-tag{top:300px}
+body[data-beat="5"] .bd-tag,
+body[data-beat="6"] .bd-tag,
+body[data-beat="7"] .bd-tag{opacity:0; transition-delay:0ms}
+body[data-beat="9"] .bd-tag,
+body[data-beat="10"] .bd-tag{top:300px}
 
 /* =======================================================================
    THE DEFINITION CARD — one HCL card, anchored to the vacated socket by a
@@ -649,23 +662,25 @@ body[data-beat="2"] .pdef{opacity:1}
 body[data-beat="2"] .b-watch{opacity:1; transform:none; transition-delay:1550ms}
 body[data-beat="3"] .b-watch,
 body[data-beat="4"] .b-watch,
-body[data-beat="5"] .b-watch{opacity:1; transform:none}
+body[data-beat="5"] .b-watch,
+body[data-beat="6"] .b-watch{opacity:1; transform:none}
 /* radar ping while it is scanning */
 .b-watch .ping{position:absolute; left:15px; top:50%; width:44px; height:44px; margin:-22px 0 0 -16px;
   border-radius:50%; border:2px solid var(--crew-anchor); opacity:0}
-body[data-beat="3"] .b-watch .ping{animation:ping 1.8s cubic-bezier(.25,.6,.35,1) infinite}
+body[data-beat="4"] .b-watch .ping{animation:ping 1.8s cubic-bezier(.25,.6,.35,1) infinite}
 @keyframes ping{0%{opacity:.5; transform:scale(.4)} 70%,100%{opacity:0; transform:scale(1.1)}}
 
 /* 実行側 — the worker that will act, and therefore mints the key */
 .b-act{left:1010px; top:310px; width:280px}
 .b-act .bdot{background:var(--navy)}
-body[data-beat="4"] .b-act,
-body[data-beat="5"] .b-act{opacity:1; transform:none}
+body[data-beat="5"] .b-act,
+body[data-beat="6"] .b-act,
+body[data-beat="7"] .b-act{opacity:1; transform:none}
 
 /* 書く側 — Provision. Lifted from top:455 with the .tf card (see there). */
 .b-write{left:1140px; top:356px; width:290px}
 .b-write .bdot{background:var(--crew-provision)}
-body[data-beat="7"] .b-write{opacity:1; transform:none}
+body[data-beat="9"] .b-write{opacity:1; transform:none}
 
 /* --- the proposal the watcher raises ------------------------------------ */
 .prop{
@@ -678,9 +693,9 @@ body[data-beat="7"] .b-write{opacity:1; transform:none}
 }
 .prop .pmeta{font-family:var(--mono); font-size:11px; letter-spacing:.1em; color:var(--muted);
   font-weight:500; margin-top:3px}
-body[data-beat="3"] .prop,
 body[data-beat="4"] .prop,
-body[data-beat="5"] .prop{opacity:1; transform:none; transition-delay:700ms}
+body[data-beat="5"] .prop,
+body[data-beat="6"] .prop{opacity:1; transform:none; transition-delay:700ms}
 
 /* =======================================================================
    THE KEY — the beat the whole piece turns on. The proposer's reach is
@@ -719,14 +734,15 @@ body[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0;
 }
 body[data-beat="2"] .teth,
 body[data-beat="3"] .teth,
-body[data-beat="4"] .teth{opacity:.85; animation:march 1.6s linear infinite}
+body[data-beat="4"] .teth,
+body[data-beat="5"] .teth{opacity:.85; animation:march 1.6s linear infinite}
 /* ⚠ must NOT fade at beat 5's onset (0ms) — the mark/socket re-seat is itself
    delayed (see .mk.subj / .sock.subj), so an un-delayed fade here left the
    socket lit-but-untethered for over a second, an invariant-2 violation (Codex
    review, 2026-08-03). Fades on the SAME delay, so the tether is gone only once
    the resident is actually on its way back. All three moved 1800 -> 2650ms with
    the beat-5 retime; they must keep moving together. */
-body[data-beat="5"] .teth{opacity:0; transition-delay:2650ms}
+body[data-beat="6"] .teth{opacity:0; transition-delay:2650ms}
 
 /* the ripple — the Eventarc event itself, travelling from the displaced
    SQUARE to the watcher that will react to it (build plan §3 beat 2: "a
@@ -770,7 +786,7 @@ body[data-beat="2"] .ripple{
   stroke-dasharray:7 6; stroke-dashoffset:0; opacity:0;
   transition:opacity 500ms ease, stroke 700ms ease;
 }
-body[data-beat="4"] .lnk-blocked{opacity:1; animation:reach 900ms cubic-bezier(.4,0,.25,1) 250ms backwards}
+body[data-beat="5"] .lnk-blocked{opacity:1; animation:reach 900ms cubic-bezier(.4,0,.25,1) 250ms backwards}
 @keyframes reach{from{stroke-dashoffset:420} to{stroke-dashoffset:0}}
 /* it greys the moment the refusal lands.
    ⚠ TWO delays, one per transitioned property, and that is the entire point:
@@ -786,16 +802,16 @@ body[data-beat="4"] .lnk-blocked{opacity:1; animation:reach 900ms cubic-bezier(.
    do not change across that beat boundary. This was the only instance. Re-run
    that audit if you add a property to any transition list, because a delay that
    was correct becomes a bug the moment the list grows under it. */
-body[data-beat="4"] .lnk-blocked{stroke:var(--muted); transition-delay:0ms, 1450ms}
+body[data-beat="5"] .lnk-blocked{stroke:var(--muted); transition-delay:0ms, 1450ms}
 /* the tip fades up as it extends (900ms, just under the jab) rather than sitting
    present-but-retracted, which would double the stroke over the reach's own tail */
-body[data-beat="4"] .lnk-tip{stroke:var(--muted); transition-delay:900ms, 1450ms}
+body[data-beat="5"] .lnk-tip{stroke:var(--muted); transition-delay:900ms, 1450ms}
 /* the jab: extends to the contact point, is stopped, and settles ~9px short.
    The residual gap between the tip and the x IS the refusal (invariant: the
    refusal must not touch its target). Offsets run along the curve's END TANGENT
    — (13,15.2) normalised = (.65,.76) — so the tip retracts back along itself
    rather than diagonally off it, which the old 45° offsets assumed. */
-body[data-beat="4"] .lnk-tip{opacity:1; transform:translate(-5.9px,-6.8px);
+body[data-beat="5"] .lnk-tip{opacity:1; transform:translate(-5.9px,-6.8px);
   animation:tipjab 560ms cubic-bezier(.3,0,.2,1) 1000ms backwards}
 @keyframes tipjab{
   0%{transform:translate(-38.5px,-45px)}
@@ -806,7 +822,7 @@ body[data-beat="4"] .lnk-tip{opacity:1; transform:translate(-5.9px,-6.8px);
 /* the padlock RATTLES at the contact instant (1000+.46*560 = 1258ms, the same
    instant the x pops). "It cannot be opened", said by the lock itself, in the
    header where the key will be placed one beat later. */
-body[data-beat="4"] .gate .lock{animation:lockshake 240ms ease-in-out 1258ms 1 both}
+body[data-beat="5"] .gate .lock{animation:lockshake 240ms ease-in-out 1258ms 1 both}
 @keyframes lockshake{
   0%,100%{transform:translateX(0)}
   22%{transform:translateX(-2.6px)}
@@ -820,7 +836,7 @@ body[data-beat="4"] .gate .lock{animation:lockshake 240ms ease-in-out 1258ms 1 b
    the operator across several viewings. */
 .stopx{stroke:var(--ink); stroke-width:5; stroke-linecap:round; opacity:0;
   transform-box:fill-box; transform-origin:center; transition:opacity 400ms ease}
-body[data-beat="4"] .stopx{opacity:1;
+body[data-beat="5"] .stopx{opacity:1;
   animation:xpop 300ms cubic-bezier(.3,1.6,.4,1) 1258ms backwards}
 @keyframes xpop{from{opacity:0; transform:scale(.35) rotate(-14deg)} to{opacity:1; transform:none}}
 /* ...and it says what it means. 鍵は出せない, NOT 拒否 / "rejected": rejected
@@ -837,16 +853,16 @@ body[data-beat="4"] .stopx{opacity:1;
   background:var(--bg); padding:2px 7px; border-radius:5px;
   transition:opacity 380ms ease;
 }
-body[data-beat="4"] .xlbl{opacity:1; transition-delay:1620ms}
+body[data-beat="5"] .xlbl{opacity:1; transition-delay:1620ms}
 /* beat 5 — Anchor's refused reach WITHDRAWS, x and label with it. It used to
    grey and linger at opacity .45/.5, so a dead x and a live navy line shared the
    frame with the approval; the reach animation also silently RE-RAN at beat 5,
    marching the dots a second time. All of it is gone before the key lands. */
-body[data-beat="5"] .lnk-blocked,
-body[data-beat="5"] .lnk-tip,
-body[data-beat="5"] .stopx,
-body[data-beat="5"] .xlbl{opacity:0; transition-delay:0ms}
-body[data-beat="5"] .lnk-tip{transform:translate(-5.9px,-6.8px)}
+body[data-beat="6"] .lnk-blocked,
+body[data-beat="6"] .lnk-tip,
+body[data-beat="6"] .stopx,
+body[data-beat="6"] .xlbl{opacity:0; transition-delay:0ms}
+body[data-beat="6"] .lnk-tip{transform:translate(-5.9px,-6.8px)}
 
 /* =======================================================================
    BEAT 5 — WHO OPENS THE LOCK. Three parties, in this order, and the ORDER
@@ -889,7 +905,7 @@ body[data-beat="5"] .lnk-tip{transform:translate(-5.9px,-6.8px)}
   fill:none; stroke:var(--navy); stroke-width:2.5; stroke-linecap:round;
   stroke-dasharray:var(--kl,132px); stroke-dashoffset:var(--kl,132px); opacity:0;
 }
-body[data-beat="5"] .lnk-key{opacity:.85;
+body[data-beat="6"] .lnk-key{opacity:.85;
   animation:keyreach 900ms cubic-bezier(.4,0,.25,1) both}
 @keyframes keyreach{
   0%{stroke-dashoffset:var(--kl,132px)}
@@ -913,7 +929,7 @@ body[data-beat="5"] .lnk-key{opacity:.85;
   filter:drop-shadow(0 0 5px rgba(251,250,248,.95)) drop-shadow(0 0 2px rgba(251,250,248,1));
 }
 .key svg{width:100%; height:100%; display:block}
-body[data-beat="5"] .key{animation:keylife 2650ms linear both}
+body[data-beat="6"] .key{animation:keylife 2650ms linear both}
 @keyframes keylife{
   /* placed, tip first, while the worker's line is at full extension */
   0%,11.3%{opacity:0; transform:rotate(-14deg) scale(1.9);
@@ -940,7 +956,7 @@ body[data-beat="5"] .key{animation:keylife 2650ms linear both}
    ⚠ .lock carries overflow:visible for this — the shackle's top passes just
    above the 0 0 24 24 viewBox mid-swing and an SVG root clips by default. */
 .gate .lock .shackle{transform-box:fill-box; transform-origin:100% 100%}
-body[data-beat="5"] .gate .lock .shackle{
+body[data-beat="6"] .gate .lock .shackle{
   animation:unshackle 230ms cubic-bezier(.3,1.3,.5,1) 1750ms both}
 @keyframes unshackle{
   0%{transform:translateY(0) rotate(0deg)}
@@ -965,7 +981,7 @@ body[data-beat="5"] .gate .lock .shackle{
   stroke-dasharray:var(--al,470px); stroke-dashoffset:var(--al,470px); opacity:0;
   transition:opacity 400ms ease;
 }
-body[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0;
+body[data-beat="6"] .lnk-act{opacity:.85; stroke-dashoffset:0;
   animation:actdraw 650ms cubic-bezier(.4,0,.25,1) 2000ms backwards}
 @keyframes actdraw{from{stroke-dashoffset:var(--al,470px)} to{stroke-dashoffset:0}}
 
@@ -977,22 +993,23 @@ body[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0;
   transition:opacity 600ms ease, transform 750ms cubic-bezier(.16,1,.3,1), border-color var(--move);
   overflow:hidden;
 }
-body[data-beat="4"] .gate,
-body[data-beat="5"] .gate{opacity:1; transform:none}
+body[data-beat="5"] .gate,
+body[data-beat="6"] .gate,
+body[data-beat="7"] .gate{opacity:1; transform:none}
 /* the gate turns over WITH the 判子 (which now lands at 900+620=1520ms), not the
    instant the beat opens. Retimed with the rest of beat 5 — see .lnk-key. */
-body[data-beat="5"] .gate{border-color:var(--green-border); transition-delay:1520ms}
+body[data-beat="6"] .gate{border-color:var(--green-border); transition-delay:1520ms}
 .gate .ghead{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
   padding:11px 15px; background:var(--amber-surface); border-bottom:1px solid var(--amber-border);
   transition:background var(--move), border-color var(--move);
 }
-body[data-beat="5"] .gate .ghead{background:var(--green-surface);
+body[data-beat="6"] .gate .ghead{background:var(--green-surface);
   border-bottom-color:var(--green-border); transition-delay:1520ms}
 .gate .gt{display:flex; align-items:center; gap:9px;
   font-family:var(--ui); font-weight:700; font-size:17px; color:var(--amber-ink);
   transition:color var(--move)}
-body[data-beat="5"] .gate .gt{color:var(--green-ink); transition-delay:1520ms}
+body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:1520ms}
 /* 1.9em, not 1em. At 1em the padlock was ~17 world px — about 25 screen px at
    beat 5's scale(1.45) — which is large enough to be an icon and far too small
    to be a thing that visibly OPENS. The beat turns on watching it open. */
@@ -1030,7 +1047,7 @@ body[data-beat="5"] .gate .gt{color:var(--green-ink); transition-delay:1520ms}
   border-radius:9px; padding:9px 22px; transition:opacity 300ms ease;
 }
 /* the button goes as the stamp lands on it, not 500ms before */
-body[data-beat="5"] .gate .gbtn{opacity:0; transition-delay:900ms}
+body[data-beat="6"] .gate .gbtn{opacity:0; transition-delay:900ms}
 /* 判子 — the only vermilion in the piece.
    MOVED OUT OF THE CARD (2026-08-04). It used to be `right:12px; bottom:16px`
    inside .gbody — tucked into the corner of a card that carries overflow:hidden,
@@ -1061,7 +1078,7 @@ body[data-beat="5"] .gate .gbtn{opacity:0; transition-delay:900ms}
    unturned and does not move for another 620ms, and nothing else on screen is
    animating. That stillness IS the beat — it is what makes the stamp the cause
    of everything after it rather than one more event in a queue. */
-body[data-beat="5"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 900ms both}
+body[data-beat="6"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 900ms both}
 @keyframes stampin{
   0%{opacity:0; transform:rotate(-9deg) scale(2.1); filter:blur(2.5px)}
   55%{opacity:1; transform:rotate(-9deg) scale(.94); filter:blur(0)}
@@ -1086,7 +1103,7 @@ body[data-beat="5"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 900
 }
 /* beat 7 only. At beat 8 the subject is the LINE and the counter — the card
    would sit under the closing caption and its work is already done. */
-body[data-beat="7"] .tf{opacity:1; transform:none}
+body[data-beat="9"] .tf{opacity:1; transform:none}
 .tf .thead{display:flex; align-items:center; gap:11px; padding:9px 16px;
   background:var(--surface-2); border-bottom:1px solid var(--border)}
 .tf .tfile{font-family:var(--mono); font-size:13px; color:var(--ink-soft); font-weight:500}
@@ -1145,7 +1162,7 @@ body.ring-land .ring{opacity:.95; stroke-width:1.6}
    solid, silently erasing the distinction §4 rests on. */
 body.ring-landed .ring{opacity:.92; stroke-width:1.6; stroke-dasharray:6 5}
 /* beat 8 — the human approves and it snaps SOLID in the same instant as the
-   lobe. Gated on `boundary-committed`, NOT [data-beat="8"]: the attribute flips
+   lobe. Gated on `boundary-committed`, NOT [data-beat="10"]: the attribute flips
    at the beat mark but commitBoundary() runs off its own +100ms timer, and
    gating the two on different triggers made "one instant" into two (Codex
    review, 2026-08-03). drop-shadow, not box-shadow — this is an SVG path now. */
@@ -1167,7 +1184,7 @@ body:not([data-beat="0"]) .cnt{opacity:1}
   font-size:62px; font-weight:700; color:var(--navy); line-height:1.12em}
 .cnt .cflap{display:block; transition:transform 780ms cubic-bezier(.55,0,.15,1)}
 .cnt .cflap .cn{display:block; height:1.12em; line-height:1.12em}
-body[data-beat="8"] .cnt .cflap{transform:translateY(-1.12em)}
+body[data-beat="10"] .cnt .cflap{transform:translateY(-1.12em)}
 .cnt .cu{font-family:var(--ui); font-size:18px; font-weight:600; color:var(--muted)}
 
 /* top-left ground label */
@@ -1221,7 +1238,9 @@ body[data-beat="4"] .cap[data-c="E"],
 body[data-beat="5"] .cap[data-c="F"],
 body[data-beat="6"] .cap[data-c="G"],
 body[data-beat="7"] .cap[data-c="H"],
-body[data-beat="8"] .cap[data-c="I"]{opacity:1; transform:none}
+body[data-beat="8"] .cap[data-c="I"],
+body[data-beat="9"] .cap[data-c="J"],
+body[data-beat="10"] .cap[data-c="K"]{opacity:1; transform:none}
 
 /* per-phrase stagger */
 .cap .w{display:inline-block; opacity:0; transform:translateY(16px);
@@ -1234,15 +1253,17 @@ body[data-beat="4"] .cap[data-c="E"] .w,
 body[data-beat="5"] .cap[data-c="F"] .w,
 body[data-beat="6"] .cap[data-c="G"] .w,
 body[data-beat="7"] .cap[data-c="H"] .w,
-body[data-beat="8"] .cap[data-c="I"] .w{
+body[data-beat="8"] .cap[data-c="I"] .w,
+body[data-beat="9"] .cap[data-c="J"] .w,
+body[data-beat="10"] .cap[data-c="K"] .w{
   animation:wordin 640ms cubic-bezier(.16,1,.3,1) calc(var(--i)*110ms + 140ms) both}
 @keyframes wordin{from{opacity:0; transform:translateY(16px)} to{opacity:1; transform:none}}
 
 /* keyword underlines draw when the beat's evidence lands */
-body[data-beat="2"] .cap[data-c="C"] .navy::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 900ms both}
-body[data-beat="6"] .cap[data-c="G"] b::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 1250ms both}
+body[data-beat="3"] .cap[data-c="D"] .navy::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 900ms both}
+body[data-beat="8"] .cap[data-c="I"] b::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 1250ms both}
 /* lands as the solid line snaps out to meet the proposal (~+700ms into beat 8) */
-body[data-beat="8"] .cap[data-c="I"] .navy::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 800ms both}
+body[data-beat="10"] .cap[data-c="K"] .navy::after{animation:uline 520ms cubic-bezier(.4,0,.2,1) 800ms both}
 @keyframes uline{from{transform:scaleX(0)} to{transform:scaleX(1)}}
 
 /* =======================================================================
@@ -1271,48 +1292,48 @@ body.no-anim .eyebrow{opacity:1}
 body.no-anim .bd .bline{opacity:1; stroke-dasharray:none}
 body.no-anim[data-beat="0"] .bd .bline,
 body.no-anim[data-beat="0"] .bd .bfill{opacity:0}
-body.no-anim[data-beat="7"] .bd .bprop{opacity:.9}
-body.no-anim[data-beat="7"] .bd .bpropfill{opacity:1}
-body.no-anim[data-beat="3"] .b-watch,
+body.no-anim[data-beat="9"] .bd .bprop{opacity:.9}
+body.no-anim[data-beat="9"] .bd .bpropfill{opacity:1}
 body.no-anim[data-beat="4"] .b-watch,
 body.no-anim[data-beat="5"] .b-watch,
-body.no-anim[data-beat="4"] .b-act,
+body.no-anim[data-beat="6"] .b-watch,
 body.no-anim[data-beat="5"] .b-act,
-body.no-anim[data-beat="7"] .b-write{opacity:1; transform:none}
-body.no-anim[data-beat="3"] .prop,
+body.no-anim[data-beat="6"] .b-act,
+body.no-anim[data-beat="9"] .b-write{opacity:1; transform:none}
 body.no-anim[data-beat="4"] .prop,
-body.no-anim[data-beat="5"] .prop{opacity:1; transform:none}
+body.no-anim[data-beat="5"] .prop,
+body.no-anim[data-beat="6"] .prop{opacity:1; transform:none}
 body.no-anim[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0}
-body.no-anim[data-beat="4"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
+body.no-anim[data-beat="5"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
 /* the tip's SETTLED (recoiled) position — without this the hold frame shows it
    fully extended and touching the x, i.e. a refusal that never recoiled */
-body.no-anim[data-beat="4"] .lnk-tip{opacity:1; stroke:var(--muted); transform:translate(-5.9px,-6.8px)}
-body.no-anim[data-beat="4"] .stopx{opacity:1; transform:none}
-body.no-anim[data-beat="4"] .xlbl{opacity:1}
+body.no-anim[data-beat="5"] .lnk-tip{opacity:1; stroke:var(--muted); transform:translate(-5.9px,-6.8px)}
+body.no-anim[data-beat="5"] .stopx{opacity:1; transform:none}
+body.no-anim[data-beat="5"] .xlbl{opacity:1}
 /* beat 5's settled state for all four of those is ABSENCE — the reach withdraws
    and the x and its label go with it — and the base rules already own opacity:0,
    so no restatement is needed (same shape as the ring, the ripple and the
    crumbled key: a one-shot gesture's end state is that it is gone). */
-body.no-anim[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0}
+body.no-anim[data-beat="6"] .lnk-act{opacity:.85; stroke-dashoffset:0}
 /* THE LOCK IS OPEN at the end of beat 5 and an animation delivers that, so hold
    mode has to restate it or every static frame shows a padlock that shut again.
    ⚠ this is the trap the .stopx/.lnk-tip block above already documents, and it
    is now the second thing in this file whose beat-5 end state exists only
    inside a keyframe. */
-body.no-anim[data-beat="5"] .gate .lock .shackle{transform:translateY(-1.6px) rotate(20deg)}
+body.no-anim[data-beat="6"] .gate .lock .shackle{transform:translateY(-1.6px) rotate(20deg)}
 /* beat 4 no longer has a key at all — the worker brings it at beat 5 (see the
    BEAT 5 block), and its absence during the refusal is the point. Beat 5's own
    settled state is crumbled, i.e. gone, and the base .key opacity:0 already IS
    that state (same shape as the ring, the ripple and the withdrawn reach: a
    one-shot gesture's end state is absence). Neither needs a rule.
    .lnk-key likewise settles fully retracted, which the base dashoffset owns. */
-body.no-anim[data-beat="5"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
+body.no-anim[data-beat="6"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
 /* the beat-5 re-seat (.mk.subj transform, .sock.subj opacity/border) is
    transition-delayed to 1800ms; no-anim kills the transition so the end state
    applies at once, which is what a settled frame is — no restatement needed */
 body.no-anim .tf .caret{opacity:0}
-body.no-anim[data-beat="7"] .tf .impblock,
-body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
+body.no-anim[data-beat="9"] .tf .impblock,
+body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
 /* THE RING IS PRESENT IN HOLD MODE NOW, and that is a change: its settled state
    at the end of beat 7 used to be "gone" (it lifted off and faded), so a hold
    frame showing it would have shown a moment beat 7 never ends on. Since it
@@ -1533,10 +1554,11 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     <div class="captions">
       <div class="cap" data-c="A"><span class="w" style="--i:0">クラウドには、</span><span class="w" style="--i:1">数百のリソース</span></div>
       <div class="cap" data-c="B"><span class="w" style="--i:0">コードで定義されているのは</span><span class="w" style="--i:1">一部</span></div>
-      <div class="cap" data-c="C"><span class="w" style="--i:0"><span class="navy">定義がある</span>から、</span><span class="w" style="--i:1">ズレが見える</span></div>
-      <div class="cap" data-c="D"><span class="w" style="--i:0">見張る側が検知し、</span><span class="w" style="--i:1"><span class="accent-blue">提案</span>する</span></div>
-      <div class="cap" data-c="E"><span class="w" style="--i:0">実行の鍵は、</span><span class="w" style="--i:1">提案した側には出せない</span></div>
-      <div class="cap" data-c="F"><span class="w" style="--i:0">人が<span class="accent-seal">承認</span>して、</span><span class="w" style="--i:1">はじめて戻る</span></div>
+      <div class="cap" data-c="C"><span class="w" style="--i:0"><span class="navy">定義</span>は、</span><span class="w" style="--i:1">ファイルに書いてある</span></div>
+      <div class="cap" data-c="D"><span class="w" style="--i:0"><span class="navy">定義がある</span>から、</span><span class="w" style="--i:1">ズレが見える</span></div>
+      <div class="cap" data-c="E"><span class="w" style="--i:0">見張る側が検知し、</span><span class="w" style="--i:1"><span class="accent-blue">提案</span>する</span></div>
+      <div class="cap" data-c="F"><span class="w" style="--i:0">実行の鍵は、</span><span class="w" style="--i:1">提案した側には出せない</span></div>
+      <div class="cap" data-c="G"><span class="w" style="--i:0">人が<span class="accent-seal">承認</span>して、</span><span class="w" style="--i:1">はじめて戻る</span></div>
       <!-- G: NOT "見えない". The product itself counts these resources (the desk's
            estate footnote), so calling them invisible contradicts the UI this cuts
            into. They are seen; what they lack is a definition.
@@ -1544,12 +1566,13 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
            could actually be trimmed instead of merely rushed — and it now reuses
            定義, the word B establishes and H pays off, instead of introducing
            あるべき姿 once and never again. -->
-      <div class="cap" data-c="G"><span class="w" style="--i:0">見えている。でも、</span><span class="w" style="--i:1"><b>定義がない</b></span></div>
-      <div class="cap" data-c="H"><span class="w" style="--i:0">もう一方の側が、</span><span class="w" style="--i:1">定義を書く</span></div>
+      <div class="cap" data-c="H"><span class="w" style="--i:0">定義の値に、</span><span class="w" style="--i:1"><span class="accent-green">戻る</span></span></div>
+      <div class="cap" data-c="I"><span class="w" style="--i:0">見えている。でも、</span><span class="w" style="--i:1"><b>定義がない</b></span></div>
+      <div class="cap" data-c="J"><span class="w" style="--i:0">もう一方の側が、</span><span class="w" style="--i:1">定義を書く</span></div>
       <!-- I deliberately repeats F's clause: same act, different consequence.
            戻る (restore) at the first gate, 動く (grow) at the second — that
            contrast IS the arc argument the rework exists to make. -->
-      <div class="cap" data-c="I"><span class="w" style="--i:0">人が<span class="accent-seal">承認</span>して、</span><span class="w" style="--i:1"><span class="navy">線が動く</span></span></div>
+      <div class="cap" data-c="K"><span class="w" style="--i:0">人が<span class="accent-seal">承認</span>して、</span><span class="w" style="--i:1"><span class="navy">線が動く</span></span></div>
     </div>
 
   </div>
@@ -1804,9 +1827,10 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
        beat 8  3400  unchanged
      Only the beat-7 chain's ANCHOR (26800) is coupled to these numbers; the rest
      of that beat is serial, so a burst-speed change cannot open a hole in it. */
-  var MARKS=[[0,'0'],[3200,'1'],[7400,'2'],[11300,'3'],[14400,'4'],
-             [18300,'5'],[22300,'6'],[26300,'7'],[31500,'8']];
-  var TOTAL=34900;
+  var MARKS=[[0,'0'],[3200,'1'],[7400,'2'],[12100,'3'],[16000,'4'],
+             [19100,'5'],[23600,'6'],[28100,'7'],[31300,'8'],
+             [35300,'9'],[40500,'10']];
+  var TOTAL=43900;
   /* rAF handles are KEYED, not a single slot. Beat 7 runs two rAF loops at once
      — the ring landing on the resource and the dashed lobe growing out to meet
      it — and with one shared `raf` variable the second loop's handle overwrote
@@ -2003,8 +2027,8 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     });
     /* the only two clock anchors left in beat 7/8: the chain's start, and the
        approval, which belongs to beat 8's mark and nothing else */
-    timers.push(setTimeout(beat7Chain, 26800));       /* beat 7 + 500ms */
-    timers.push(setTimeout(commitBoundary, 31600));   /* beat 8 + 100ms */
+    timers.push(setTimeout(beat7Chain, 35800));       /* beat 9 + 500ms */
+    timers.push(setTimeout(commitBoundary, 40600));   /* beat 10 + 100ms */
   };
   window.RUNTIME_MS=TOTAL;
 
@@ -2018,17 +2042,17 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
   if(qp.has('grown'))   cns[1].textContent=qp.get('grown');
 
   if(qp.has('hold')){
-    var h=Math.max(0, Math.min(8, parseInt(qp.get('hold'),10)||0));
+    var h=Math.max(0, Math.min(10, parseInt(qp.get('hold'),10)||0));
     body.classList.add('no-anim');
     body.setAttribute('data-beat', String(h));
     /* beat 7 = proposed (dashed out, solid still at base); beat 8 = committed.
        boundary-committed is normally set from inside commitBoundary(), which
        hold mode never calls — set it directly so the socket's solid snap (now
-       gated on this class, not [data-beat="8"], see .ring) still shows. */
-    drawBoundary(h>=8 ? growR : baseR);
-    drawProposal(h>=7 ? growR : baseR);
-    if(h>=8){ body.classList.add('boundary-committed'); }
-    if(h>=7){
+       gated on this class, not [data-beat="10"], see .ring) still shows. */
+    drawBoundary(h>=10 ? growR : baseR);
+    drawProposal(h>=9 ? growR : baseR);
+    if(h>=10){ body.classList.add('boundary-committed'); }
+    if(h>=9){
       codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done');
       /* The ring's SETTLED state at the end of beat 7 is no longer "gone" — it
          is the socket around the resource, so hold mode has to draw it. The old
@@ -2098,13 +2122,13 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
        if you retime the chain. */
     var RAF_TAIL  = 16;
     var TYPE_MS   = CODE_TEXT.length*4.5 + RAF_TAIL;   /* typeCode: 4.5ms/char */
-    var C_TYPE    = 26800,                        /* beat7Chain anchor */
+    var C_TYPE    = 35800,                        /* beat9Chain anchor */
         C_DONE    = C_TYPE + TYPE_MS,             /* burst ends, .tf.done */
         C_RING    = C_DONE + 260,                 /* chainType -> chainRing */
         C_LAND    = C_RING + 460 + 340,           /* ringClose 460 -> chainLand */
         C_LANDED  = C_LAND + 1000 + RAF_TAIL,     /* ringLand MS */
         C_PROPEND = C_LAND + 1300,                /* proposeBoundary ms */
-        C_COMMIT  = 31600,                        /* commitBoundary timer */
+        C_COMMIT  = 40600,                        /* commitBoundary timer */
         C_CMTEND  = C_COMMIT + 620;
 
     function beatAt(t){ var b=0; for(var i=0;i<MARKS.length;i++) if(t>=MARKS[i][0]) b=i; return b; }
@@ -2296,7 +2320,7 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
         fitPad = bar.classList.contains('hid') ? 0 : bar.offsetHeight;
         fit();
       }
-      else if(k>='0' && k<='8') go(MARKS[+k][0], playing);
+      else if(k>='0' && k<='9') go(MARKS[+k][0], playing);  /* beat 10: bar button */
       else return;
       e.preventDefault();
     });
