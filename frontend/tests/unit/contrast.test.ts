@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, resolve } from 'node:path';
+import { compile } from 'svelte/compiler';
 import {
   classifyTokenValue,
   colorTokens,
@@ -306,10 +307,14 @@ describe('palette declaration parsing (ds-spu)', () => {
       }
       // Any CSSOM custom-property write at all, not just a --ds-* one: there
       // are zero in src today, so "none" is a cheaper and stronger invariant
-      // than parsing the first argument — which is unknowable anyway when the
-      // property name is computed. That residual case is the one blind spot
-      // here, and it is named rather than papered over.
-      for (const m of source.matchAll(/\.(?:setProperty\s*\(|cssText\s*=)/g)) {
+      // than parsing the first argument. Named, not dotted, because the call is
+      // spellable as `style.setProperty(…)`, `style['setProperty'](…)` and
+      // `style.setProperty?.(…)` — all three write the property, and the first
+      // version of this rule matched only the first. Bracketed access to .style
+      // is flagged on its own for the same reason: the five real uses in src are
+      // all plain `.style.overflow` / `.style.height` assignments, so requiring
+      // dot-access costs nothing and removes a whole family of spellings.
+      for (const m of source.matchAll(/\bsetProperty\b|\bcssText\b|\.style\s*\??\s*\[/g)) {
         strays.push(`${where} writes style via CSSOM (offset ${m.index}) — see the note in this test`);
       }
       // An escape can spell a --ds-* name that no text scan can recognise, so in
@@ -330,6 +335,83 @@ describe('palette declaration parsing (ds-spu)', () => {
     expect(
       strays,
       `the ring sweep reads only tokens.css, so a --ds-* that lives anywhere else is never measured:\n  ${strays.join('\n  ')}`
+    ).toEqual([]);
+  });
+
+  it('is reading the WHOLE palette — no Svelte template writes one either', () => {
+    // The rules above scan SOURCE, and source scanning is spelling-by-spelling:
+    // three separate reviews each produced a new way to write a declaration that
+    // the previous scan missed. `style:--ds-x={…}` and `style={{'--ds-x': …}}`
+    // look nothing alike in source and do the same thing.
+    //
+    // So this checks the COMPILER'S OUTPUT instead, which is one mechanism
+    // rather than a list: every dynamic Svelte style write, whatever its
+    // surface syntax, funnels into a `set_style(...)` call. A future Svelte
+    // spelling lands here automatically. (The static `style="--ds-x: …"` form
+    // does NOT reach set_style — it is baked into a from_html template — but it
+    // is a literal declaration, so the source rule above already has it.)
+    //
+    // Scanning only the ARGUMENTS of set_style matters: `--ds-*` also appears in
+    // emitted JS as ordinary prose, because doc comments in <script> survive
+    // compilation. CrewGlyph and SealStamp both do exactly that, and both emit
+    // no set_style at all.
+    const svelteFiles: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.svelte')) svelteFiles.push(full);
+      }
+    };
+    walk(srcDir);
+    expect(svelteFiles.length).toBeGreaterThan(30);
+
+    /** The argument text of every `set_style(` call, paren-matched, quote-aware. */
+    const setStyleArgs = (js: string): string[] => {
+      const out: string[] = [];
+      for (const m of js.matchAll(/set_style\s*\(/g)) {
+        let i = m.index! + m[0].length;
+        let depth = 1;
+        let quote: string | null = null;
+        const start = i;
+        for (; i < js.length && depth > 0; i++) {
+          const c = js[i];
+          if (quote) {
+            if (c === '\\') i++;
+            else if (c === quote) quote = null;
+          } else if (c === '"' || c === "'" || c === '`') quote = c;
+          else if (c === '(') depth++;
+          else if (c === ')') depth--;
+        }
+        out.push(js.slice(start, i - 1));
+      }
+      return out;
+    };
+
+    const strays: string[] = [];
+    let sawSetStyle = 0;
+    for (const file of svelteFiles) {
+      const { js } = compile(readFileSync(file, 'utf8'), { generate: 'client' });
+      for (const args of setStyleArgs(js.code)) {
+        sawSetStyle++;
+        for (const m of args.matchAll(/--[\w-]+/g)) {
+          strays.push(`${relative(srcDir, file)} sets ${m[0]} from a Svelte template`);
+        }
+      }
+    }
+    // Premise: the extractor works on THIS compiler's output. If a Svelte
+    // upgrade renamed set_style, every file above would silently yield nothing
+    // and this guard would report clean while checking exactly zero writes.
+    const probe = compile(`<div style:--ds-probe={'#f00'}></div>`, { generate: 'client' });
+    expect(
+      setStyleArgs(probe.js.code).join(' '),
+      'positive control: the extractor no longer finds a known style write — has set_style been renamed?'
+    ).toMatch(/--ds-probe/);
+    expect(sawSetStyle, 'no set_style calls anywhere; src uses style:flex/style:width').toBeGreaterThan(0);
+
+    expect(
+      strays,
+      `a custom property set from a template is never in tokens.css, so the sweep cannot see it:\n  ${strays.join('\n  ')}`
     ).toEqual([]);
   });
 });
