@@ -228,7 +228,29 @@ round-9 routes are caught by it rather than by any API rule.
 
 The test is now called *"no `--ds-*` name appears outside tokens.css, by any
 route that names it"*, and states exactly what it does not cover: a name
-assembled at runtime and never written literally. That is ds-ley, and per the same review it should **instrument
+assembled at runtime and never written literally.
+
+**Round 10 found two more exact-literal routes**, neither of them a runtime
+name:
+
+- `@property --ds-x { initial-value: #f00 }` binds the name with `{`, not `:`.
+  A registered custom property *supplies* that colour to every consumer with no
+  ordinary declaration anywhere, so this is a real palette entry. Matched as the
+  **construct** (`@property\s+--ds-…`) rather than "name followed by `{`" —
+  the looser form flagged `--ds-crew-{verb}` in a CrewGlyph doc comment, and
+  rewording good prose to satisfy a punctuation heuristic is the wrong trade
+  when the construct is this easy to name. CSS binds a custom-property name with
+  exactly two constructs, and unlike the DOM API surface that pair is **closed
+  grammar**.
+- `import '../reviewProbe.css'` from `main.ts` is a production build input that
+  a `src/`-rooted walk never opens. Verified: the build emits `--ds-bg` twice
+  and the later one wins while the sweep measures the first. The walk now roots
+  at the **project**, with a prune list. The true boundary is the build graph;
+  a project-rooted walk is a deliberate **superset** of it, which is the safe
+  direction — a superset can only produce a false positive, never a miss.
+
+Both were caught by naming the thing rather than by widening a list, and a
+premise assertion now pins that the walk actually leaves `src/`. That is ds-ley, and per the same review it should **instrument
 writes** during the Playwright flows rather than enumerate final rendered
 properties, which would miss unexercised branches and properties written then
 removed.
@@ -309,8 +331,8 @@ is the #293 lesson repeating: that review found the consumer scan reading only
 `src/components/` while `App.svelte` and `base.css` already consumed the tokens
 it checked.
 
-**Enumerating the spellings was the wrong idea, and it took five attempts to
-admit it.** Thirteen routes were probed here — an ordinary rule, an inline
+**Enumerating the spellings was the wrong idea, and it took six attempts to
+admit it.** Fifteen routes were probed here — an ordinary rule, an inline
 `style=`, a Svelte `style:--x` directive, a Svelte style *object* and that
 object reached through a `const` (neither of which actually writes in the
 installed Svelte — see the round-8 correction), a CSSOM write spelled with a
@@ -328,7 +350,8 @@ What works is picking an instrument that matches the substrate:
 | CSS text | anchored source rules | declarations really are textual there |
 | CSS escapes | report the backslash, never decode it | "I cannot read this" is a claim a text scanner can make good on |
 | Svelte templates | **compile, then parse the emitted JS** | every spelling funnels into one module; acorn reads its string literals |
-| CSSOM from JS | one rule on the method NAME | dot, bracket and optional-call are the same call |
+| any other file | **ban the NAME outright** | every API needs the name, so the API list stops mattering — and no extension allowlist can go stale |
+| CSSOM from JS | one rule on the method NAME | *not* load-bearing: it only adds runtime-computed names, and claims no completeness |
 
 The residual after all that is a name computed at runtime, which no static
 instrument can see. Filed as **ds-ley**, not papered over.
@@ -1176,11 +1199,12 @@ it('no --ds-* name appears outside tokens.css, by any route that names it', () =
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
+      if (PRUNE.test(entry.name)) continue;         // deps, build output, tests
       if (entry.isDirectory()) walk(full);
-      else if (/\.(svelte|css|ts|js|html)$/.test(entry.name)) files.push(full);
+      else files.push(full);                        // NO extension allowlist
     }
   };
-  walk(srcDir);
+  walk(projectDir);   // the project, not src/: the build imports from outside it
   // Premise: the walk reached the tree AND can see its own subject. A guard
   // that cannot reach what it checks reports clean and proves nothing (#293).
   // One assertion per file type that a rule below actually needs.
@@ -1203,12 +1227,24 @@ it('no --ds-* name appears outside tokens.css, by any route that names it', () =
     for (const m of source.matchAll(/\bstyle:--[\w-]*/g)) {
       strays.push(`${where} sets ${m[0]} via a Svelte style directive`);
     }
-    // The NAME, never a dotted call: `style.setProperty(…)`,
-    // `style['setProperty'](…)` and `style.setProperty?.(…)` are one write.
-    // `setAttribute` is here because `setAttribute('style','--ds-x: red')` also
-    // declares the property without touching `.style` at all.
+    // THE RULE THAT CARRIES THE JS SIDE: outside CSS and Svelte a file may not
+    // contain `--ds-` AT ALL. Every API needs the NAME, so banning the name
+    // makes the API list stop mattering — and it holds for any extension,
+    // because the walk has no allowlist. Zero mentions across all 52 .ts files.
+    if (!/\.(css|svelte)$/.test(file)) {
+      for (const m of source.matchAll(/--ds-[\w-]*/g)) {
+        strays.push(`${where} names ${m[0]}; only CSS and components may`);
+      }
+    }
+    // `@property --ds-x { … }` binds the name with `{`, not `:`, and a
+    // registered property's initial-value really does supply that colour.
+    for (const m of source.matchAll(/@property\s+(--ds-[\w-]+)/g)) {
+      strays.push(`${where} registers ${m[1]} with @property`);
+    }
+    // API names. NOT load-bearing any more — the name ban above covers every
+    // statically named write. This only adds runtime-computed names.
     for (const m of source.matchAll(
-      /\bsetProperty\b|\bcssText\b|\bsetAttribute\b|\.style\s*\??\s*\[/g
+      /\bsetProperty\b|\bcssText\b|\bsetAttribute\b|\battributeStyleMap\b|\bstyleMap\b|\.style\s*\??\s*\[/g
     )) {
       strays.push(`${where} writes style via CSSOM (offset ${m.index})`);
     }
@@ -1228,7 +1264,7 @@ it('no --ds-* name appears outside tokens.css, by any route that names it', () =
 `readdirSync` is already imported; add `join` and `relative` to the `node:path`
 import.
 
-**Step 2: Run, then prove it can fail — in all ELEVEN ways a stray arrives**
+**Step 2: Run, then prove it can fail — in all FIFTEEN ways a stray arrives**
 
 Green immediately (there are no strays), which proves nothing on its own. One
 injection is nowhere near enough here: this guard was rewritten twice, and each
@@ -1257,6 +1293,14 @@ printf '\n:root { --d\\73 -esc-escaped: #00ff00; }\n'  >> src/styles/base.css
 # J. optional-call CSSOM   style.setProperty?.('--ds-x', v)    in src/main.ts
 # K. setAttribute — declares the property without touching .style at all
 #    el.setAttribute('style', '--ds-x: #ff0000')          in src/main.ts
+# L. a .mts module — no extension allowlist may exist, or this escapes
+#    src/probe.mts doing setProperty, imported from main.ts
+# M. CSS Typed OM — a different mutation API entirely
+#    document.documentElement.attributeStyleMap.set('--ds-x', …)
+# N. @property registration — binds the name with `{`, not `:`
+#    @property --ds-x { syntax: "<color>"; initial-value: #f00 }
+# O. a build input OUTSIDE src/ — the walk root is the project, not src/
+#    frontend/probe.css with :root{--ds-bg:#f00}, imported from main.ts
 
 # NO -t FILTER, deliberately. The filter used to be -t 'WHOLE palette'; the
 # tests were renamed and it then matched NOTHING — vitest skipped all 45 and
@@ -1341,6 +1385,9 @@ the scope guard had been passing while three real spellings walked through it.
 | 28 | scope guard: a `.mts` module doing `setProperty`, imported from `main.ts` | the **name-mention** rule REDDENS | round 9. `.mts` is a first-class Vite/TS build input and sat outside the walk's extension allowlist. Caught by the name rule, not by adding an extension |
 | 29 | scope guard: `attributeStyleMap.set('--ds-x', …)` (CSS Typed OM) | the **name-mention** rule REDDENS | round 9. A different mutation API entirely; no name in the API list matched it. Also caught by the name rule, which is the point — the API list is no longer load-bearing |
 | 30 | the injection command regains a `-t` filter that matches nothing | every row above silently "passes" | round 9, and it really happened: the tests were renamed, the filter stopped matching, vitest skipped all 45 and exited 0. Check the ran-count before believing any result |
+| 31 | scope guard: `@property --ds-x { initial-value: #f00 }` in `base.css` | the **@property** rule REDDENS | round 10. Binds the name with `{`, so the declaration rule was blind to it. A registered property really does supply that colour |
+| 32 | scope guard: `frontend/probe.css` imported from `src/main.ts` | the declaration rule REDDENS, naming `../probe.css` | round 10. A production build input outside `src/`. Proof the walk root is the project, not a directory that happens to hold the entry point |
+| 33 | the walk root drops back to `srcDir` | the **leaves-src/ premise** REDDENS | round 10. Without it, row 32 silently returns and nothing says so |
 
 Record each outcome in the PR body, including #14's honest "unproven".
 
