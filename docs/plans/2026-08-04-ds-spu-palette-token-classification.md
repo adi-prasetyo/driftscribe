@@ -1338,6 +1338,9 @@ the scope guard had been passing while three real spellings walked through it.
 | 25 | scope guard: `<div style={{ t: /[)]/.source, '--ds-x': … }}>` | compiled-output test REDDENS | round 7. The `)` in a regex character class ended the hand-rolled paren match early. Pinned by a positive control so the parser cannot regress to a matcher |
 | 26 | the name match drops its `(?:^\|[^\w-])` anchor | the BEM **negative control** REDDENS | round 7. ~120 `btn--ds-*` class names would flag; an unusable guard gets deleted, not fixed |
 | 27 | scope guard: `el.setAttribute('style', '--ds-x: #ff0000')` in a `.ts` | CSSOM rule REDDENS | round 8. Declares the property touching neither `.style` nor `setProperty`. Zero `setAttribute` in `src/`, so the blanket name is free |
+| 28 | scope guard: a `.mts` module doing `setProperty`, imported from `main.ts` | the **name-mention** rule REDDENS | round 9. `.mts` is a first-class Vite/TS build input and sat outside the walk's extension allowlist. Caught by the name rule, not by adding an extension |
+| 29 | scope guard: `attributeStyleMap.set('--ds-x', …)` (CSS Typed OM) | the **name-mention** rule REDDENS | round 9. A different mutation API entirely; no name in the API list matched it. Also caught by the name rule, which is the point — the API list is no longer load-bearing |
+| 30 | the injection command regains a `-t` filter that matches nothing | every row above silently "passes" | round 9, and it really happened: the tests were renamed, the filter stopped matching, vitest skipped all 45 and exited 0. Check the ran-count before believing any result |
 
 Record each outcome in the PR body, including #14's honest "unproven".
 
