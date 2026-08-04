@@ -533,6 +533,88 @@ body[data-beat="10"] .bd-tag{top:300px}
 
 
 /* =======================================================================
+   THE CENSUS — iac/'s claim, stated as a list (v4, ds-22b.3). The card is
+   the definition metaphor of the whole piece now: ten REAL resource names
+   (verified against iac/*.tf 2026-08-05 — re-verify at record time) fly out
+   of the circle one by one and line up inside it. Titled `iac/`, NOT
+   `iac/cloudrun.tf`: the ten span eight .tf files, and a single-file title
+   would be a false claim on screen (§0.1 of the build plan).
+   The card FRAME is markup; the ten lines are .cn-lbl WORLD elements
+   appended after it in the DOM so they paint above the card and above the
+   field (they must fly over the boundary line, and .field carries a
+   vignette mask the flight must not inherit). payment-demo lands in the
+   BOTTOM slot — the beats 5-7 framings crop the card's top (see the rig
+   derivation), so the one line the story needs is the one that cannot be
+   cropped. Lines are transitions, not animations, so ?hold= gets every end
+   state from the beat cascade for free.
+   ======================================================================= */
+.census{
+  position:absolute; left:975px; top:170px; width:430px; height:264px; opacity:0;
+  background:var(--surface); border:1.5px solid var(--border-strong); border-radius:13px;
+  box-shadow:0 2px 6px rgba(18,21,28,.07), 0 26px 54px -28px rgba(18,21,28,.4);
+  padding:12px 16px; transition:opacity 550ms ease;
+}
+/* NOT uppercased — the trap the old .bd-tag/.pdef comments recorded:
+   text-transform would mangle "iac/" */
+.census .chead{font-family:var(--mono); font-size:12px; letter-spacing:.14em;
+  color:var(--ink-soft); padding-bottom:6px; border-bottom:1px solid var(--border);
+  margin-bottom:8px}
+/* the frame arrives before the first name lands (first flight leaves ~450ms,
+   700ms flight -> touches down ~1150; the frame is up by 1400+550 fade... so
+   the first two names land on a frame still fading up — acceptable overlap,
+   the card reads as assembling) */
+body[data-beat="2"] .census{opacity:1; transition-delay:900ms}
+body[data-beat="3"] .census,
+body[data-beat="4"] .census,
+body[data-beat="5"] .census,
+body[data-beat="6"] .census,
+body[data-beat="7"] .census{opacity:1}
+
+/* a census line: materializes AT its square (its flight origin), holds a
+   beat, then flies to its slot. Merged title+flight, staggered 260ms apart,
+   so at most two or three names are airborne at once — ten full names parked
+   at their squares simultaneously would collide unreadably inside a 480px
+   blob. Endpoints ride custom props set in JS; delays are PER PROPERTY
+   (opacity first, then left/top share the +450ms flight delay) — the exact
+   listed-properties discipline the .lnk-blocked lesson demands. */
+.cn-lbl{
+  position:absolute; font-family:var(--mono); font-size:14px; letter-spacing:.02em;
+  color:var(--ink-soft); white-space:nowrap; opacity:0;
+  left:var(--x0); top:var(--y0);
+  transition:opacity 350ms ease,
+             left 700ms cubic-bezier(.16,1,.3,1), top 700ms cubic-bezier(.16,1,.3,1);
+}
+body[data-beat="2"] .cn-lbl{opacity:1; left:var(--x1); top:var(--y1);
+  transition-delay:calc(var(--ci)*260ms),
+                   calc(var(--ci)*260ms + 450ms), calc(var(--ci)*260ms + 450ms)}
+body[data-beat="3"] .cn-lbl,
+body[data-beat="4"] .cn-lbl,
+body[data-beat="5"] .cn-lbl,
+body[data-beat="6"] .cn-lbl,
+body[data-beat="7"] .cn-lbl{opacity:1; left:var(--x1); top:var(--y1)}
+
+/* the live value chip under the subject square — the thing the beat-3 edit
+   will type over. Appears once the census has claimed payment-demo's name
+   (last flight lands ~3490), so the sequence reads: the file owns the name,
+   and THIS is the live value it defines. The spans are pre-staged for the
+   beat-3/beat-7 steps() edits (Task 5/9): v-old carries the DEFINED value,
+   v-drift the drifted one; base state (v-old 4ch, v-drift 0) IS the healed
+   state, so beats 8+ need no restatement. */
+.chip{position:absolute; left:532px; top:610px; font-family:var(--mono);
+  font-size:12px; color:var(--ink-soft); white-space:nowrap; opacity:0;
+  transition:opacity 500ms ease}
+.chip .v-old, .chip .v-drift{display:inline-block; overflow:hidden;
+  white-space:pre; vertical-align:bottom}
+.chip .v-old{width:4ch}
+.chip .v-drift{width:0}
+body[data-beat="2"] .chip{opacity:1; transition-delay:3700ms}
+body[data-beat="3"] .chip,
+body[data-beat="4"] .chip,
+body[data-beat="5"] .chip,
+body[data-beat="6"] .chip,
+body[data-beat="7"] .chip{opacity:1}
+
+/* =======================================================================
    ROLE BADGES — labelled by JOB, not by product name. The crew name rides
    along in small mono for anyone reading closely (design doc §7).
    ======================================================================= */
@@ -1044,6 +1126,17 @@ body.boundary-committed .ring{
 .cnt{position:absolute; right:104px; top:72px; text-align:right; opacity:0;
   transition:opacity 800ms ease}
 body:not([data-beat="0"]) .cnt{opacity:1}
+/* hidden while we are inside the line — the census card's top-right corner
+   lands under it at the beats 2-7 framings (same reason .bd-tag hides there).
+   It returns with the wide frame at beat 8, in time for the 10 -> 11 payoff.
+   Same specificity as the rule above (0,1,1) vs (0,2,1) — this wins by
+   specificity, not order, but keep it after for legibility. */
+body[data-beat="2"] .cnt,
+body[data-beat="3"] .cnt,
+body[data-beat="4"] .cnt,
+body[data-beat="5"] .cnt,
+body[data-beat="6"] .cnt,
+body[data-beat="7"] .cnt{opacity:0}
 .cnt .cl{font-family:var(--ui); font-size:17px; font-weight:700; color:var(--muted);
   letter-spacing:.1em; margin-bottom:2px}
 .cnt .cwrap{display:flex; align-items:baseline; justify-content:flex-end; gap:9px}
@@ -1265,8 +1358,13 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
            clear of the gate card's left edge (960) at every beat-4/5 framing. -->
       <div class="xlbl">鍵は出せない</div>
 
-      <!-- the ripple — the Eventarc event, beat 2 only. See .ripple. -->
+      <!-- the ripple — the Eventarc event. See .ripple. -->
       <div class="ripple"></div>
+
+      <!-- the live value chip (see .chip). mock is the DEFINED value
+           (iac/cloudrun.tf:41-44, pinned by demo/ops-contract.yaml); live is
+           what the beat-3 out-of-band edit types over it. -->
+      <div class="chip"><span class="ck">PAYMENT_MODE = </span><span class="v-old">mock</span><span class="v-drift">live</span></div>
 
       <!-- 見張る側 — detects, proposes, and cannot authorise itself -->
       <div class="badge b-watch">
@@ -1334,6 +1432,13 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
           <path d="M16.6 16.6 L14.4 18.8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
           <path d="M19.5 19.5 L17.4 21.6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
         </svg>
+      </div>
+
+      <!-- THE CENSUS frame (see .census). The ten lines are .cn-lbl world
+           elements appended by JS after .ovl, so they paint above this card,
+           the field and the boundary while they fly. -->
+      <div class="census">
+        <div class="chead">iac/ · 定義</div>
       </div>
 
       <!-- 書く側 — writes the definition that moves the line -->
@@ -1520,7 +1625,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
      never a census; no denominator is shown.
      ===================================================================== */
   var INSIDE=[[470,505],[560,462],[682,486],[600,578],[712,592],
-              [486,622],[578,690],[690,700],[452,566],[640,652]];
+              [486,622],[578,690],[690,700],[452,566],[508,700]];
   var SUBJ=3;                                   /* index of the drift subject */
   /* the three that stay lit beside the subject at beat 2 (punch list item 1):
      without company the amber square reads as "the only resource", with company
@@ -1614,6 +1719,45 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
   halo.style.left=TGT.x+'px'; halo.style.top=TGT.y+'px';
   field.appendChild(halo);
   /* no landing-site element: the ring lands as the socket itself (see .ring) */
+
+  /* --- the census lines (beat 2) -----------------------------------------
+     Order is BOTH flight order and slot order (top slot fills first). The
+     name->square assignment is deliberate: the four long bucket names sit on
+     LEFT squares so their titles extend INTO the blob instead of off its
+     right edge / over the card; payment-demo is LAST (bottom slot, crop
+     budget — see the .census comment). Appended to .world AFTER .ovl so the
+     flight paints above everything it crosses. Slot geometry mirrors the
+     .census box: first line y 213, 21px leading, text left 986. */
+  var worldEl=document.querySelector('.world');
+  var CENSUS=[
+    ['storefront',1],
+    ['orders-worker',2],
+    ['order-events',4],
+    ['orders-sub',7],
+    ['adopt-probe-topic',6],
+    ['driftscribe-hack-2026-assets',0],
+    ['driftscribe-hack-2026-c6e-probe',5],
+    ['driftscribe-hack-2026-adopt-probe',8],
+    ['driftscribe-hack-2026-adopt-ui-probe',9],
+    ['payment-demo',3]
+  ];
+  CENSUS.forEach(function(c,i){
+    var sq=INSIDE[c[1]];
+    var l=document.createElement('div');
+    l.className='cn-lbl'+(c[1]===SUBJ?' cn-subj':'');
+    l.textContent=c[0];
+    /* the subject's line starts where its beat-0/1 label sits, one step up so
+       the magnified square (1.55x, top edge y~554) never underlaps it — the
+       inlbl fades as this fades in, a handoff that reads as the label
+       shedding its type suffix */
+    var x0 = c[1]===SUBJ ? 500 : sq[0]+14;
+    var y0 = c[1]===SUBJ ? 530 : sq[1]-26;
+    l.style.setProperty('--x0', x0+'px'); l.style.setProperty('--y0', y0+'px');
+    l.style.setProperty('--x1', '986px');
+    l.style.setProperty('--y1', (213+i*21)+'px');
+    l.style.setProperty('--ci', i);
+    worldEl.appendChild(l);
+  });
 
   /* the worker's reach to the lock is drawn AND retracted by a single
      stroke-dashoffset animation, so its dasharray must be the REAL path length:
