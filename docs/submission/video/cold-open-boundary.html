@@ -385,9 +385,44 @@ body[data-beat="10"] .mk.in{box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rg
    land in the same instant. */
 .mk.subj{transition:background 700ms ease, border-color 700ms ease, box-shadow 700ms ease,
                      transform 700ms cubic-bezier(.16,1,.3,1)}
-/* v4: the subject never leaves its seat. Drift arrives as the beat-3 edit
-   (Task 5 builds its amber state); the fix is the beat-7 reverse edit. */
-body[data-beat="6"] .mk.subj,
+/* v4: the subject never leaves its seat. Drift is the beat-3 EDIT.
+   Beat-3 timeline (beat-relative): 0-500 summon (square 1.55->1.75, chip
+   scales — the attention cue that replaced the peg's motion), 500-800 still,
+   800-1500 backspace, 1500-1800 caret alone, 1800-2600 retype, 2600-3000
+   still, 3000-3600 FLARE (square + chip + census line flip amber together —
+   the flip IS Anchor noticing; the edit itself stays neutral because the
+   out-of-band change is silent), 3600-3900 settle.
+   ⚠ per-property transition-delay lists everywhere below — the .lnk-blocked
+   bare-delay lesson. The subject's transition list is
+   background, border-color, box-shadow, transform: the flare drives the
+   first three at +3000, the summon drives transform at 0. */
+body[data-beat="3"] .mk.subj{
+  background:var(--amber-surface); border-color:var(--amber);
+  box-shadow:0 0 0 5px rgba(154,91,18,.16);
+  transform:scale(1.75);
+  transition-delay:3000ms, 3000ms, 3000ms, 0ms;
+}
+/* the burst that makes the flip a FLASH rather than a fade. 0% restates the
+   .in navy glow (backwards fill covers 0-3000ms, and a transparent 0% would
+   silently strip the glow for three seconds); 100% equals the rule's own
+   settled shadow, so animation fill and transition hand off the same value
+   and ?hold=3 (which kills the animation) still shows the rule's amber. */
+body[data-beat="3"] .mk.subj{animation:driftflare 600ms cubic-bezier(.3,1.4,.4,1) 3000ms both}
+@keyframes driftflare{
+  0%{box-shadow:0 0 0 3px rgba(14,27,95,.07)}
+  45%{box-shadow:0 0 0 14px rgba(154,91,18,.30)}
+  100%{box-shadow:0 0 0 5px rgba(154,91,18,.16)}
+}
+/* the drifted state PERSISTS through propose/refuse/seal — the same job the
+   displaced amber peg used to do. The fix (beat 7) flips it green; scale
+   relaxes back to the group's 1.55 there too: drift inflates, the fix
+   deflates. */
+body[data-beat="4"] .mk.subj,
+body[data-beat="5"] .mk.subj,
+body[data-beat="6"] .mk.subj{
+  background:var(--amber-surface); border-color:var(--amber);
+  box-shadow:0 0 0 5px rgba(154,91,18,.16); transform:scale(1.75);
+}
 body[data-beat="7"] .mk.subj,
 body[data-beat="8"] .mk.subj{background:var(--green-surface); border-color:var(--green);
   box-shadow:0 0 0 4px rgba(26,107,82,.14)}
@@ -581,17 +616,29 @@ body[data-beat="7"] .census{opacity:1}
   position:absolute; font-family:var(--mono); font-size:14px; letter-spacing:.02em;
   color:var(--ink-soft); white-space:nowrap; opacity:0;
   left:var(--x0); top:var(--y0);
+  /* color + font-weight are LISTED so the beat-3 flare can delay them; an
+     unlisted property flips at rule-application time, i.e. the beat mark,
+     which would flare the census line 3s early */
   transition:opacity 350ms ease,
-             left 700ms cubic-bezier(.16,1,.3,1), top 700ms cubic-bezier(.16,1,.3,1);
+             left 700ms cubic-bezier(.16,1,.3,1), top 700ms cubic-bezier(.16,1,.3,1),
+             color 400ms ease, font-weight 200ms ease;
 }
 body[data-beat="2"] .cn-lbl{opacity:1; left:var(--x1); top:var(--y1);
   transition-delay:calc(var(--ci)*260ms),
-                   calc(var(--ci)*260ms + 450ms), calc(var(--ci)*260ms + 450ms)}
+                   calc(var(--ci)*260ms + 450ms), calc(var(--ci)*260ms + 450ms),
+                   0ms, 0ms}
 body[data-beat="3"] .cn-lbl,
 body[data-beat="4"] .cn-lbl,
 body[data-beat="5"] .cn-lbl,
 body[data-beat="6"] .cn-lbl,
 body[data-beat="7"] .cn-lbl{opacity:1; left:var(--x1); top:var(--y1)}
+/* the subject's line joins the flare — same instant as the square and the
+   chip (delay 3000 on beat 3), then holds amber through the seal */
+body[data-beat="3"] .cn-subj,
+body[data-beat="4"] .cn-subj,
+body[data-beat="5"] .cn-subj,
+body[data-beat="6"] .cn-subj{color:var(--amber-ink); font-weight:700}
+body[data-beat="3"] .cn-subj{transition-delay:0ms, 0ms, 0ms, 3000ms, 3000ms}
 
 /* the live value chip under the subject square — the thing the beat-3 edit
    will type over. Appears once the census has claimed payment-demo's name
@@ -602,17 +649,56 @@ body[data-beat="7"] .cn-lbl{opacity:1; left:var(--x1); top:var(--y1)}
    state, so beats 8+ need no restatement. */
 .chip{position:absolute; left:532px; top:610px; font-family:var(--mono);
   font-size:12px; color:var(--ink-soft); white-space:nowrap; opacity:0;
-  transition:opacity 500ms ease}
+  transform-origin:0 50%;
+  transition:opacity 500ms ease, transform 600ms cubic-bezier(.16,1,.3,1),
+             color 400ms ease, font-weight 200ms ease}
 .chip .v-old, .chip .v-drift{display:inline-block; overflow:hidden;
   white-space:pre; vertical-align:bottom}
 .chip .v-old{width:4ch}
 .chip .v-drift{width:0}
+/* the caret types; a bare span, deliberately — no actor, no crew colour. The
+   change is OUT-OF-BAND and must not read as the agent's hand. One finite
+   animation encodes appear/blink/vanish; base opacity 0 IS the settled state,
+   so every ?hold frame is caret-free with no restatement. */
+.chip .chip-caret{display:inline-block; width:7px; height:1.05em;
+  background:var(--ink-soft); vertical-align:-.14em; margin-left:1px; opacity:0}
+body[data-beat="3"] .chip .chip-caret{animation:chipcaret 2000ms steps(1) 700ms both}
+@keyframes chipcaret{
+  0%{opacity:0} 1%,12%{opacity:1} 13%,24%{opacity:0} 25%,36%{opacity:1}
+  37%,48%{opacity:0} 49%,60%{opacity:1} 61%,72%{opacity:0} 73%,86%{opacity:1}
+  87%,100%{opacity:0}
+}
 body[data-beat="2"] .chip{opacity:1; transition-delay:3700ms}
 body[data-beat="3"] .chip,
 body[data-beat="4"] .chip,
 body[data-beat="5"] .chip,
 body[data-beat="6"] .chip,
 body[data-beat="7"] .chip{opacity:1}
+/* beat 3: the summon (scale, delay 0) and the flare (colour + weight, delay
+   3000) share one rule — per-property delays, .lnk-blocked lesson. The edit
+   between them runs in neutral ink on the spans below. */
+body[data-beat="3"] .chip{transform:scale(1.15);
+  transition-delay:0ms, 0ms, 3000ms, 3000ms}
+body[data-beat="3"] .chip,
+body[data-beat="4"] .chip,
+body[data-beat="5"] .chip,
+body[data-beat="6"] .chip{color:var(--amber-ink); font-weight:700}
+body[data-beat="4"] .chip,
+body[data-beat="5"] .chip,
+body[data-beat="6"] .chip{transform:scale(1.15)}
+/* the edit itself: per-character width steps. mock and live are both 4ch, so
+   the chip's layout never shifts. End state (v-old 0 / v-drift 4ch) must be
+   restated for beats 4-6 — the keyframes only fill within beat 3. */
+body[data-beat="3"] .chip .v-old{animation:chipdel 700ms steps(4,end) 800ms both}
+@keyframes chipdel{from{width:4ch} to{width:0ch}}
+body[data-beat="3"] .chip .v-drift{animation:chiptype 800ms steps(4,end) 1800ms both}
+@keyframes chiptype{from{width:0ch} to{width:4ch}}
+body[data-beat="4"] .chip .v-old,
+body[data-beat="5"] .chip .v-old,
+body[data-beat="6"] .chip .v-old{width:0}
+body[data-beat="4"] .chip .v-drift,
+body[data-beat="5"] .chip .v-drift,
+body[data-beat="6"] .chip .v-drift{width:4ch}
 
 /* =======================================================================
    ROLE BADGES — labelled by JOB, not by product name. The crew name rides
@@ -1293,6 +1379,11 @@ body.no-anim[data-beat="6"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
 /* the beat-5 re-seat (.mk.subj transform, .sock.subj opacity/border) is
    transition-delayed to 1800ms; no-anim kills the transition so the end state
    applies at once, which is what a settled frame is — no restatement needed */
+/* hold-3 is the SETTLED drift beat: value edited, flare landed. The width
+   animations are killed, so the spans' end state must be restated; colours
+   are transitions and apply instantly on their own. */
+body.no-anim[data-beat="3"] .chip .v-old{width:0}
+body.no-anim[data-beat="3"] .chip .v-drift{width:4ch}
 body.no-anim .tf .caret{opacity:0}
 body.no-anim[data-beat="9"] .tf .impblock,
 body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
@@ -1364,7 +1455,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       <!-- the live value chip (see .chip). mock is the DEFINED value
            (iac/cloudrun.tf:41-44, pinned by demo/ops-contract.yaml); live is
            what the beat-3 out-of-band edit types over it. -->
-      <div class="chip"><span class="ck">PAYMENT_MODE = </span><span class="v-old">mock</span><span class="v-drift">live</span></div>
+      <div class="chip"><span class="ck">PAYMENT_MODE = </span><span class="v-old">mock</span><span class="v-drift">live</span><span class="chip-caret"></span></div>
 
       <!-- 見張る側 — detects, proposes, and cannot authorise itself -->
       <div class="badge b-watch">
