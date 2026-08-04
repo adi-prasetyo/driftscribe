@@ -84,11 +84,11 @@
     Dashed = proposed. Provision only opens a PR (docs/OVERVIEW.md:101), so the
     extension arrives dashed at beat 7 and the human approval snaps it solid at
     beat 8. Do not restyle either without re-reading design §4.
-  - COUNTER: 管理下 rolls 9 -> 10 by default, and ~30 marks sit outside the line.
-    The denominator (735) deliberately never appears and the field is STYLIZED,
-    not a census — a literal 9-of-735 field reads as toy coverage the moment a
-    judge divides. Exactly 9 marks sit inside the line at beat 0 and 10 at beat 8,
-    so the visual and the counter always agree.
+  - COUNTER: 管理下 rolls 10 -> 11 by default, and ~30 marks sit outside the line.
+    The denominator (735) deliberately never appears and the OUTSIDE field is
+    STYLIZED, not a census — a literal N-of-735 field reads as toy coverage the
+    moment a judge divides. Exactly 10 marks sit inside the line at beat 0 and 11
+    at beat 10, so the visual, the beat-2 census and the counter always agree.
     ⚠ The counter must carry the REAL counts at record time or the match-cut into
     the live desk dies: pass ?managed=N&grown=N+1, pulled when shooting.
   - The closing frame does NOT yet match-cut into the live desk panel (design
@@ -154,10 +154,6 @@
   --move:1100ms cubic-bezier(.16,1,.3,1);
   --cam:1500ms cubic-bezier(.16,1,.3,1);
 
-  /* the socket-noise probe's dial (build plan §4 GO/NO-GO #1). If all nine
-     read as noise at scale(1), thin this — never fall back to subject-only
-     sockets, which kills the grammar movement B pays off. */
-  --sock-op:.28;
 }
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -234,8 +230,9 @@ body[data-beat="10"] .rig{transform:translate(-57.6px,-32.4px) scale(1.06)}
 .world{position:absolute; inset:0}
 
 /* =======================================================================
-   THE FIELD — stylized estate. NOT a census: enough marks to read as
-   "many", never a countable denominator. Exactly 9 sit inside the line.
+   THE FIELD — the OUTSIDE is a stylized estate: enough marks to read as
+   "many", never a countable denominator. The INSIDE is exact: 10 real
+   resources, named by the beat-2 census.
    ======================================================================= */
 .field{position:absolute; inset:0;
   -webkit-mask-image:radial-gradient(128% 104% at 50% 46%, #000 52%, transparent 94%);
@@ -295,31 +292,9 @@ body:not([data-beat="0"]) .mk.in{
   box-shadow:0 0 0 3px rgba(14,27,95,.07);
 }
 
-/* =======================================================================
-   THE SOCKET — a hollow outline a defined resource sits in, shape-sorter
-   style (build plan docs/plans/2026-08-03-cold-open-socket-build-plan.md
-   §1). One per .mk.in, no more: a mark with no definition gets no socket,
-   ever (invariant 1/3) — that absence IS how "undefined" reads. Rendered
-   as a separate world-positioned element, not a pseudo-element on the mark,
-   because a displaced square (beat 2+) must be able to slide away while its
-   socket stays put and lit (invariant 2) — a ::before would move with it.
-   Transparent fill: it must read as a hole the mark sits in, not a second
-   filled shape stacked on the first.
-   ======================================================================= */
-.sock{
-  position:absolute; width:30px; height:30px; border-radius:8px;
-  border:1.5px solid var(--navy); background:transparent; opacity:0;
-  /* RECESSED — no fill, an inset shadow (fix-forward plan §B). The socket is
-     LARGER than the mark, so while both were plain outlined rounded squares the
-     HOLE read as the resource and the displaced peg read as a chip that had
-     fallen off it. The hole is a hole; the peg (.mk.subj) is raised. */
-  box-shadow:inset 0 1px 3px rgba(18,21,28,.13);
-  transition:opacity 700ms ease, border-color 500ms ease, box-shadow 500ms ease,
-             transform 700ms cubic-bezier(.16,1,.3,1);
-}
-/* faint from beat 1 on — nothing has a definition yet at beat 0, same gate
-   as .mk.in's own navy tint just above */
-body:not([data-beat="0"]) .sock{opacity:var(--sock-op)}
+/* v4: THE SOCKET GRAMMAR IS RETIRED (ds-22b.3). The census card (beat 2)
+   is the definition metaphor now; do not reintroduce socket outlines —
+   see the cold-open-socket-decision memory before touching this. */
 /* =====================================================================
    BEATS 2-5: the inside group is MAGNIFIED IN PLACE, not hidden.
    It used to be hidden outright — .mk.in and .sock both went to opacity 0 —
@@ -343,12 +318,6 @@ body:not([data-beat="0"]) .sock{opacity:var(--sock-op)}
    ⚠ Same specificity as the base rule above (0,2,1) — must stay after it
    (trap: CSS specificity ties are decided by source order).
    ===================================================================== */
-body[data-beat="2"] .sock,
-body[data-beat="3"] .sock,
-body[data-beat="4"] .sock,
-body[data-beat="5"] .sock,
-body[data-beat="6"] .sock,
-body[data-beat="7"] .sock{transform:scale(1.55)}
 /* the eight siblings stay as CONTEXT — dimmed, never gone. "One of these has
    moved" is only a readable sentence if the others are in the frame; with them
    hidden, a single square was doing mime. */
@@ -366,27 +335,6 @@ body[data-beat="4"] .mk.subj,
 body[data-beat="5"] .mk.subj,
 body[data-beat="6"] .mk.subj,
 body[data-beat="7"] .mk.subj{opacity:1}
-/* the subject's socket stays lit the WHOLE time it is displaced (beats 2-4) —
-   invariant 2, "a vacated socket stays lit and tethered". Still recessed: an
-   amber HOLE, not an amber ring. */
-body[data-beat="2"] .sock.subj,
-body[data-beat="3"] .sock.subj,
-body[data-beat="4"] .sock.subj,
-body[data-beat="5"] .sock.subj{
-  opacity:.9; border-color:var(--amber); transform:scale(1.55);
-  box-shadow:inset 0 2px 5px rgba(154,91,18,.26), 0 0 0 4px rgba(154,91,18,.12);
-}
-/* re-seats to the ambient, un-amber look the instant the mark's own re-seat
-   lands (beat 5, 2650ms — the worker's second path arrives, see .lnk-act — so
-   the hole and its resident close in the same instant, not two separate beats).
-   ⚠ bare transition-delay, i.e. it applies to transform too — safe ONLY because
-   the scale is identical at beats 4 and 5, so transform has nothing to animate.
-   If that ever stops being true, list the properties (see .lnk-blocked). */
-body[data-beat="6"] .sock.subj{
-  opacity:var(--sock-op); border-color:var(--navy); transform:scale(1.55);
-  box-shadow:inset 0 1px 3px rgba(18,21,28,.13);
-  transition-delay:2650ms;
-}
 /* beat 6 — the eye goes where nothing is watching. Dimmed, NOT erased: the
    point is that the mass is still there and simply unlit.
    .58, not .42 — caption G says 見えている outright, so anything that makes the
@@ -426,40 +374,12 @@ body[data-beat="10"] .mk.in{box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rg
    land in the same instant. */
 .mk.subj{transition:background 700ms ease, border-color 700ms ease, box-shadow 700ms ease,
                      transform 700ms cubic-bezier(.16,1,.3,1)}
-/* ⚠ EVERY transform rule below must carry BOTH functions — the displacement and
-   the beats-2-5 magnification (see the .sock block). A translate-only rule
-   silently drops the scale; a scale-only rule silently drops the displacement.
-   The beat-5 re-seat is the one that bites: `translate(0,0)` looks obviously
-   right and is wrong, because it also un-magnifies the mark 1.8s before the
-   camera pulls back.
-   Displacement widened 90->155px in the same round: at 1.55x a 93px offset put
-   the peg's edge ~5px from the socket of the neighbour at (712,592), so the
-   displaced square read as sitting on the lip of somebody else's hole. 155px
-   along the same heading clears it by ~31px and still lands the peg 167px from
-   the blob centre, i.e. comfortably INSIDE the line — which it must be, because
-   inside the line is where having a definition is true. */
-body[data-beat="2"] .mk.subj,
-body[data-beat="3"] .mk.subj,
-body[data-beat="4"] .mk.subj,
-body[data-beat="5"] .mk.subj{transform:translate(155px,-41px) scale(1.55)}
-/* ONE colour for the whole displacement (fix-forward plan §D). Beats 3-4 used to
-   turn the peg RED while its own vacated socket stayed AMBER (.sock.subj), so the
-   tether — the thing that says "belongs there, isn't there" — joined two different
-   semantics. It was signed off from a single frame and only fails the moment you
-   ask what the tether means. Displacement is amber from beat 2 until the re-seat;
-   the green at beat 5 IS the re-seat, and stays.
-   RAISED: a real drop shadow, so the peg reads as lifted OUT of the recessed hole
-   it is tethered to rather than as a second flat outline standing beside it. */
-body[data-beat="2"] .mk.subj,
-body[data-beat="3"] .mk.subj,
-body[data-beat="4"] .mk.subj,
-body[data-beat="5"] .mk.subj{background:var(--amber-surface); border-color:var(--amber);
-  box-shadow:0 5px 12px -3px rgba(18,21,28,.26), 0 0 0 3px rgba(154,91,18,.10)}
+/* v4: the subject never leaves its seat. Drift arrives as the beat-3 edit
+   (Task 5 builds its amber state); the fix is the beat-7 reverse edit. */
 body[data-beat="6"] .mk.subj,
 body[data-beat="7"] .mk.subj,
 body[data-beat="8"] .mk.subj{background:var(--green-surface); border-color:var(--green);
   box-shadow:0 0 0 4px rgba(26,107,82,.14)}
-body[data-beat="6"] .mk.subj{transform:scale(1.55); transition-delay:2650ms}
 
 /* the resource that gets a definition written for it */
 .mk.tgt{transition:background 800ms ease, border-color 800ms ease, box-shadow 800ms ease,
@@ -594,38 +514,6 @@ body[data-beat="7"] .bd-tag{opacity:0; transition-delay:0ms}
 body[data-beat="9"] .bd-tag,
 body[data-beat="10"] .bd-tag{top:300px}
 
-/* =======================================================================
-   THE DEFINITION CARD — one HCL card, anchored to the vacated socket by a
-   leader line (build plan §3 beat 2 / §6). Round-2's second (実際) card is
-   retired: the displaced square itself IS the actual state now, so a card
-   restating it would say the same thing twice. No value chip either
-   (operator note: leave the number vague) — the code excerpt is the card.
-   ======================================================================= */
-.pdef{
-  position:absolute; left:940px; top:460px; width:300px; opacity:0;
-  border-radius:10px; padding:11px 14px;
-  border:1.5px solid var(--blue-border); border-style:dashed; background:var(--blue-surface);
-  box-shadow:0 1px 3px rgba(18,21,28,.05), 0 12px 30px -18px rgba(18,21,28,.24);
-  transition:opacity 700ms ease;
-}
-/* beat 2 only. ⚠ Its world position (940,460) sits directly under the .gate
-   card (960,470) — they are never on screen together by construction, but if
-   this rule is ever widened past beat 2, re-check that collision first. Beats
-   3-5 keep the tether (.teth) so the socket-and-square pair stays legible
-   without the card; the gate drama supplies its own cards. */
-body[data-beat="2"] .pdef{opacity:1}
-/* NOT uppercased — same trap the .bd-tag comment warns about one section up:
-   text-transform turned "definition (.tf)" into "DEFINITION (.TF)", and .tf is
-   exactly the token this card exists to rhyme with at beat 7. */
-.pdef .lbl{font-family:var(--mono); font-size:11px; letter-spacing:.14em;
-  color:var(--blue-ink); margin-bottom:6px}
-/* Shown as REAL HCL (iac/cloudrun.tf:41-44), not a key/value gloss, so that
-   Terraform is planted at ~7s and beat 7's .tf card reads as a CALLBACK rather
-   than a new concept arriving in the last third. */
-.pdef .hcl{font-family:var(--mono); font-size:15px; font-weight:500; line-height:1.55;
-  color:var(--ink-soft); white-space:pre; margin:0}
-.pdef .hcl .kw{color:var(--crew-provision); font-weight:700}
-.pdef .hcl .str{color:var(--blue-ink); font-weight:700}
 
 /* =======================================================================
    ROLE BADGES — labelled by JOB, not by product name. The crew name rides
@@ -703,46 +591,7 @@ body[data-beat="6"] .prop{opacity:1; transform:none; transition-delay:700ms}
    ======================================================================= */
 .links{position:absolute; inset:0; overflow:visible; pointer-events:none}
 
-/* "this card is about THAT square". Amber, the subject's own beat-2 ink. Same
-   visual grammar as the ring at beat 7 — leader = this drift belongs to that
-   one square; ring = this boundary belongs to this code. Beat 2 only, same
-   span as .pdef (see there for why: the gate drama's own cards take over at
-   beat 3, and .pdef's world position collides with .gate's). */
-.lnk-lead{
-  fill:none; stroke:var(--amber); stroke-width:2.2; stroke-linecap:round;
-  stroke-dasharray:300; stroke-dashoffset:300; opacity:0;
-  transition:opacity 400ms ease;
-}
-body[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0;
-  animation:lead 320ms cubic-bezier(.4,0,.25,1) 260ms backwards}
-@keyframes lead{from{stroke-dashoffset:300} to{stroke-dashoffset:0}}
 
-/* the gap itself: a short dashed tether directly between the vacated socket
-   and the displaced square (invariant 2 — "stays lit and TETHERED", the thing
-   that keeps this reading as "belongs there, isn't there" instead of "belongs
-   nowhere", which is the undefined state's job, not this one's). Marches with
-   the same @keyframes as the boundary's own dashed proposal (.bd .bprop) —
-   one "in flight, not yet settled" vocabulary for both.
-   Drawn EDGE TO EDGE, not centre to centre: .links paints above #field, so a
-   centre-to-centre line runs across the face of both the recessed hole and the
-   raised peg. At 1.55x with a drop shadow on the peg that reads as a line
-   THROUGH the square rather than the gap between two things. Endpoints are the
-   two edges along the displacement heading, +4px of air. */
-.teth{
-  fill:none; stroke:var(--amber); stroke-width:2; stroke-linecap:round;
-  stroke-dasharray:4 5; opacity:0; transition:opacity 400ms ease;
-}
-body[data-beat="2"] .teth,
-body[data-beat="3"] .teth,
-body[data-beat="4"] .teth,
-body[data-beat="5"] .teth{opacity:.85; animation:march 1.6s linear infinite}
-/* ⚠ must NOT fade at beat 5's onset (0ms) — the mark/socket re-seat is itself
-   delayed (see .mk.subj / .sock.subj), so an un-delayed fade here left the
-   socket lit-but-untethered for over a second, an invariant-2 violation (Codex
-   review, 2026-08-03). Fades on the SAME delay, so the tether is gone only once
-   the resident is actually on its way back. All three moved 1800 -> 2650ms with
-   the beat-5 retime; they must keep moving together. */
-body[data-beat="6"] .teth{opacity:0; transition-delay:2650ms}
 
 /* the ripple — the Eventarc event itself, travelling from the displaced
    SQUARE to the watcher that will react to it (build plan §3 beat 2: "a
@@ -1303,7 +1152,6 @@ body.no-anim[data-beat="9"] .b-write{opacity:1; transform:none}
 body.no-anim[data-beat="4"] .prop,
 body.no-anim[data-beat="5"] .prop,
 body.no-anim[data-beat="6"] .prop{opacity:1; transform:none}
-body.no-anim[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0}
 body.no-anim[data-beat="5"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
 /* the tip's SETTLED (recoiled) position — without this the hold frame shows it
    fully extended and touching the x, i.e. a refusal that never recoiled */
@@ -1353,7 +1201,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     <div class="camera"><div class="rig"><div class="world">
 
       <!-- the estate: marks are generated by JS from a fixed seed so every
-           render is byte-identical. Exactly 9 carry .in at beat 0. -->
+           render is byte-identical. Exactly 10 carry .in at beat 0. -->
       <div class="field" id="field"></div>
       <div class="sweep"></div>
 
@@ -1366,32 +1214,8 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       </svg>
       <div class="bd-tag">IaC で定義済み — 管理下</div>
 
-      <!-- the definition, anchored to the SQUARE by a leader, which is itself
-           tethered to the vacated socket (.teth) — one continuous line reads
-           card -> square -> socket, so the card is anchored to the socket
-           TRANSITIVELY (build plan §3/§6: the 実際 card is retired — the
-           displaced square below IS the actual state now). Real excerpt,
-           iac/cloudrun.tf:41-44. The value is "mock", NOT "test":
-           demo/ops-contract.yaml pins PAYMENT_MODE to "mock" and the runbook
-           says so too; v1 showed "test" and this inherited it. -->
-      <div class="pcard pdef">
-        <div class="lbl">定義 · iac/cloudrun.tf</div>
-<pre class="hcl"><span class="kw">env</span> {
-  name  = <span class="str">"PAYMENT_MODE"</span>
-  value = <span class="str">"mock"</span>
-}</pre>
-      </div>
 
       <!-- Annotation strokes, all in world coordinates (viewBox 1:1 with .world).
-           - lnk-lead   beat 2 only: the definition card -> the displaced square
-                        (the card's world position collides with .gate at beats
-                        4-5, so it — and this leader — do not persist past 2).
-           - teth       beats 2-4, fading on beat 5's 1800ms re-seat delay: the
-                        vacated socket -> the displaced square (invariant 2 —
-                        the tether that keeps "displaced" apart from
-                        "undefined", and must stay up until the resident is
-                        actually on its way back, not just until the beat
-                        changes).
            - lnk-blocked + lnk-tip: ONE cubic, split at t=0.90 by de Casteljau, so
              the tip is genuinely the last ~59px of the reach and can be moved
              independently. Original: M430 342 C 580 260, 800 300, 930 452 —
@@ -1408,8 +1232,6 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
              the gate's top) and it enters the boundary near the end, which is
              correct: the worker is outside the line, the resource is inside it. -->
       <svg class="links" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
-        <path class="lnk-lead" d="M940 520 C 890 528, 840 536, 776 538"></path>
-        <path class="teth" d="M626 571 L736 542"></path>
         <path class="lnk-blocked" d="M430 342 C 565 268.2, 756.7 293.22, 888.46 409.77"></path>
         <path class="lnk-tip" d="M888.46 409.77 C 903.1 422.72, 917 436.8, 930 452"></path>
         <line class="stopx" x1="917.8" y1="462.3" x2="942.2" y2="441.7"></line>
@@ -1546,7 +1368,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     <div class="cnt">
       <div class="cl">管理下のリソース</div>
       <div class="cwrap">
-        <span class="cv"><span class="cflap"><span class="cn">9</span><span class="cn">10</span></span></span>
+        <span class="cv"><span class="cflap"><span class="cn">10</span><span class="cn">11</span></span></span>
         <span class="cu">件</span>
       </div>
     </div>
@@ -1671,12 +1493,13 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
   }
 
   /* =====================================================================
-     THE FIELD — exactly 9 marks inside the line (so the visual and the
-     counter agree), the adopt target just outside it, and a stylized
-     scatter everywhere else. Never a census; no denominator is shown.
+     THE FIELD — exactly 10 marks inside the line (the beat-2 census names
+     them; visual, census and counter must always agree), the adopt target
+     just outside it, and a stylized scatter everywhere else. The OUTSIDE is
+     never a census; no denominator is shown.
      ===================================================================== */
   var INSIDE=[[470,505],[560,462],[682,486],[600,578],[712,592],
-              [486,622],[578,690],[690,700],[452,566]];
+              [486,622],[578,690],[690,700],[452,566],[640,652]];
   var SUBJ=3;                                   /* index of the drift subject */
   /* the three that stay lit beside the subject at beat 2 (punch list item 1):
      without company the amber square reads as "the only resource", with company
@@ -1706,20 +1529,8 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     m.style.setProperty('--sw', Math.round(x/1920*1700)+'ms');
     field.appendChild(m); return m;
   }
-  /* the socket a defined resource sits in — appended BEFORE its mark so the
-     mark paints on top (a peg sits on its hole, not under it). World
-     coordinates, same centre as the mark it belongs to. Carries the same
-     subj/sib markers as its mark so the beat-2 exception (CSS above) can
-     target the same four sockets the marks-cascade keeps lit. */
-  function addSocket(x,y,cls){
-    var s=document.createElement('div');
-    s.className='sock'+(cls?' '+cls:'');
-    s.style.left=(x-15)+'px'; s.style.top=(y-15)+'px';
-    field.appendChild(s); return s;
-  }
   INSIDE.forEach(function(p,i){
     var role=(i===SUBJ?' subj':'')+(SIBS.indexOf(i)>=0?' sib':'');
-    addSocket(p[0],p[1],role.trim());
     addMark(p[0],p[1],'in'+role);
   });
 
@@ -1745,7 +1556,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
 
   /* A FEW DOZEN marks, not a census (design §"Depicted scale"): a literal
      9-of-735 field invites the room to do the division and read "toy coverage".
-     ~30 outside + 9 inside reads as a visible-minority fraction, which is the
+     ~30 outside + 10 inside reads as a visible-minority fraction, which is the
      honest shape of the argument; the real numbers live in the counter.
      Jitter is large relative to the step so it reads as a field, not a grid.
      Culled anywhere the grown boundary will reach, so the lobe arrives at a
