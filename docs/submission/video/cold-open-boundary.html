@@ -5,21 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>DriftScribe — cold open (boundary rework)</title>
 <!--
-  DriftScribe demo cold-open v2 — "the boundary" (segment 0, 34.6s, silent, JA captions).
+  DriftScribe demo cold-open v2 — "the boundary" (segment 0, 34.9s, silent, JA captions).
   Design: docs/plans/2026-08-01-cold-open-boundary-rework-design.md (decisions closed
   2026-08-01 in an operator / Claude / Codex review round — this file implements THAT
   revision, incl. §4's solid-vs-dashed rule and §"Depicted scale").
   Round-2 punch list: docs/plans/2026-08-02-cold-open-boundary-punch-list.md.
+  Socket rework: docs/plans/2026-08-03-cold-open-socket-build-plan.md.
+  FIX-FORWARD ROUND (2026-08-04): docs/plans/2026-08-04-cold-open-socket-fix-forward-plan.md,
+  bead ds-22b.1.1. The socket build shipped a regression — see WHAT THE FIX-FORWARD
+  ROUND CHANGED below before touching beats 0-5 or the ring.
   Supersedes cold-open.html (the drift-gap story). That file stays renderable and is
   the shippable fallback.
 
-  RUNTIME: 34.6s. The 35s cap was WAIVED for the punch-list round (operator decision,
+  RUNTIME: 34.9s. The 35s cap was WAIVED for the punch-list round (operator decision,
   2026-08-02): the round adds five substantive gestures — a leader line, micro-labels,
   an explicit refusal, a re-staged key with a visible execution path, and the ring
   lift-off — and the instruction was to build them at their natural length and record
   the real number rather than trim elsewhere to hide the growth. A separate streamline
-  pass cuts fat later.
+  pass cuts fat later. The fix-forward round spent another +300ms, all of it in beat 5,
+  which is where the thesis is: proposer cannot, minter will not, human does.
   Beats are sized to CAPTION READING TIME, not to their motion — see the MARKS comment.
+
+  WHAT THE FIX-FORWARD ROUND CHANGED, and why each one is not a preference:
+  - The subject's label arrives at beat 0 WITH its square (it used to wait until
+    beat 1 + 1500ms, i.e. 2.4s after the field stopped moving). See .mklbl.
+  - The inside group is magnified 1.55x and kept ALIVE at beats 2-5 instead of
+    hidden. Hiding it meant the socket predicate was off screen during its own
+    payoff and beats 3-4 played as a void once the 実際 card was deleted. See .sock.
+  - The displaced peg stays ONE colour. It used to turn red at beats 3-4 while its
+    own vacated socket stayed amber, so the tether joined two semantics. See .mk.subj.
+  - Beat 4's refusal is sequenced (a bare transition-delay was hiding both the reach
+    and the recoil), aimed at the LOCK rather than at open space, and labelled. See
+    .lnk-blocked.
+  - Beat 5 is re-staged around who opens the lock: the worker places the key and
+    WITHDRAWS, the 判子 lands alone, and only then does the key turn and the shackle
+    lift. See the BEAT 5 block. The padlock had never opened; the key had never turned.
+  - The 判子 moved out of the gate card so it can break its edge. See .stamp.
+  - The ring now BECOMES the socket (one morphed path) instead of crossfading into a
+    separate dashed div. See .ring / ringLand(). There is no .tgt-sock any more.
+  - The gate's `live -> mock` is de-texted to 定義値に戻す. See .gate .gchange.
 
   THE ARGUMENT (why this replaces v1): v1 spent its 20s on detect -> propose ->
   approve -> revert, which is the shape every DevOps agent in the field has. What
@@ -89,16 +113,17 @@
     - window.play() restarts. window.RUNTIME_MS is the full length.
 
   Beats (data-beat on <body>), with cumulative ms:
-    0  0      field     the estate blooms in, a few dozen resources   cap A
-    1  3200   line      the SOLID boundary draws; 4 marks get names   cap B
+    0  0      field     the estate blooms in; the subject is named    cap A
+    1  3200   line      the SOLID boundary draws; 3 outside names     cap B
     2  7400   drift     the subject slides out of its socket; one HCL card cap C  <- the hinge
     3  11300  propose   the watcher detects and proposes              cap D
-    4  14400  key       its reach is refused — an explicit x          cap E
-    5  18300  seal      a human seals it, THEN the worker acts        cap F
-    6  22000  pullback  the field again — seen, but with no definition cap G
-    7  26000  write     the file bursts out; a ring lifts off it      cap H
-    8  31200  commit    approval snaps the line SOLID; 管理下 rolls up cap I
-       34600  end
+    4  14400  key       its reach is refused at the lock — an x       cap E
+    5  18300  seal      the key is PLACED and the hand withdraws; a
+                        human seals it; only then does the lock open  cap F
+    6  22300  pullback  the field again — seen, but with no definition cap G
+    7  26300  write     the file bursts out; a ring closes and lands  cap H
+    8  31500  commit    approval snaps the line SOLID; 管理下 rolls up cap I
+       34900  end
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -244,8 +269,11 @@ body[data-beat="6"] .sweep{
   position:absolute; width:20px; height:20px; border-radius:5px;
   background:#f4f1ea; border:1.5px solid #a29a8b;
   box-shadow:0 1px 2px rgba(18,21,28,.06);
+  /* transform is in the list for the beats-2-5 magnification (see .sock) — .mk
+     had no transform transition, so scaling .mk.in there would have snapped */
   transition:opacity 900ms ease, background var(--move),
-             border-color var(--move), box-shadow var(--move);
+             border-color var(--move), box-shadow var(--move),
+             transform 700ms cubic-bezier(.16,1,.3,1);
 }
 /* Beat 0 used to be 3.4s of a field that was simply THERE. Its only motion was
    the ambient camera push — 0.11%/s, imperceptible — so the piece opened on what
@@ -279,58 +307,78 @@ body:not([data-beat="0"]) .mk.in{
 .sock{
   position:absolute; width:30px; height:30px; border-radius:8px;
   border:1.5px solid var(--navy); background:transparent; opacity:0;
-  transition:opacity 700ms ease, border-color 500ms ease, box-shadow 500ms ease;
+  /* RECESSED — no fill, an inset shadow (fix-forward plan §B). The socket is
+     LARGER than the mark, so while both were plain outlined rounded squares the
+     HOLE read as the resource and the displaced peg read as a chip that had
+     fallen off it. The hole is a hole; the peg (.mk.subj) is raised. */
+  box-shadow:inset 0 1px 3px rgba(18,21,28,.13);
+  transition:opacity 700ms ease, border-color 500ms ease, box-shadow 500ms ease,
+             transform 700ms cubic-bezier(.16,1,.3,1);
 }
 /* faint from beat 1 on — nothing has a definition yet at beat 0, same gate
    as .mk.in's own navy tint just above */
 body:not([data-beat="0"]) .sock{opacity:var(--sock-op)}
-/* .sock is a sibling of its mark, not a child of it, so it inherits NONE of
-   the .mk.in hide cascade two blocks below by default. Beats 2-5 hide five
-   of the nine inside marks there (the gate drama has no room for them once
-   the subject alone is doing the work) — this mirrors that same cascade onto
-   the socket, one for one, or five holes render with nothing seated in them
-   and read as five accidental displacements. Same specificity as the base
-   rule above (0,2,1) — must stay after it (trap: CSS specificity ties are
-   decided by source order). */
+/* =====================================================================
+   BEATS 2-5: the inside group is MAGNIFIED IN PLACE, not hidden.
+   It used to be hidden outright — .mk.in and .sock both went to opacity 0 —
+   which left one ~20px square and one ~30px socket alone in a 480px blob for
+   seven seconds. Two things were wrong with that. The predicate the whole
+   redesign rests on ("a defined resource sits in a socket") was off screen
+   during its own payoff; and once the 実際 card was deleted, nothing at all
+   filled beats 3-4, so they played as a void (fix-forward plan §C).
+   1.55x is a LOCAL magnification, deliberately not a camera move: at beat 2
+   the frame already carries the HCL card, the 見張る側 badge and the pair
+   across nearly its full width at scale(1.7), so there is no room to tighten
+   (§B — and tightening is what produced the old rig's contortions that this
+   redesign just retired), and at beats 3-5 no camera change helps at all,
+   because the cards that used to fill those frames are gone.
+   Marks scale about their OWN centres, so the group's spacing is untouched and
+   nothing collides: the tightest pair in INSIDE is ~100px apart against a
+   46.5px socket.
+   ⚠ Both .mk and .sock are positioned by left/top, so the magnification has to
+   ride on transform (origin defaults to centre for an HTML element) and BOTH
+   need `transform` in their transition list or it snaps instead of growing.
+   ⚠ Same specificity as the base rule above (0,2,1) — must stay after it
+   (trap: CSS specificity ties are decided by source order).
+   ===================================================================== */
 body[data-beat="2"] .sock,
 body[data-beat="3"] .sock,
 body[data-beat="4"] .sock,
-body[data-beat="5"] .sock{opacity:0}
-/* the subject's socket stays lit the WHOLE time it is displaced (beats 2-4) —
-   invariant 2, "a vacated socket stays lit and tethered" — and the 3 calm
-   siblings' sockets stay lit at beat 2 only, same exception as .mk.sib below.
-   Same specificity as the hide rule above (0,3,0 vs 0,2,0) — no tie, but kept
-   after it for the same reading order as the .mk cascade. */
-body[data-beat="2"] .sock.subj,
-body[data-beat="3"] .sock.subj,
-body[data-beat="4"] .sock.subj{
-  opacity:.85; border-color:var(--amber); box-shadow:0 0 0 4px rgba(154,91,18,.14);
-}
-body[data-beat="2"] .sock.sib{opacity:var(--sock-op)}
-/* re-seats to the ambient, un-amber look the instant the mark's own re-seat
-   lands (beat 5, 1800ms — the worker's path arrives, see .lnk-act — so the
-   hole and its resident close in the same instant, not two separate beats). */
-body[data-beat="5"] .sock.subj{
-  opacity:var(--sock-op); border-color:var(--navy); box-shadow:none;
-  transition-delay:1800ms;
-}
-/* the gate drama has no room for the 3 calm siblings; unlike the subject they
-   have nothing left to do once beat 2 ends, so — concrete middle (build plan
-   §5 trap 1) — only the subject stays, siblings re-hide */
+body[data-beat="5"] .sock{transform:scale(1.55)}
+/* the eight siblings stay as CONTEXT — dimmed, never gone. "One of these has
+   moved" is only a readable sentence if the others are in the frame; with them
+   hidden, a single square was doing mime. */
 body[data-beat="2"] .mk.in,
 body[data-beat="3"] .mk.in,
 body[data-beat="4"] .mk.in,
-body[data-beat="5"] .mk.in{opacity:0}
-/* ...but NOT the subject, at any of beats 2-5 (trap 1: the beat-5 worker path
-   re-anchors to THIS mark, so it must be on screen there too), and not the 3
-   calm siblings at beat 2 only, which is the whole point of the beat: the
-   amber one is visibly ONE OF SEVERAL, not the only resource that exists.
-   ⚠ Same specificity as the hide rule (both 0,3,1) — this MUST stay after it. */
+body[data-beat="5"] .mk.in{opacity:.45; transform:scale(1.55)}
+/* ...but the subject is at full strength at every one of beats 2-5 (the beat-5
+   worker path re-anchors to THIS mark, so it must be on screen there too).
+   ⚠ Same specificity as the dim rule (both 0,3,1) — this MUST stay after it. */
 body[data-beat="2"] .mk.subj,
 body[data-beat="3"] .mk.subj,
 body[data-beat="4"] .mk.subj,
-body[data-beat="5"] .mk.subj,
-body[data-beat="2"] .mk.sib{opacity:1}
+body[data-beat="5"] .mk.subj{opacity:1}
+/* the subject's socket stays lit the WHOLE time it is displaced (beats 2-4) —
+   invariant 2, "a vacated socket stays lit and tethered". Still recessed: an
+   amber HOLE, not an amber ring. */
+body[data-beat="2"] .sock.subj,
+body[data-beat="3"] .sock.subj,
+body[data-beat="4"] .sock.subj{
+  opacity:.9; border-color:var(--amber); transform:scale(1.55);
+  box-shadow:inset 0 2px 5px rgba(154,91,18,.26), 0 0 0 4px rgba(154,91,18,.12);
+}
+/* re-seats to the ambient, un-amber look the instant the mark's own re-seat
+   lands (beat 5, 2650ms — the worker's second path arrives, see .lnk-act — so
+   the hole and its resident close in the same instant, not two separate beats).
+   ⚠ bare transition-delay, i.e. it applies to transform too — safe ONLY because
+   the scale is identical at beats 4 and 5, so transform has nothing to animate.
+   If that ever stops being true, list the properties (see .lnk-blocked). */
+body[data-beat="5"] .sock.subj{
+  opacity:var(--sock-op); border-color:var(--navy); transform:scale(1.55);
+  box-shadow:inset 0 1px 3px rgba(18,21,28,.13);
+  transition-delay:2650ms;
+}
 /* beat 6 — the eye goes where nothing is watching. Dimmed, NOT erased: the
    point is that the mass is still there and simply unlit.
    .58, not .42 — caption G says 見えている outright, so anything that makes the
@@ -370,16 +418,37 @@ body[data-beat="8"] .mk.in{box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgb
    land in the same instant. */
 .mk.subj{transition:background 700ms ease, border-color 700ms ease, box-shadow 700ms ease,
                      transform 700ms cubic-bezier(.16,1,.3,1)}
+/* ⚠ EVERY transform rule below must carry BOTH functions — the displacement and
+   the beats-2-5 magnification (see the .sock block). A translate-only rule
+   silently drops the scale; a scale-only rule silently drops the displacement.
+   The beat-5 re-seat is the one that bites: `translate(0,0)` looks obviously
+   right and is wrong, because it also un-magnifies the mark 1.8s before the
+   camera pulls back.
+   Displacement widened 90->155px in the same round: at 1.55x a 93px offset put
+   the peg's edge ~5px from the socket of the neighbour at (712,592), so the
+   displaced square read as sitting on the lip of somebody else's hole. 155px
+   along the same heading clears it by ~31px and still lands the peg 167px from
+   the blob centre, i.e. comfortably INSIDE the line — which it must be, because
+   inside the line is where having a definition is true. */
 body[data-beat="2"] .mk.subj,
 body[data-beat="3"] .mk.subj,
-body[data-beat="4"] .mk.subj{transform:translate(90px,-24px)}
-body[data-beat="2"] .mk.subj{background:var(--amber-surface); border-color:var(--amber)}
+body[data-beat="4"] .mk.subj{transform:translate(155px,-41px) scale(1.55)}
+/* ONE colour for the whole displacement (fix-forward plan §D). Beats 3-4 used to
+   turn the peg RED while its own vacated socket stayed AMBER (.sock.subj), so the
+   tether — the thing that says "belongs there, isn't there" — joined two different
+   semantics. It was signed off from a single frame and only fails the moment you
+   ask what the tether means. Displacement is amber from beat 2 until the re-seat;
+   the green at beat 5 IS the re-seat, and stays.
+   RAISED: a real drop shadow, so the peg reads as lifted OUT of the recessed hole
+   it is tethered to rather than as a second flat outline standing beside it. */
+body[data-beat="2"] .mk.subj,
 body[data-beat="3"] .mk.subj,
-body[data-beat="4"] .mk.subj{background:var(--red-surface); border-color:var(--red)}
+body[data-beat="4"] .mk.subj{background:var(--amber-surface); border-color:var(--amber);
+  box-shadow:0 5px 12px -3px rgba(18,21,28,.26), 0 0 0 3px rgba(154,91,18,.10)}
 body[data-beat="5"] .mk.subj,
 body[data-beat="6"] .mk.subj{background:var(--green-surface); border-color:var(--green);
   box-shadow:0 0 0 4px rgba(26,107,82,.14)}
-body[data-beat="5"] .mk.subj{transform:translate(0,0); transition-delay:1800ms}
+body[data-beat="5"] .mk.subj{transform:scale(1.55); transition-delay:2650ms}
 
 /* the resource that gets a definition written for it */
 .mk.tgt{transition:background 800ms ease, border-color 800ms ease, box-shadow 800ms ease,
@@ -399,41 +468,16 @@ body[data-beat="8"] .mk.tgt{
   background:#eef0f8; border:1.5px solid var(--navy);
   box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgba(14,27,95,.16);
 }
-/* the ring LANDS as this — a dashed socket around the bucket (build plan §3
-   beat 7), not a fade to nothing. A RHYME with the ring's fade-out, not a
-   morph of the ring's own hand-drawn path into a rounded square (same "handoff,
-   not morph" reasoning as the ring->lobe relationship below). Timed from a
-   direct measurement of the beat-7 chain (probe, 2026-08-03): ring-lift starts
-   at beat7+2796ms and fades over 900ms, ending ~beat7+3696ms; this fades in
-   3300-3900ms so the two overlap instead of leaving a gap.
-   Dashed, not solid — invariant 3: only THIS socket is legitimately
-   dashed-then-solid, and it must stay dashed until beat 8's snap, sharing that
-   instant with the boundary lobe (invariant 4).
-   ⚠ Gated on `body.boundary-committed`, NOT `[data-beat="8"]` directly: the
-   data-beat attribute flips at 31200ms but the boundary's own path morph
-   (commitBoundary()) doesn't start until a separate 31300ms timer — gating
-   this on the attribute alone snapped the socket solid ~100-720ms before the
-   lobe visually finished reaching it, i.e. NOT one instant (Codex review,
-   2026-08-03). The class is added from inside commitBoundary() itself so both
-   share the exact same trigger. */
-.tgt-sock{
-  position:absolute; width:34px; height:34px; margin:-17px 0 0 -17px; border-radius:9px;
-  border:1.5px dashed var(--navy); background:transparent; opacity:0;
-  transition:opacity 600ms ease, border-style 0ms, border-color 700ms ease, box-shadow 700ms ease;
-}
-body[data-beat="7"] .tgt-sock{opacity:.92; transition-delay:3300ms}
-/* ⚠ opacity lives here, keyed to the attribute (which flips 7->8 atomically),
-   NOT on .boundary-committed below: that class lands ~100ms after the
-   attribute (commitBoundary()'s own timer), and gating opacity on it too left
-   a ~100ms gap where .tgt-sock matched neither rule and fell back to the base
-   opacity:0 — a visible dip-then-recover flicker (Codex review round 2,
-   2026-08-03). Only the solid-snap itself (the thing invariant 4 is actually
-   about) needs the shared JS trigger. */
-body[data-beat="8"] .tgt-sock{opacity:1}
-body.boundary-committed .tgt-sock{
-  border-style:solid; border-color:var(--navy);
-  box-shadow:0 0 0 4px rgba(14,27,95,.10), 0 0 18px rgba(14,27,95,.16);
-}
+/* ⚠ THERE IS NO .tgt-sock ELEMENT, AND THERE MUST NOT BE ONE AGAIN.
+   A separate dashed-square div used to fade in at beat7+3300ms while the ring
+   faded out on top of it — its own source comment called that "a RHYME with the
+   ring's fade-out, not a morph". Two objects crossfading do not carry identity,
+   so on first viewing a crisp new square outline simply materialized outside
+   the line, which is the exact misread the design round scrapped beat-6
+   materialization to avoid, and it is what the operator reacted to on
+   2026-08-04. The ring now IS the socket: one path, morphed point-for-point
+   from the pen circle around the import block into the outline the resource
+   sits in. See .ring / ringLand(). */
 
 /* a soft halo pulses on it while the line reaches out */
 .tgt-halo{position:absolute; width:60px; height:60px; margin:-23px 0 0 -23px; border-radius:50%;
@@ -464,8 +508,20 @@ body[data-beat="6"] .tgt-halo{border-color:var(--faint);
   transition:opacity 520ms ease, color 700ms ease;
 }
 .mklbl.lft{transform:translateX(-100%)}   /* label ends AT the mark, not after it */
-/* they arrive AFTER the line has drawn (1.5s), never at beat 0: at beat 0 a label
-   only says "this is a resource"; at beat 1 it argues about which side it is on */
+/* THE SUBJECT'S LABEL ARRIVES WITH ITS SQUARE (operator decision 2026-08-04,
+   fix-forward plan §A). It used to wait for beat 1 with the other three, on the
+   argument that "at beat 0 a label only says 'this is a resource'; at beat 1 it
+   argues about which side it is on". That argument is true of the three OUTSIDE
+   labels and only of them — they exist to say "on the other side of the line",
+   which needs the line. It is not true of this one: a resource NAME is not a
+   management state, so beat 0's deliberately uniform field gives nothing away,
+   and naming the subject early buys the opening its only piece of text.
+   The old timing had `payment-demo · Cloud Run` starting its fade at 4700ms
+   (beat 1 + 1500), ~2.4s after the last square finished blooming at 2340ms.
+   That gap is what the operator saw as lag on first viewing.
+   Fades 300-820ms, against the subject's own bloom (--d 72ms + 620ms = 692ms). */
+body[data-beat="0"] .mklbl.inlbl{opacity:1; transition-delay:300ms}
+/* the three OUTSIDE labels arrive AFTER the line has drawn (1.5s) — see above */
 body[data-beat="1"] .mklbl{opacity:1; transition-delay:calc(1500ms + var(--ls,0ms))}
 /* beat 6: the outside is the subject, so the outside keeps its names and the
    inside one has said its piece. The target is brought up to full ink. */
@@ -651,7 +707,12 @@ body[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0;
    that keeps this reading as "belongs there, isn't there" instead of "belongs
    nowhere", which is the undefined state's job, not this one's). Marches with
    the same @keyframes as the boundary's own dashed proposal (.bd .bprop) —
-   one "in flight, not yet settled" vocabulary for both. */
+   one "in flight, not yet settled" vocabulary for both.
+   Drawn EDGE TO EDGE, not centre to centre: .links paints above #field, so a
+   centre-to-centre line runs across the face of both the recessed hole and the
+   raised peg. At 1.55x with a drop shadow on the peg that reads as a line
+   THROUGH the square rather than the gap between two things. Endpoints are the
+   two edges along the displacement heading, +4px of air. */
 .teth{
   fill:none; stroke:var(--amber); stroke-width:2; stroke-linecap:round;
   stroke-dasharray:4 5; opacity:0; transition:opacity 400ms ease;
@@ -660,23 +721,27 @@ body[data-beat="2"] .teth,
 body[data-beat="3"] .teth,
 body[data-beat="4"] .teth{opacity:.85; animation:march 1.6s linear infinite}
 /* ⚠ must NOT fade at beat 5's onset (0ms) — the mark/socket re-seat is itself
-   delayed to 1800ms (see .mk.subj / .sock.subj), so an un-delayed fade here
-   left the socket lit-but-untethered for ~1.4s, an invariant-2 violation
-   (Codex review, 2026-08-03). Fades on the SAME delay, so the tether is gone
-   only once the resident is actually on its way back. */
-body[data-beat="5"] .teth{opacity:0; transition-delay:1800ms}
+   delayed (see .mk.subj / .sock.subj), so an un-delayed fade here left the
+   socket lit-but-untethered for over a second, an invariant-2 violation (Codex
+   review, 2026-08-03). Fades on the SAME delay, so the tether is gone only once
+   the resident is actually on its way back. All three moved 1800 -> 2650ms with
+   the beat-5 retime; they must keep moving together. */
+body[data-beat="5"] .teth{opacity:0; transition-delay:2650ms}
 
 /* the ripple — the Eventarc event itself, travelling from the displaced
    SQUARE to the watcher that will react to it (build plan §3 beat 2: "a
    ripple travels square -> 見張る側 badge" — literally the square, not the
    socket it vacated; positioned at the mark's displaced centre, world
-   (690,554) = INSIDE[SUBJ] (600,578) + the .mk.subj beat-2 transform
-   (90,-24). Fixed 2026-08-03, Codex review: this used to start from the
+   (755,537) = INSIDE[SUBJ] (600,578) + the .mk.subj beat-2 transform
+   (155,-41). Fixed 2026-08-03, Codex review: this used to start from the
    socket's un-displaced position). One-shot; its settled end state is simply
    gone, same shape as the ring at beat 7 (§5 trap 5) — no ?hold= restatement
-   needed, the base opacity:0 already is that state. */
+   needed, the base opacity:0 already is that state.
+   ⚠ Both this position AND the keyframe's end offset are derived from that
+   displacement. It was widened 90->155px in the fix-forward round; anything
+   that moves it again has to move these two numbers and .teth and .lnk-lead. */
 .ripple{
-  position:absolute; left:684px; top:548px; width:12px; height:12px;
+  position:absolute; left:749px; top:531px; width:12px; height:12px;
   border-radius:50%; background:var(--crew-anchor); opacity:0; pointer-events:none;
   box-shadow:0 0 0 3px rgba(31,111,235,.22);
 }
@@ -687,10 +752,15 @@ body[data-beat="2"] .ripple{
   0%{opacity:0; transform:translate(0,0) scale(.6)}
   14%{opacity:1; transform:translate(0,0) scale(1)}
   82%{opacity:1}
-  100%{opacity:0; transform:translate(-385px,-211px) scale(.65)}
+  100%{opacity:0; transform:translate(-450px,-195px) scale(.65)}
 }
 
-/* refused reach: marches out, stops short of the gate, then greys.
+/* refused reach: marches out toward the LOCK, is stopped short of it, withdraws.
+   RETARGETED 2026-08-04 (fix-forward plan §E). It used to end at (906,394), a
+   point in open space beside the gate, which reads as "Anchor cannot reach the
+   worker" — false, and not the claim: Anchor proposes to the worker routinely.
+   What it cannot get is the KEY. So the reach now aims at the padlock in the
+   gate header (world ~984,490) and is stopped ~66px short of it.
    ⚠ This is a DOTTED stroke, so animating stroke-dashoffset marches the dots
    along a fully-present line — it does not draw progressively and it cannot
    retract the endpoint. The recoil therefore lives in .lnk-tip, which is the
@@ -700,24 +770,48 @@ body[data-beat="2"] .ripple{
   stroke-dasharray:7 6; stroke-dashoffset:0; opacity:0;
   transition:opacity 500ms ease, stroke 700ms ease;
 }
-body[data-beat="4"] .lnk-blocked,
-body[data-beat="5"] .lnk-blocked{opacity:1; animation:reach 900ms cubic-bezier(.4,0,.25,1) 250ms backwards}
+body[data-beat="4"] .lnk-blocked{opacity:1; animation:reach 900ms cubic-bezier(.4,0,.25,1) 250ms backwards}
 @keyframes reach{from{stroke-dashoffset:420} to{stroke-dashoffset:0}}
-/* it greys the moment the refusal lands */
-body[data-beat="4"] .lnk-blocked,
-body[data-beat="4"] .lnk-tip{stroke:var(--muted); transition-delay:1450ms}
-body[data-beat="5"] .lnk-blocked,
-body[data-beat="5"] .lnk-tip{stroke:var(--muted); opacity:.45}
+/* it greys the moment the refusal lands.
+   ⚠ TWO delays, one per transitioned property, and that is the entire point:
+   `transition-delay:1450ms` with no property list applied to OPACITY as well, so
+   the line stayed transparent until 1450ms while its own `reach` ran 250-1150ms
+   and the tip's `tipjab` ran 1000-1560ms. Measured live 2026-08-04: at beat4+1300
+   the line was at opacity 0 while the x was already at 0.15 — the x appeared out
+   of nothing and THEN grew a tail, and the recoil this file has carried since the
+   punch-list round had never once been visible.
+   Every other bare transition-delay in this file was audited 2026-08-04 and all
+   of them are safe — either the element transitions one property, or every
+   property it transitions is meant to share the delay, or the extra properties
+   do not change across that beat boundary. This was the only instance. Re-run
+   that audit if you add a property to any transition list, because a delay that
+   was correct becomes a bug the moment the list grows under it. */
+body[data-beat="4"] .lnk-blocked{stroke:var(--muted); transition-delay:0ms, 1450ms}
+/* the tip fades up as it extends (900ms, just under the jab) rather than sitting
+   present-but-retracted, which would double the stroke over the reach's own tail */
+body[data-beat="4"] .lnk-tip{stroke:var(--muted); transition-delay:900ms, 1450ms}
 /* the jab: extends to the contact point, is stopped, and settles ~9px short.
-   The residual gap between the tip and the x IS the refusal. */
-body[data-beat="4"] .lnk-tip{opacity:1; transform:translate(-6.4px,-6.3px);
+   The residual gap between the tip and the x IS the refusal (invariant: the
+   refusal must not touch its target). Offsets run along the curve's END TANGENT
+   — (13,15.2) normalised = (.65,.76) — so the tip retracts back along itself
+   rather than diagonally off it, which the old 45° offsets assumed. */
+body[data-beat="4"] .lnk-tip{opacity:1; transform:translate(-5.9px,-6.8px);
   animation:tipjab 560ms cubic-bezier(.3,0,.2,1) 1000ms backwards}
-body[data-beat="5"] .lnk-tip{transform:translate(-6.4px,-6.3px)}
 @keyframes tipjab{
-  0%{transform:translate(-35.3px,-34.4px)}
+  0%{transform:translate(-38.5px,-45px)}
   46%{transform:translate(0,0)}
-  72%{transform:translate(-9.3px,-9.1px)}
-  100%{transform:translate(-6.4px,-6.3px)}
+  72%{transform:translate(-8.5px,-9.9px)}
+  100%{transform:translate(-5.9px,-6.8px)}
+}
+/* the padlock RATTLES at the contact instant (1000+.46*560 = 1258ms, the same
+   instant the x pops). "It cannot be opened", said by the lock itself, in the
+   header where the key will be placed one beat later. */
+body[data-beat="4"] .gate .lock{animation:lockshake 240ms ease-in-out 1258ms 1 both}
+@keyframes lockshake{
+  0%,100%{transform:translateX(0)}
+  22%{transform:translateX(-2.6px)}
+  48%{transform:translateX(2.6px)}
+  74%{transform:translateX(-1.5px)}
 }
 /* the refusal itself. Two strokes, hand-drawn correction mark.
    Ink, deliberately: --seal is the one 判子 and is spent at beat 5, and --red
@@ -729,61 +823,151 @@ body[data-beat="5"] .lnk-tip{transform:translate(-6.4px,-6.3px)}
 body[data-beat="4"] .stopx{opacity:1;
   animation:xpop 300ms cubic-bezier(.3,1.6,.4,1) 1258ms backwards}
 @keyframes xpop{from{opacity:0; transform:scale(.35) rotate(-14deg)} to{opacity:1; transform:none}}
-body[data-beat="5"] .stopx{opacity:.5}
+/* ...and it says what it means. 鍵は出せない, NOT 拒否 / "rejected": rejected
+   says Anchor asked and was told no, when the truth is stronger — there is no
+   code path by which it could have succeeded (agent/main.py). 出せない is
+   caption E's own verb, so the mark at the top and the caption at the bottom
+   reinforce each other instead of competing for a 3.9s beat.
+   ⚠ Do NOT stack a shake on the x as well: xpop already overshoots
+   (cubic-bezier(.3,1.6,.4,1), scale .35 -> 1) and the lock is already rattling. */
+.xlbl{
+  position:absolute; left:912px; top:466px; transform:translateX(-100%);
+  font-family:var(--ui); font-weight:700; font-size:17px; letter-spacing:.04em;
+  color:var(--muted); white-space:nowrap; opacity:0;
+  background:var(--bg); padding:2px 7px; border-radius:5px;
+  transition:opacity 380ms ease;
+}
+body[data-beat="4"] .xlbl{opacity:1; transition-delay:1620ms}
+/* beat 5 — Anchor's refused reach WITHDRAWS, x and label with it. It used to
+   grey and linger at opacity .45/.5, so a dead x and a live navy line shared the
+   frame with the approval; the reach animation also silently RE-RAN at beat 5,
+   marching the dots a second time. All of it is gone before the key lands. */
+body[data-beat="5"] .lnk-blocked,
+body[data-beat="5"] .lnk-tip,
+body[data-beat="5"] .stopx,
+body[data-beat="5"] .xlbl{opacity:0; transition-delay:0ms}
+body[data-beat="5"] .lnk-tip{transform:translate(-5.9px,-6.8px)}
 
-/* The key MATERIALIZES ON THE LOCK. It used to start beside the 実行側 badge and
-   fly here, with a link drawn between the two — which read as the worker handing
-   the agent a credential, i.e. machine-to-machine authorization, the exact
-   opposite of the claim. Screen story now: the key exists only at the gate, and
-   only the human turns it.
-   This is VISUAL STAGING, not a provenance claim. Architecturally the acting
-   worker still mints the token (workers/rollback/main.py:718) and the header
-   accuracy note above is unchanged; the worker's job on screen is the hands
-   (see .lnk-act), not the key.
-   It sits after the gate in the DOM so it lands on top of the card. */
+/* =======================================================================
+   BEAT 5 — WHO OPENS THE LOCK. Three parties, in this order, and the ORDER
+   is the argument:
+     0-900     実行側 extends to the lock, PLACES the key, and WITHDRAWS.
+               The key sits there unturned.
+     900-1520  the 判子 lands, ALONE — nothing else on screen moves.
+     1520-1800 the key turns.
+     1750-1980 the shackle lifts. The lock is open.
+     2000-2650 the credential crumbles; single-use, spent.
+     2000-2650 実行側 extends again, this time to the square.
+     2650-3350 the square re-seats.
+   Proposer cannot, minter will not, human does.
+
+   THE WITHDRAWAL AT ~900ms IS THE MOST VALUABLE GESTURE IN THE PIECE. It is
+   the only moment that says the party who minted the credential does not get
+   to spend it, and until 2026-08-04 nothing on screen said it: the key simply
+   materialized on the lock (glossed in-source as "VISUAL STAGING, not a
+   provenance claim"), never turned, and the padlock never opened at all. Three
+   gestures were paid for and none of them fired.
+
+   Two invariants bound this staging; neither may be traded away.
+     - THE KEY NEVER TRAVELS AGENT -> AGENT. Worker -> LOCK only. The retired
+       "key flies from the 実行側 badge to the gate, link drawn between them"
+       read as the worker handing the agent a credential, i.e.
+       machine-to-machine authorization, the exact inverse of the claim.
+       Worker -> lock is also the TRUE provenance (the acting worker mints the
+       token, workers/rollback/main.py:718), which is why it is safe to draw.
+     - WHATEVER OPENS THE LOCK IS THE AUTHORITY THE AUDIENCE REMEMBERS. So the
+       key is placed UNTURNED and turns only after the stamp. A key that opens
+       the lock by itself makes the human decoration.
+   ======================================================================= */
+/* the worker's hand: extend, hold while the key is set down, retract. ONE
+   animation on stroke-dashoffset does all three — with dasharray = the path
+   length, offset L->0 draws from the badge end forward and 0->L retracts from
+   the TIP back, which is a withdrawal rather than a fade. --kl is measured in
+   JS with getTotalLength(), same as the ring: a hand-typed length that is
+   longer than the path leaves dead time at both ends of the gesture. */
+.lnk-key{
+  fill:none; stroke:var(--navy); stroke-width:2.5; stroke-linecap:round;
+  stroke-dasharray:var(--kl,132px); stroke-dashoffset:var(--kl,132px); opacity:0;
+}
+body[data-beat="5"] .lnk-key{opacity:.85;
+  animation:keyreach 900ms cubic-bezier(.4,0,.25,1) both}
+@keyframes keyreach{
+  0%{stroke-dashoffset:var(--kl,132px)}
+  40%,62%{stroke-dashoffset:0}
+  100%{stroke-dashoffset:var(--kl,132px)}
+}
+
+/* The key. ONE animation for the whole beat, not three — `keyset` + `keyturn` +
+   `keycrumble` as separate declarations cannot work, because a later animation
+   with fill-mode both/backwards applies its 0% keyframe from t=0 and silently
+   outranks the earlier ones on the same property. So the life of the key is a
+   single timeline and the percentages below are that timeline in ms/2650. */
 .key{
-  position:absolute; left:967px; top:473px; width:34px; height:34px; opacity:0;
+  position:absolute; left:960px; top:478px; width:30px; height:30px; opacity:0;
   color:var(--navy); z-index:6;
+  /* pivot on the key's TIP (19.5/24 of the box = 24.4px), so the turn rotates it
+     IN the lock instead of orbiting the whole glyph around its own middle — and
+     so the placement at 300ms lands tip-first */
+  transform-origin:24.4px 24.4px;
   /* paper halo so it reads as an object landing ON the header, not a stray icon */
   filter:drop-shadow(0 0 5px rgba(251,250,248,.95)) drop-shadow(0 0 2px rgba(251,250,248,1));
 }
 .key svg{width:100%; height:100%; display:block}
-body[data-beat="4"] .key{animation:keyset 520ms cubic-bezier(.3,1.35,.45,1) 1700ms both}
-@keyframes keyset{
-  0%{opacity:0; transform:rotate(-14deg) scale(1.9)}
-  60%{opacity:1; transform:rotate(-14deg) scale(.96)}
-  100%{opacity:1; transform:rotate(-14deg) scale(1)}
+body[data-beat="5"] .key{animation:keylife 2650ms linear both}
+@keyframes keylife{
+  /* placed, tip first, while the worker's line is at full extension */
+  0%,11.3%{opacity:0; transform:rotate(-14deg) scale(1.9);
+    animation-timing-function:cubic-bezier(.3,1.35,.45,1)}
+  17%{opacity:1; transform:rotate(-14deg) scale(.94);
+    animation-timing-function:cubic-bezier(.3,1.35,.45,1)}
+  /* UNTURNED, and held that way across the whole 判子 — this stillness is the
+     point of the beat, not dead air in it */
+  25.7%,57.4%{opacity:1; transform:rotate(-14deg) scale(1);
+    animation-timing-function:cubic-bezier(.35,1.4,.5,1)}
+  /* the turn, AFTER the stamp */
+  67.9%,75.5%{opacity:1; transform:rotate(20deg) scale(1);
+    animation-timing-function:cubic-bezier(.4,0,.7,1)}
+  /* spent once: a single-use, 15-minute credential does not linger once it has
+     turned the lock (design §5 made literal) */
+  85%{opacity:1; transform:rotate(38deg) scale(1.05)}
+  100%{opacity:0; transform:rotate(58deg) scale(.5) translateY(12px)}
 }
-/* CRUMBLES after the stamp lands (500+620=1120ms; starts at 1200ms, a beat
-   after) — design §5's "spent once" made literal. A single-use, 15-minute
-   credential does not linger once it has turned the lock; it is gone by the
-   time beat 5 settles, same as .stopx and the stamp are already still. */
-body[data-beat="5"] .key{
-  animation:keycrumble 650ms cubic-bezier(.4,0,.7,1) 1200ms both;
-}
-@keyframes keycrumble{
-  0%{opacity:1; transform:rotate(-14deg) scale(1)}
-  35%{opacity:1; transform:rotate(8deg) scale(1.05)}
-  100%{opacity:0; transform:rotate(30deg) scale(.5) translateY(12px)}
+
+/* the shackle LIFTS — the one thing this icon has never done. Rotated about its
+   right foot (transform-box:fill-box + origin 100% 100%) rather than merely
+   translated: a padlock opens by swinging, and a 4px lift on a 32px icon reads
+   as a rendering artefact where a 20° swing reads as open.
+   ⚠ .lock carries overflow:visible for this — the shackle's top passes just
+   above the 0 0 24 24 viewBox mid-swing and an SVG root clips by default. */
+.gate .lock .shackle{transform-box:fill-box; transform-origin:100% 100%}
+body[data-beat="5"] .gate .lock .shackle{
+  animation:unshackle 230ms cubic-bezier(.3,1.3,.5,1) 1750ms both}
+@keyframes unshackle{
+  0%{transform:translateY(0) rotate(0deg)}
+  100%{transform:translateY(-1.6px) rotate(20deg)}
 }
 
 /* THE EXECUTION — the 実行側 badge keeps its job, it just is not the source of
-   the key. Anchored to the END of the stamp (500+620=1120ms), so approval
-   visibly completes before anything moves, and it now targets the SQUARE'S
-   re-seat point directly (the .mk.subj mark is on screen the whole time under
-   the socket rework — see build plan §5 trap 1 — where it used to be hidden
-   and this link pointed at the actual-state card instead). It draws to a close
-   at 1150+650=1800ms, the exact instant the mark's own re-seat transition-delay
-   fires, so the touch and the return happen in the same beat. Solid navy: this
-   is a fact being applied, not a proposal. */
+   the authority. Anchored AFTER the lock is open (the shackle finishes at
+   1980ms), so approval visibly completes before anything moves, and it targets
+   the SQUARE'S re-seat point directly. It draws to a close at 2000+650=2650ms,
+   the exact instant the mark's own re-seat transition-delay fires, so the touch
+   and the return happen in the same beat. Solid navy: this is a fact being
+   applied, not a proposal. */
+/* ⚠ --al is MEASURED in JS. It used to be a hand-typed 330 against a path that
+   is really 468 long, so the last 138px of the curve — the stretch that arrives
+   at the square — was drawn through the whole `backwards` fill, i.e. a navy line
+   already touching the resource before the human had approved anything. The bug
+   predates the fix-forward round and was merely less visible when the delay was
+   1150ms; a dasharray that has to cover a path must be measured, not guessed. */
 .lnk-act{
   fill:none; stroke:var(--navy); stroke-width:2.5; stroke-linecap:round;
-  stroke-dasharray:330; stroke-dashoffset:330; opacity:0;
+  stroke-dasharray:var(--al,470px); stroke-dashoffset:var(--al,470px); opacity:0;
   transition:opacity 400ms ease;
 }
 body[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0;
-  animation:actdraw 650ms cubic-bezier(.4,0,.25,1) 1150ms backwards}
-@keyframes actdraw{from{stroke-dashoffset:330} to{stroke-dashoffset:0}}
+  animation:actdraw 650ms cubic-bezier(.4,0,.25,1) 2000ms backwards}
+@keyframes actdraw{from{stroke-dashoffset:var(--al,470px)} to{stroke-dashoffset:0}}
 
 /* --- the approval gate --------------------------------------------------- */
 .gate{
@@ -795,30 +979,43 @@ body[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0;
 }
 body[data-beat="4"] .gate,
 body[data-beat="5"] .gate{opacity:1; transform:none}
-/* the gate turns over WITH the 判子 (which lands at 500+620=1120ms), not the
-   instant the beat opens */
-body[data-beat="5"] .gate{border-color:var(--green-border); transition-delay:900ms}
+/* the gate turns over WITH the 判子 (which now lands at 900+620=1520ms), not the
+   instant the beat opens. Retimed with the rest of beat 5 — see .lnk-key. */
+body[data-beat="5"] .gate{border-color:var(--green-border); transition-delay:1520ms}
 .gate .ghead{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
   padding:11px 15px; background:var(--amber-surface); border-bottom:1px solid var(--amber-border);
   transition:background var(--move), border-color var(--move);
 }
 body[data-beat="5"] .gate .ghead{background:var(--green-surface);
-  border-bottom-color:var(--green-border); transition-delay:900ms}
+  border-bottom-color:var(--green-border); transition-delay:1520ms}
 .gate .gt{display:flex; align-items:center; gap:9px;
   font-family:var(--ui); font-weight:700; font-size:17px; color:var(--amber-ink);
   transition:color var(--move)}
-body[data-beat="5"] .gate .gt{color:var(--green-ink); transition-delay:900ms}
-.gate .gt svg{width:1em; height:1em; flex:none}
+body[data-beat="5"] .gate .gt{color:var(--green-ink); transition-delay:1520ms}
+/* 1.9em, not 1em. At 1em the padlock was ~17 world px — about 25 screen px at
+   beat 5's scale(1.45) — which is large enough to be an icon and far too small
+   to be a thing that visibly OPENS. The beat turns on watching it open. */
+.gate .gt svg{width:1.9em; height:1.9em; flex:none; overflow:visible}
 .gate .gbadge{font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--amber-ink);
   border:1px solid var(--amber-border); border-radius:999px; padding:3px 9px; white-space:nowrap}
 .gate .gbody{padding:14px 15px 15px; position:relative}
 .gate .gsvc{font-family:var(--mono); font-size:13px; color:var(--muted); margin-bottom:9px}
-.gate .gchange{display:flex; align-items:center; gap:10px; font-family:var(--mono);
-  font-size:21px; font-weight:700; margin-bottom:12px}
-.gate .gchange .from{color:var(--red)}
-.gate .gchange .ar{color:var(--faint); font-weight:400}
-.gate .gchange .to{color:var(--green-ink)}
+/* DE-TEXTED 2026-08-04 (fix-forward plan §3, operator complaint 2 of 4). This
+   line used to read `live -> mock` in 21px mono. With the beat-2 実際 card
+   deleted, that made the gate the last surviving string diff in the piece — and
+   it arrived with less setup than it used to have, while putting the drifted
+   value back on screen after the socket grammar had been adopted precisely so
+   the piece would stop showing it. It now shows the DEFINED value exactly once
+   (the beat-2 HCL card) and the drifted value never, because the displaced
+   square IS the drifted state. The approval is no less accurate: a human
+   approves a rollback to the defined value, and the specifics stay one line
+   above in small mono, the same demotion `HMAC 署名付き` already gets.
+   ⚠ var(--ui), not var(--mono): JetBrains Mono has no kana, so Japanese set in
+   it silently falls back mid-line. To restore the diff, put the three spans
+   back in the markup and give this rule mono + a flex row again. */
+.gate .gchange{font-family:var(--ui); font-size:22px; font-weight:700;
+  color:var(--ink); margin-bottom:12px}
 /* The three properties of the credential, stated without cryptographic
    vocabulary. max-width reserves the right gutter for the 判子 — without it the
    stamp lands on top of the third pill. */
@@ -832,20 +1029,43 @@ body[data-beat="5"] .gate .gt{color:var(--green-ink); transition-delay:900ms}
   font-family:var(--ui); font-weight:700; font-size:16px; color:#fff; background:var(--navy);
   border-radius:9px; padding:9px 22px; transition:opacity 300ms ease;
 }
-body[data-beat="5"] .gate .gbtn{opacity:0; transition-delay:380ms}
-/* 判子 — the only vermilion in the piece */
+/* the button goes as the stamp lands on it, not 500ms before */
+body[data-beat="5"] .gate .gbtn{opacity:0; transition-delay:900ms}
+/* 判子 — the only vermilion in the piece.
+   MOVED OUT OF THE CARD (2026-08-04). It used to be `right:12px; bottom:16px`
+   inside .gbody — tucked into the corner of a card that carries overflow:hidden,
+   so it read as a widget the interface produced rather than an act a person
+   performed, and it could not have broken the card's edge even if asked to. It
+   is now a world-positioned SIBLING of .gate that overlaps the card and hangs
+   ~40px off its right edge. Things that come from inside a card obey the card;
+   things that come from outside do not, and that overlap is most of the
+   difference between "the UI showed a badge" and "a person pressed this".
+   Three things already made this the human's gesture and are worth not
+   breaking: --seal is reserved to it alone; it descends toward the paper from
+   above the plane instead of travelling out of a labelled box, so it is the one
+   element with no crew; and caption F's 人 fires in the same second. What
+   defeated all three was staging, not vocabulary.
+   The -9deg stays, and now so does a little ink: everything else in this world
+   is geometrically derived — a computed blob, exact sockets, measured béziers —
+   and the only crooked thing in a precise world is the human. multiply so the
+   vermilion reads as ink absorbed by paper rather than a shape stacked on it. */
 .stamp{
-  position:absolute; right:12px; bottom:16px; width:92px; height:92px; border-radius:50%;
+  position:absolute; left:1284px; top:626px; width:92px; height:92px; border-radius:50%;
   border:4px solid var(--seal); color:var(--seal);
   display:grid; place-items:center; text-align:center; line-height:1.15;
   font-family:var(--mincho); font-weight:900; font-size:26px; letter-spacing:.06em;
   opacity:0; transform:rotate(-9deg) scale(2.1);
+  mix-blend-mode:multiply; z-index:7;
 }
-body[data-beat="5"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 500ms both}
+/* lands ALONE at 900ms: the worker's line has withdrawn, the key is sitting
+   unturned and does not move for another 620ms, and nothing else on screen is
+   animating. That stillness IS the beat — it is what makes the stamp the cause
+   of everything after it rather than one more event in a queue. */
+body[data-beat="5"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 900ms both}
 @keyframes stampin{
-  0%{opacity:0; transform:rotate(-9deg) scale(2.1)}
-  55%{opacity:1; transform:rotate(-9deg) scale(.94)}
-  100%{opacity:1; transform:rotate(-9deg) scale(1)}
+  0%{opacity:0; transform:rotate(-9deg) scale(2.1); filter:blur(2.5px)}
+  55%{opacity:1; transform:rotate(-9deg) scale(.94); filter:blur(0)}
+  100%{opacity:1; transform:rotate(-9deg) scale(1); filter:blur(0)}
 }
 
 /* =======================================================================
@@ -897,26 +1117,41 @@ body[data-beat="7"] .tf{opacity:1; transform:none}
    overlay appended AFTER .tf.
    ⚠ It is NOT a morph into .bprop. .bprop is the entire grown blob drawn
    over the coincident base one, not a lobe — there is no lobe path to morph
-   into. The handoff is a RHYME: the ring rises and fades while the lobe
-   grows out beneath it, both navy, both moving toward the same mark.
+   into. That handoff stays a RHYME: the ring travels while the lobe grows out
+   beneath it, both navy, both moving toward the same mark.
+   ⚠ But the ring -> SOCKET handoff is NOT a rhyme any more, and must not go
+   back to being one. The ring lands ON the resource and becomes the outline it
+   sits in — same element, same path, lerped point-for-point (ringLand()). It
+   never fades, and nothing fades in underneath it.
    ======================================================================= */
 .ovl{position:absolute; inset:0; overflow:visible; pointer-events:none; z-index:7}
 .ring{
   fill:none; stroke:var(--navy); stroke-width:3; stroke-linecap:round; opacity:0;
   transform-box:fill-box; transform-origin:center;
+  transition:stroke-width 900ms cubic-bezier(.4,0,.25,1), opacity 300ms ease;
 }
 body.ring-draw .ring{opacity:.95; animation:ringdraw 460ms cubic-bezier(.35,0,.2,1) backwards}
 @keyframes ringdraw{from{stroke-dashoffset:var(--rl,900px)} to{stroke-dashoffset:0}}
-/* end state is opacity 0, which the base rule already owns, so `backwards` is
-   enough — the transform it leaves behind is on an invisible element */
-body.ring-lift .ring{opacity:0; animation:ringlift 900ms cubic-bezier(.3,0,.25,1) backwards}
-/* it CONTRACTS as it travels, so it lands at roughly the size and place of the
-   lobe now growing out of the boundary. Scaling UP (1.5x) smeared a 990px oval
-   across the whole frame and read as a sweep, not a hand-off. */
-@keyframes ringlift{
-  0%{opacity:.95; transform:none}
-  55%{opacity:.55}
-  100%{opacity:0; transform:translate(var(--lx,0px),var(--ly,0px)) scale(.55)}
+/* travelling: a pen stroke thinning toward the weight of a socket outline. The
+   geometry is driven from JS; only the WEIGHT is CSS, because 3px -> 1.6px is
+   the one part of "a drawn circle becomes a printed socket" that a transition
+   can carry on its own. */
+body.ring-land .ring{opacity:.95; stroke-width:1.6}
+/* landed. DASHED, because it is still only a proposal — Provision opens a PR,
+   it does not apply (docs/OVERVIEW.md:101), and invariant 3 says only this one
+   outline is legitimately dashed-then-solid.
+   ⚠ ringLand() clears the INLINE stroke-dasharray that ringClose() set for the
+   draw-on; an inline value would outrank this rule and the socket would land
+   solid, silently erasing the distinction §4 rests on. */
+body.ring-landed .ring{opacity:.92; stroke-width:1.6; stroke-dasharray:6 5}
+/* beat 8 — the human approves and it snaps SOLID in the same instant as the
+   lobe. Gated on `boundary-committed`, NOT [data-beat="8"]: the attribute flips
+   at the beat mark but commitBoundary() runs off its own +100ms timer, and
+   gating the two on different triggers made "one instant" into two (Codex
+   review, 2026-08-03). drop-shadow, not box-shadow — this is an SVG path now. */
+body.boundary-committed .ring{
+  opacity:1; stroke-dasharray:none; stroke-width:2;
+  filter:drop-shadow(0 0 5px rgba(14,27,95,.34));
 }
 
 /* =======================================================================
@@ -1048,19 +1283,29 @@ body.no-anim[data-beat="3"] .prop,
 body.no-anim[data-beat="4"] .prop,
 body.no-anim[data-beat="5"] .prop{opacity:1; transform:none}
 body.no-anim[data-beat="2"] .lnk-lead{opacity:.9; stroke-dashoffset:0}
-body.no-anim[data-beat="4"] .lnk-blocked,
-body.no-anim[data-beat="5"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
+body.no-anim[data-beat="4"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
 /* the tip's SETTLED (recoiled) position — without this the hold frame shows it
    fully extended and touching the x, i.e. a refusal that never recoiled */
-body.no-anim[data-beat="4"] .lnk-tip{opacity:1; stroke:var(--muted); transform:translate(-6.4px,-6.3px)}
-body.no-anim[data-beat="5"] .lnk-tip{opacity:.45; stroke:var(--muted); transform:translate(-6.4px,-6.3px)}
+body.no-anim[data-beat="4"] .lnk-tip{opacity:1; stroke:var(--muted); transform:translate(-5.9px,-6.8px)}
 body.no-anim[data-beat="4"] .stopx{opacity:1; transform:none}
-body.no-anim[data-beat="5"] .stopx{opacity:.5; transform:none}
+body.no-anim[data-beat="4"] .xlbl{opacity:1}
+/* beat 5's settled state for all four of those is ABSENCE — the reach withdraws
+   and the x and its label go with it — and the base rules already own opacity:0,
+   so no restatement is needed (same shape as the ring, the ripple and the
+   crumbled key: a one-shot gesture's end state is that it is gone). */
 body.no-anim[data-beat="5"] .lnk-act{opacity:.85; stroke-dashoffset:0}
-body.no-anim[data-beat="4"] .key{opacity:1; transform:rotate(-14deg)}
-/* beat 5's settled state is crumbled, i.e. gone — the base .key opacity:0
-   already IS that state, so no restatement needed here (same shape as the
-   ring and the ripple: the one-shot gesture's end state is absence) */
+/* THE LOCK IS OPEN at the end of beat 5 and an animation delivers that, so hold
+   mode has to restate it or every static frame shows a padlock that shut again.
+   ⚠ this is the trap the .stopx/.lnk-tip block above already documents, and it
+   is now the second thing in this file whose beat-5 end state exists only
+   inside a keyframe. */
+body.no-anim[data-beat="5"] .gate .lock .shackle{transform:translateY(-1.6px) rotate(20deg)}
+/* beat 4 no longer has a key at all — the worker brings it at beat 5 (see the
+   BEAT 5 block), and its absence during the refusal is the point. Beat 5's own
+   settled state is crumbled, i.e. gone, and the base .key opacity:0 already IS
+   that state (same shape as the ring, the ripple and the withdrawn reach: a
+   one-shot gesture's end state is absence). Neither needs a rule.
+   .lnk-key likewise settles fully retracted, which the base dashoffset owns. */
 body.no-anim[data-beat="5"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
 /* the beat-5 re-seat (.mk.subj transform, .sock.subj opacity/border) is
    transition-delayed to 1800ms; no-anim kills the transition so the end state
@@ -1068,12 +1313,12 @@ body.no-anim[data-beat="5"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
 body.no-anim .tf .caret{opacity:0}
 body.no-anim[data-beat="7"] .tf .impblock,
 body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
-/* THE RING IS ABSENT IN HOLD MODE, ON PURPOSE. Its settled state at the end of
-   beat 7 is "gone" — it lifts off and fades — so a hold frame showing a ring
-   would show a moment beat 7 never ends on. It is the one gesture in this file
-   that ?hold= cannot review; check it in playback (see NOTES.md). No rule is
-   needed: the base .ring opacity is already 0 and JS never sets its path in
-   hold mode.
+/* THE RING IS PRESENT IN HOLD MODE NOW, and that is a change: its settled state
+   at the end of beat 7 used to be "gone" (it lifted off and faded), so a hold
+   frame showing it would have shown a moment beat 7 never ends on. Since it
+   lands AS the socket, the settled state is the socket — drawn by the hold
+   branch in JS, which sets the path and adds .ring-landed. What ?hold= still
+   cannot review is its TRAVEL; check that in playback (see NOTES.md).
    The micro-labels need no restatement either — they are transitions, not
    animations, so killing the transition still leaves the beat cascade's opacity. */
 </style>
@@ -1127,22 +1372,34 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
                         actually on its way back, not just until the beat
                         changes).
            - lnk-blocked + lnk-tip: ONE cubic, split at t=0.90 by de Casteljau, so
-             the tip is genuinely the last 49px of the reach and can be moved
-             independently. Original: M430 342 C 570 258, 800 268, 906 394.
+             the tip is genuinely the last ~59px of the reach and can be moved
+             independently. Original: M430 342 C 580 260, 800 300, 930 452 —
+             retargeted 2026-08-04 from the old ...906 394 (open space beside the
+             gate) to a point ~66px short of the header padlock at (984,490), so
+             what the reach is denied is legibly the KEY. See .lnk-blocked.
            - stopx: the two arms of the refusal x, centred on the contact point.
-           - lnk-act   beat 5: the 実行側 worker -> the square's re-seat point.
-             Routed left of the gate (x < 960 by the time it is level with the
-             gate's top) and it enters the boundary near the end, which is
+           - lnk-key   beat 5, 0-900ms: the 実行側 worker -> the LOCK, where it
+             sets the key down and then withdraws. It ends at the key's bow, not
+             at the padlock body, because what the hand is holding is the key.
+             Never draw this to another BADGE (see .lnk-key's invariants).
+           - lnk-act   beat 5, 2000ms: the 実行側 worker -> the square's re-seat
+             point. Routed left of the gate (x < 960 by the time it is level with
+             the gate's top) and it enters the boundary near the end, which is
              correct: the worker is outside the line, the resource is inside it. -->
       <svg class="links" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
-        <path class="lnk-lead" d="M940 520 C 858 538, 778 548, 700 552"></path>
-        <path class="teth" d="M600 578 L690 554"></path>
-        <path class="lnk-blocked" d="M430 342 C 556 266.4, 754.9 266.94, 870.69 359.66"></path>
-        <path class="lnk-tip" d="M870.69 359.66 C 883.56 369.96, 895.4 381.4, 906 394"></path>
-        <line class="stopx" x1="893.8" y1="404.3" x2="918.2" y2="383.7"></line>
-        <line class="stopx" x1="895.7" y1="381.8" x2="916.3" y2="406.2"></line>
+        <path class="lnk-lead" d="M940 520 C 890 528, 840 536, 776 538"></path>
+        <path class="teth" d="M626 571 L736 542"></path>
+        <path class="lnk-blocked" d="M430 342 C 565 268.2, 756.7 293.22, 888.46 409.77"></path>
+        <path class="lnk-tip" d="M888.46 409.77 C 903.1 422.72, 917 436.8, 930 452"></path>
+        <line class="stopx" x1="917.8" y1="462.3" x2="942.2" y2="441.7"></line>
+        <line class="stopx" x1="919.7" y1="439.8" x2="940.3" y2="464.2"></line>
+        <path class="lnk-key" d="M1030 368 C 1014 404, 990 440, 968 484"></path>
         <path class="lnk-act" d="M1030 366 C 950 424, 800 512, 615 580"></path>
       </svg>
+
+      <!-- what the x MEANS, beside it. Right-aligned so it ends at x=912, i.e.
+           clear of the gate card's left edge (960) at every beat-4/5 framing. -->
+      <div class="xlbl">鍵は出せない</div>
 
       <!-- the ripple — the Eventarc event, beat 2 only. See .ripple. -->
       <div class="ripple"></div>
@@ -1174,9 +1431,13 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
       <div class="gate">
         <div class="ghead">
           <span class="gt">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <!-- the shackle is its own element and is drawn FIRST, so the body's
+                 stroke covers its feet while it is down and it can lift out of
+                 the body at beat 5 (see .shackle). This icon has been a padlock
+                 that never opens since the file was written. -->
+            <svg class="lock" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path class="shackle" d="M7.5 10.5V7.5a4.5 4.5 0 0 1 9 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               <rect x="4.5" y="10.5" width="15" height="10" rx="2.2" stroke="currentColor" stroke-width="2"/>
-              <path d="M7.5 10.5V7.5a4.5 4.5 0 0 1 9 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             </svg>
             ロールバック承認
           </span>
@@ -1184,7 +1445,7 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
         </div>
         <div class="gbody">
           <div class="gsvc">payment-demo · PAYMENT_MODE</div>
-          <div class="gchange"><span class="from">live</span><span class="ar">→</span><span class="to">mock</span></div>
+          <div class="gchange">定義値に戻す</div>
           <div class="gprops">
             <span>この操作にだけ有効</span><span>他には使えない</span><span>一度きり</span>
           </div>
@@ -1192,12 +1453,16 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
             <span class="gsig">HMAC 署名付き</span>
             <span class="gbtn">承認</span>
           </div>
-          <div class="stamp">承認<br>済</div>
         </div>
       </div>
 
-      <!-- the key — after the gate in the DOM so it sits ON the lock. It does not
-           travel any more; see the .key rule for why the flight was retired. -->
+      <!-- 判子 — a SIBLING of the gate, not a child of it, so it can overlap the
+           card's edge (the card clips its own children). See .stamp. -->
+      <div class="stamp">承認<br>済</div>
+
+      <!-- the key — after the gate in the DOM so it sits ON the lock. It is
+           PLACED there by the worker (.lnk-key) and turned only after the
+           判子; see the .key rule for the two invariants that fix that order. -->
       <div class="key">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <circle cx="8" cy="8" r="4.6" stroke="currentColor" stroke-width="2.2"/>
@@ -1487,11 +1752,20 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
   halo.className='tgt-halo';
   halo.style.left=TGT.x+'px'; halo.style.top=TGT.y+'px';
   field.appendChild(halo);
-  /* the ring's landing site — see .tgt-sock */
-  var tgtSock=document.createElement('div');
-  tgtSock.className='tgt-sock';
-  tgtSock.style.left=TGT.x+'px'; tgtSock.style.top=TGT.y+'px';
-  field.appendChild(tgtSock);
+  /* no landing-site element: the ring lands as the socket itself (see .ring) */
+
+  /* the worker's reach to the lock is drawn AND retracted by a single
+     stroke-dashoffset animation, so its dasharray must be the REAL path length:
+     a hand-typed value that overshoots leaves dead frames at both ends of the
+     gesture, and the withdrawal is the gesture. Same treatment as the ring.
+     Measured once at load — the path is static. */
+  var keyLink=document.querySelector('.lnk-key');
+  keyLink.style.setProperty('--kl', keyLink.getTotalLength()+'px');
+  /* same for the execution path — see .lnk-act for the 330-vs-468 bug this
+     replaces. Any stroke here that DRAWS (rather than marches a dot pattern)
+     belongs on this list. */
+  var actLink=document.querySelector('.lnk-act');
+  actLink.style.setProperty('--al', actLink.getTotalLength()+'px');
 
   /* =====================================================================
      TIMELINE
@@ -1506,25 +1780,38 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
                      names fade up. Caption B was already at the 5.2 ceiling.
        beat 2  3900  +500: there is now a mark, a leader stroke and a pair to read
        beat 3  3100  unchanged
-       beat 4  3900  unchanged; the refusal fits inside it (x lands at ~1.56s)
-       beat 5  3700  +600: the whole beat is now serial — 判子 at 1.12s, the
-                     worker's path 1.15-1.80s, the gap closing 1.80-2.90s. At
-                     3100 the heal ended exactly on the cut.
+       beat 4  3900  unchanged; the refusal fits inside it (x lands at ~1.26s,
+                     its label at ~1.62s, both well clear of the cut)
+       beat 5  4000  +300 (fix-forward round): the beat is fully serial now and
+                     it carries the thesis — key placed and the hand WITHDRAWN
+                     0-0.9s, 判子 alone 0.9-1.52s, key turned 1.52-1.8s, shackle
+                     lifted 1.75-1.98s, the worker's second path 2.0-2.65s, the
+                     gap closing 2.65-3.35s. That leaves ~0.65s of settle; at
+                     3700 the re-seat would have ended ~0.35s before the cut,
+                     which is the same mistake the +600 above was fixing.
+                     Caption F is 13 chars -> 13/(4.0-0.5) = 3.7/s, still under.
        beat 6  4000  +400: the pullback now has to LAND on the target
        beat 7  5200  +400: burst -> highlight -> ring -> lift-off -> lobe. The
                      definition must finish being written BEFORE the line reaches
                      out or the causality inverts, and this is the one beat no
                      rival's demo can show. Never trim it first.
        beat 8  3400  unchanged
-     Only the beat-7 chain's ANCHOR (26500) is coupled to these numbers; the rest
+     Only the beat-7 chain's ANCHOR (26800) is coupled to these numbers; the rest
      of that beat is serial, so a burst-speed change cannot open a hole in it. */
   var MARKS=[[0,'0'],[3200,'1'],[7400,'2'],[11300,'3'],[14400,'4'],
-             [18300,'5'],[22000,'6'],[26000,'7'],[31200,'8']];
-  var TOTAL=34600;
-  var timers=[], raf=null;
+             [18300,'5'],[22300,'6'],[26300,'7'],[31500,'8']];
+  var TOTAL=34900;
+  /* rAF handles are KEYED, not a single slot. Beat 7 runs two rAF loops at once
+     — the ring landing on the resource and the dashed lobe growing out to meet
+     it — and with one shared `raf` variable the second loop's handle overwrote
+     the first, so a replay mid-beat cancelled only one of them and left an
+     orphan animation writing to a path the new run had already reset. */
+  var timers=[], rafs={};
+  function tick(k, fn){ rafs[k]=requestAnimationFrame(fn); }
   function clear(){
     timers.forEach(clearTimeout); timers=[];
-    if(raf){ cancelAnimationFrame(raf); raf=null; }
+    Object.keys(rafs).forEach(function(k){ cancelAnimationFrame(rafs[k]); });
+    rafs={};
   }
 
   /* The line moves in TWO steps, because that is what the system actually does.
@@ -1537,8 +1824,8 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
       var e=t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;   /* easeInOutCubic */
       var cur=[]; for(var i=0;i<N;i++) cur.push(from[i]+(to[i]-from[i])*e);
       draw(cur);
-      if(t<1) raf=requestAnimationFrame(step);
-      else { raf=null; if(done) done(); }
+      if(t<1) tick('morph', step);
+      else { delete rafs.morph; if(done) done(); }
     })();
   }
   /* 1. beat 7 — the DASHED proposal reaches out toward the resource */
@@ -1570,9 +1857,9 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     (function step(){
       var n=Math.min(CODE_TEXT.length, Math.floor((performance.now()-t0)/per));
       if(n!==i){ i=n; codeEl.textContent=CODE_TEXT.slice(0,i); }
-      if(i<CODE_TEXT.length) raf=requestAnimationFrame(step);
+      if(i<CODE_TEXT.length) tick('type', step);
       else {
-        codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); raf=null;
+        codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); delete rafs.type;
         if(done) done();
       }
     })();
@@ -1586,7 +1873,23 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
      is .tf and the two offsets simply add.
      ⚠ Measure only AFTER typeCode restores CODE_HTML — while typing, codeEl holds
      a plain text node and .impblock does not exist at all. */
-  var ringEl=document.querySelector('.ring');
+  var ringEl=document.querySelector('.ring'), ringPts=null;
+  /* THE LANDING OUTLINE — the socket the resource ends up sitting in, sampled
+     with the SAME point count and phase as the ring so the two are lerpable
+     point-for-point. A superellipse at k=4 is a rounded square; feeding it
+     through the same closedPath() the ring uses means the landed shape is
+     literally the same kind of curve, not a second drawing of a square.
+     Deterministic and free of rnd() for the same reason the ring is. */
+  function sockPts(cx,cy,half,n,phase){
+    var p=[];
+    for(var i=0;i<n;i++){
+      var a=i/n*2*Math.PI+phase, c=Math.cos(a), s=Math.sin(a);
+      var d=Math.pow(Math.pow(Math.abs(c),4)+Math.pow(Math.abs(s),4),0.25);
+      p.push([cx+half*c/d, cy+half*s/d]);
+    }
+    return p;
+  }
+  var SOCK_HALF=18, RING_PHASE=-Math.PI*0.55, RING_N=26;
   function ringGeom(){
     var imp=tfEl.querySelector('.impblock');
     if(!imp) return null;
@@ -1605,28 +1908,50 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
        pen stroke; two slow harmonics read as a hand. Deterministic and NOT drawn
        from rnd(): that PRNG is consumed by the field layout and one extra draw
        would re-scatter every mark in the piece. */
-    var p=[], n=26;
+    var p=[], n=RING_N;
     for(var i=0;i<n;i++){
-      var a=i/n*2*Math.PI - Math.PI*0.55;
+      var a=i/n*2*Math.PI + RING_PHASE;
       var k=1 + 0.030*Math.sin(2*a+0.9) + 0.018*Math.sin(3*a+2.4);
       p.push([g.cx+g.rx*k*Math.cos(a), g.cy+g.ry*k*Math.sin(a)]);
     }
+    ringPts=p;                        /* the land lerps from exactly this */
     ringEl.setAttribute('d', closedPath(p));
     var L=ringEl.getTotalLength();
     ringEl.style.strokeDasharray=L+'px';
     ringEl.style.strokeDashoffset='0';
     ringEl.style.setProperty('--rl', L+'px');
-    /* aim the lift at the resource, stopping ~18% short: it is a rhyme with the
-       lobe, not a delivery — the lobe is what actually arrives */
-    ringEl.style.setProperty('--lx', ((TGT.x-g.cx)*0.82).toFixed(1)+'px');
-    ringEl.style.setProperty('--ly', ((TGT.y-g.cy)*0.82).toFixed(1)+'px');
-    body.classList.remove('ring-lift');
+    body.classList.remove('ring-land','ring-landed');
     body.classList.add('ring-draw');
     timers.push(setTimeout(done, 460));
   }
-  function ringLift(){
+  /* THE LAND. The ring does not lift and fade; it travels to the resource and
+     CONTRACTS INTO the outline that resource sits in — one object, continuous.
+     Because both shapes are 26 points at the same phase, the whole handoff is a
+     straight per-point lerp, and the hand-drawn wobble anneals out of the path
+     on the way: a drawn circle becoming a printed socket, which is the thesis
+     (the code draws the line) at the scale of a single resource. */
+  function ringLand(done){
+    if(!ringPts){ if(done) done(); return; }
+    var from=ringPts, to=sockPts(TGT.x, TGT.y, SOCK_HALF, from.length, RING_PHASE);
     body.classList.remove('ring-draw');
-    body.classList.add('ring-lift');
+    body.classList.add('ring-land');
+    /* hand the dash pattern back to CSS — see body.ring-landed .ring */
+    ringEl.style.strokeDasharray='';
+    var t0=performance.now(), MS=1000;
+    (function step(){
+      var t=Math.min(1,(performance.now()-t0)/MS);
+      var e=t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+      var cur=[];
+      for(var i=0;i<from.length;i++)
+        cur.push([from[i][0]+(to[i][0]-from[i][0])*e, from[i][1]+(to[i][1]-from[i][1])*e]);
+      ringEl.setAttribute('d', closedPath(cur));
+      if(t<1) tick('ring', step);
+      else {
+        delete rafs.ring;
+        body.classList.remove('ring-land'); body.classList.add('ring-landed');
+        if(done) done();
+      }
+    })();
   }
 
   /* Beat 7, as ONE serial chain rather than three fixed timeouts. Only the first
@@ -1634,15 +1959,15 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
      finishes, which is what makes the argument's ORDER a structural property
      instead of an arithmetic coincidence:
        burst completes -> the import block highlights -> a ring closes on it ->
-       the ring lifts off as the DASHED lobe extends -> (beat 8) approval snaps
-       the solid line out to meet it.
+       the ring TRAVELS TO THE RESOURCE AND BECOMES ITS SOCKET while the DASHED
+       lobe extends -> (beat 8) approval snaps the solid line out to meet it.
      Every timeout goes through `timers`, so a replay cancels the whole chain. */
   function beat7Chain(){
     typeCode(function(){
       timers.push(setTimeout(function(){
         ringClose(function(){
           timers.push(setTimeout(function(){
-            ringLift();
+            ringLand();
             proposeBoundary();
           }, 340));
         });
@@ -1652,10 +1977,14 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
 
   window.play=function(){
     clear();
-    body.classList.remove('no-anim','playing','ring-draw','ring-lift','boundary-committed');
+    body.classList.remove('no-anim','playing','ring-draw','ring-land','ring-landed','boundary-committed');
     body.setAttribute('data-beat','0');
     codeEl.innerHTML=CODE_HTML; tfEl.classList.remove('done');
-    ringEl.removeAttribute('d');
+    /* the ring carries INLINE geometry across a run (dasharray for the draw-on,
+       cleared again by the land) — reset it, or a replay starts the pen stroke
+       already dashed like a landed socket */
+    ringEl.removeAttribute('d'); ringPts=null;
+    ringEl.style.strokeDasharray=''; ringEl.style.strokeDashoffset='';
     drawBoundary(baseR); drawProposal(baseR);
     void body.offsetWidth;                            /* reflow so CSS re-runs */
     body.classList.add('playing');
@@ -1664,8 +1993,8 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     });
     /* the only two clock anchors left in beat 7/8: the chain's start, and the
        approval, which belongs to beat 8's mark and nothing else */
-    timers.push(setTimeout(beat7Chain, 26500));       /* beat 7 + 500ms */
-    timers.push(setTimeout(commitBoundary, 31300));   /* beat 8 + 100ms */
+    timers.push(setTimeout(beat7Chain, 26800));       /* beat 7 + 500ms */
+    timers.push(setTimeout(commitBoundary, 31600));   /* beat 8 + 100ms */
   };
   window.RUNTIME_MS=TOTAL;
 
@@ -1684,12 +2013,22 @@ body.no-anim[data-beat="8"] .tf .impblock{background:rgba(14,27,95,.08)}
     body.setAttribute('data-beat', String(h));
     /* beat 7 = proposed (dashed out, solid still at base); beat 8 = committed.
        boundary-committed is normally set from inside commitBoundary(), which
-       hold mode never calls — set it directly so .tgt-sock's solid snap (now
-       gated on this class, not [data-beat="8"], see there) still shows. */
+       hold mode never calls — set it directly so the socket's solid snap (now
+       gated on this class, not [data-beat="8"], see .ring) still shows. */
     drawBoundary(h>=8 ? growR : baseR);
     drawProposal(h>=7 ? growR : baseR);
     if(h>=8){ body.classList.add('boundary-committed'); }
-    if(h>=7){ codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); }
+    if(h>=7){
+      codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done');
+      /* The ring's SETTLED state at the end of beat 7 is no longer "gone" — it
+         is the socket around the resource, so hold mode has to draw it. The old
+         note here said the ring was the one gesture ?hold= could not review;
+         that stopped being true when the ring stopped fading and became the
+         thing it hands off to. Its TRAVEL still needs playback review. */
+      ringEl.setAttribute('d',
+        closedPath(sockPts(TGT.x, TGT.y, SOCK_HALF, RING_N, RING_PHASE)));
+      body.classList.add('ring-landed');
+    }
   } else if(!qp.has('manual')){
     /* fonts.ready is the trigger; the 1400ms timer is only a fallback for when it
        never settles. Both used to fire — fonts.ready started the piece, then the
