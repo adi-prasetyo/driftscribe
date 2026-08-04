@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import {
   classifyTokenValue,
   colorTokens,
@@ -230,6 +230,39 @@ describe('palette declaration parsing (ds-spu)', () => {
         '--ds-font-a: "A/*", sans-serif;\n--ds-hidden: oklch(0.6 0.2 250);\n--ds-font-b: "*/", serif;\n'
       )
     ).toBe(3);
+  });
+
+  it('is reading the WHOLE palette — no --ds-* is declared outside tokens.css', () => {
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(svelte|css)$/.test(entry.name)) files.push(full);
+      }
+    };
+    walk(srcDir);
+    // Premise: the walk reached the tree AND can see its own subject. A guard
+    // that cannot reach what it checks reports clean and proves nothing (#293).
+    expect(files.length).toBeGreaterThan(30);
+    const tokensFile = files.find((f) => f.endsWith(join('styles', 'tokens.css')));
+    expect(tokensFile, 'walk never reached tokens.css').toBeDefined();
+    expect(
+      tokenDeclarations(readFileSync(tokensFile!, 'utf8')).length,
+      'positive control: walker + parser find the palette where it lives'
+    ).toBeGreaterThan(60);
+
+    const strays: string[] = [];
+    for (const file of files) {
+      if (file === tokensFile) continue;
+      for (const { name } of tokenDeclarations(readFileSync(file, 'utf8'))) {
+        strays.push(`${relative(srcDir, file)} declares ${name}`);
+      }
+    }
+    expect(
+      strays,
+      `the ring sweep reads only tokens.css, so a --ds-* declared elsewhere is never measured:\n  ${strays.join('\n  ')}`
+    ).toEqual([]);
   });
 });
 
