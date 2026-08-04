@@ -98,22 +98,23 @@ export function readToken(css: string, name: string): string {
 }
 
 /**
- * Resolve a token to a hex color, following `var(--x)` indirection.
+ * Resolve a value to a hex color, following `var(--x)` indirection.
  *
- * Throws on a non-opaque result, which is deliberate: a caller asking for "the
- * color of this thing" cannot be handed something whose real color depends on
- * what is behind it. Composite it explicitly instead.
+ * Routed through `classifyTokenValue`, so it accepts every notation the palette
+ * sweep accepts. That is not incidental: this is the file's dominant resolver
+ * (13 non-definition call sites), and leaving it hex-only would mean a palette
+ * entry written as `rgb()` swept correctly here and then threw in the
+ * instrument-band test — the palette able to be measured but not to be written.
+ *
+ * Keeps its contract: throws on a non-opaque or unresolvable result, because a
+ * caller asking for "the color of this thing" cannot be handed something whose
+ * real color depends on what is behind it. Composite it explicitly instead.
  */
-export function resolveColor(css: string, value: string, depth = 0): string {
-  if (depth > 8) throw new Error(`var() indirection too deep: ${value}`);
-  const v = value.trim();
-  const varRef = /^var\(\s*(--[\w-]+)\s*\)$/.exec(v);
-  if (varRef) return resolveColor(css, readToken(css, varRef[1]), depth + 1);
-  if (/^#[0-9a-fA-F]{3,8}$/.test(v)) {
-    if (v.length === 9 || v.length === 5) throw new Error(`color has alpha: ${v}`);
-    return v;
-  }
-  throw new Error(`not an opaque color: ${v}`);
+export function resolveColor(css: string, value: string): string {
+  const classified = classifyTokenValue(paletteOf(css), '(value)', value);
+  if (classified.kind !== 'color')
+    throw new Error(`not a color: "${value}" (${classified.why})`);
+  return classified.hex;
 }
 
 /**
@@ -249,13 +250,326 @@ export function shadowLayers(css: string, shadow: string): ShadowLayer[] {
   return layers;
 }
 
-/** Every `--ds-*` token in the palette whose value is an opaque hex color. */
-export function colorTokens(css: string): Record<string, string> {
+/**
+ * Every `--ds-*` declaration in the source, comments stripped, in file order.
+ *
+ * Terminated by `;` OR by the closing `}`, because a final declaration may
+ * legally omit its semicolon. That matters more than it looks: this one
+ * function feeds both the ring sweep and alias resolution, so anything it
+ * cannot see is invisible to both at once.
+ *
+ * It deliberately does NOT feed the scope guard that checks no `--ds-*` is
+ * declared outside tokens.css. That guard once used this parser and was
+ * fail-open because of it: a `;`/`}` terminator is a property of a stylesheet
+ * rule, and a stray token arrives in ways that have no such terminator (an
+ * inline `style=""`, a Svelte `style:--x` directive, `setProperty`). Reaching
+ * for this function there again would reintroduce that hole.
+ *
+ * Duplicates THROW. `readToken` returns the first match and the cascade uses
+ * the last, so a duplicated name means an alias could be swept against a color
+ * the browser never paints.
+ */
+export function tokenDeclarations(css: string): { name: string; value: string }[] {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: { name: string; value: string }[] = [];
+  const seen = new Set<string>();
+  for (const m of stripped.matchAll(/(--ds-[\w-]+)\s*:\s*([^;{}]+)(?=[;}])/g)) {
+    const name = m[1];
+    if (seen.has(name)) {
+      throw new Error(
+        `${name} is declared more than once; the cascade uses the last and readToken() reads the first`
+      );
+    }
+    seen.add(name);
+    out.push({ name, value: m[2].trim().replace(/\s+/g, ' ') });
+  }
+  return out;
+}
+
+/** The palette as a lookup, so alias resolution and accounting share one source. */
+export type Palette = Map<string, string>;
+
+export function paletteOf(css: string): Palette {
+  return new Map(tokenDeclarations(css).map((d) => [d.name, d.value]));
+}
+
+export type TokenClass = { kind: 'color'; hex: string } | { kind: 'not-a-color'; why: string };
+
+/**
+ * Functions that certainly do not produce a color.
+ *
+ * An ALLOWLIST, and the direction is the whole point. The first draft of this
+ * change denylisted the color functions and let every other function through as
+ * not-a-color — silently dropping `var(--x, #fff)`, `env(…, #fff)`, typed
+ * `attr()` and `contrast-color()`, reproducing the bug being fixed. Once CSS
+ * has general substitution and conditional functions, no color-function
+ * denylist can be complete, so anything not listed here THROWS.
+ */
+const NON_COLOR_FUNCTIONS = new Set([
+  'cubic-bezier',
+  'steps',
+  'linear',
+  'calc',
+  'clamp',
+  'min',
+  'max'
+]);
+
+/**
+ * Color functions, so the failure can name the notation and say what to do.
+ *
+ * DIAGNOSTIC, not a safety boundary: a color function missing from here still
+ * throws, via the unknown-function branch. The tests assert the specific
+ * message so the distinction cannot rot.
+ */
+const COLOR_FUNCTIONS = new Set([
+  'rgb',
+  'rgba',
+  'hsl',
+  'hsla',
+  'hwb',
+  'lab',
+  'lch',
+  'oklab',
+  'oklch',
+  'color',
+  'color-mix',
+  'light-dark',
+  'device-cmyk',
+  'contrast-color',
+  'color-contrast'
+]);
+
+/** A number with an optional unit — never a color. */
+const NUMERIC = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:px|rem|em|ch|ex|vh|vw|vmin|vmax|%|ms|s|deg|fr|pt)?$/;
+
+/**
+ * Bare idents that are certainly not colors.
+ *
+ * Deliberately tiny. A bare ident is either a CSS named color (`white`,
+ * `transparent`, `currentColor`) or a keyword, and the value cannot say which,
+ * so anything not listed FAILS rather than being assumed. The CSS-wide keywords
+ * are absent on purpose: `inherit`/`unset`/`revert`/`revert-layer` can expose an
+ * inherited custom-property value, which may be a color.
+ */
+const NON_COLOR_KEYWORDS = new Set(['none', 'auto']);
+
+/**
+ * A value's top-level components, splitting on whitespace and commas outside
+ * `()` and outside quotes.
+ *
+ * The discrimination this rests on: **a color is exactly ONE top-level CSS
+ * component value.** Every notation is a single token or a single function
+ * call, and the commas inside those functions are nested. So a top-level space
+ * or comma means a list or a shorthand, whatever colors it may contain —
+ * `2px solid var(--ds-stream-ink)` and `0 1px 2px rgba(18, 21, 28, 0.04)` are
+ * both settled here, with no allowlist of "non-color shapes" to maintain.
+ *
+ * A source scanner, NOT a CSS tokenizer, and the difference is real:
+ * `r\67 b(18, 21, 28)` is one token to a browser and two to this. Callers
+ * therefore reject backslashes outright rather than pretend to tokenize.
+ */
+function topLevelParts(value: string): {
+  parts: string[];
+  hasTopLevelComma: boolean;
+  unbalanced: boolean;
+} {
+  const parts: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let quote: string | null = null;
+  let hasTopLevelComma = false;
+  const flush = () => {
+    if (cur.trim()) parts.push(cur.trim());
+    cur = '';
+  };
+  for (const c of value.trim()) {
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    if (depth === 0 && (c === ',' || /\s/.test(c))) {
+      if (c === ',') hasTopLevelComma = true;
+      flush();
+      continue;
+    }
+    cur += c;
+  }
+  flush();
+  return { parts, hasTopLevelComma, unbalanced: depth !== 0 || quote !== null };
+}
+
+/**
+ * What a `--ds-*` declaration is, for the ring sweep.
+ *
+ * TOTAL by construction: a color, a reasoned not-a-color, or a THROW naming
+ * the token and the notation. No fourth outcome, and in particular no silent
+ * skip — that is the defect this closes (ds-spu). The previous implementation
+ * kept `/^#[0-9a-fA-F]{6}$/` and dropped the rest on the floor, so a palette
+ * entry written as `rgb()`, `oklch()` or `color-mix()` left the sweep and the
+ * ring stopped being proven against it, with the test green.
+ */
+export function classifyTokenValue(
+  palette: Palette,
+  name: string,
+  value: string,
+  seen: readonly string[] = []
+): TokenClass {
+  const v = value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*!\s*important$/i, '')
+    .trim();
+  if (v.includes('\\')) {
+    throw new Error(
+      `${name}: "${v}" contains a backslash escape; this scanner is not a CSS tokenizer and will not guess at its token boundaries.`
+    );
+  }
+  const { parts, hasTopLevelComma, unbalanced } = topLevelParts(v);
+  if (unbalanced) throw new Error(`${name}: unbalanced parenthesis or quote in "${v}"`);
+  if (!parts.length) throw new Error(`${name}: empty value`);
+  if (hasTopLevelComma || parts.length > 1) {
+    return {
+      kind: 'not-a-color',
+      why: hasTopLevelComma ? 'comma-separated list' : 'multi-part shorthand'
+    };
+  }
+  const one = parts[0];
+
+  const hex = /^#([0-9a-fA-F]+)$/.exec(one);
+  if (hex) {
+    const digits = hex[1].length;
+    if (digits === 4 || digits === 8) {
+      throw new Error(
+        `${name}: "${one}" carries an alpha channel. A translucent token renders as itself mixed with whatever is behind it, so no ring can be proven against it in isolation — composite it explicitly, or declare an opaque value.`
+      );
+    }
+    if (digits !== 3 && digits !== 6) throw new Error(`${name}: "${one}" is not a valid hex color`);
+    const full =
+      digits === 3
+        ? one
+            .slice(1)
+            .split('')
+            .map((c) => c + c)
+            .join('')
+        : one.slice(1);
+    return { kind: 'color', hex: '#' + full.toLowerCase() };
+  }
+
+  // `var()` is indirection, not a function to classify — and it must be handled
+  // before the general function branch or it reads as an unknown function.
+  //
+  // THE FALLBACK IS NEVER FOLLOWED. The boundary is not "declared" — it is
+  // DECLARED AND SUCCESSFULLY CLASSIFIED, which is a stricter thing:
+  //
+  //   primary DECLARED   the browser ignores the fallback and --b is simply
+  //   and CLASSIFIABLE   whatever --a is. `--a: 2px; --b: var(--a, #fff)`
+  //                      computes --b to `2px` (verified in Chromium), so a
+  //                      fallback that can never render is not this sweep's
+  //                      business.
+  //   primary ABSENT     the browser WOULD use the fallback — but "absent from
+  //                      this string" is not "unset in the browser". Another
+  //                      stylesheet, an inline style or script may define it,
+  //                      and then the fallback never renders. Unknowable, throw.
+  //
+  // The fallback is used whenever the primary is the GUARANTEED-INVALID value,
+  // and "not set at all" is only one way to be that. `--a: initial`, a cycle,
+  // and an unresolved `var()` are all declared yet guaranteed-invalid, and all
+  // three DO fall through to the fallback (verified in Chromium). None of them
+  // is a hole here, because this classifier THROWS on each rather than guessing
+  // — `initial` is a bare keyword, a cycle is caught by name below, and an
+  // unresolved var() by the closed-world check. That is why the boundary has to
+  // be stated as "classifiable", not "declared": the code is only correct to
+  // ignore the fallback in the cases where it returns at all.
+  //
+  // Cycles are detected by NAME, not by a recursion counter: a counter only
+  // bounds the damage and its limit is arbitrary, while the visited set states
+  // the actual invariant and its message names the loop.
+  const varCall = /^var\(\s*(--[\w-]+)\s*(?:,([\s\S]*))?\)$/.exec(one);
+  if (varCall) {
+    const [, ref, fallback] = varCall;
+    if (seen.includes(ref)) {
+      throw new Error(`${name}: var() alias cycle: ${[...seen, ref].join(' -> ')}`);
+    }
+    if (!palette.has(ref)) {
+      throw new Error(
+        `${name}: var(${ref}) is not declared in the palette source, so this sweep cannot know what it paints.` +
+          (fallback === undefined
+            ? ''
+            : ` It has a fallback, but "absent here" is not "undefined in the browser" — another stylesheet, an inline style or script may define ${ref}, and then the fallback never renders.`)
+      );
+    }
+    return classifyTokenValue(palette, `${name} -> ${ref}`, palette.get(ref)!, [...seen, ref]);
+  }
+
+  const fn = /^([a-z][-a-z0-9]*)\(([\s\S]*)\)$/i.exec(one);
+  if (fn) {
+    const f = fn[1].toLowerCase();
+    if (NON_COLOR_FUNCTIONS.has(f)) return { kind: 'not-a-color', why: `${f}()` };
+
+    if (f === 'rgb' || f === 'rgba') {
+      // The SAME strict grammar the box-shadow layer parser uses, so a value
+      // rejected there cannot be quietly re-read as valid here.
+      const m = new RegExp(
+        String.raw`^rgba?\(\s*(${CHANNEL})\s*,\s*(${CHANNEL})\s*,\s*(${CHANNEL})\s*(?:,\s*(${ALPHA})\s*)?\)$`
+      ).exec(one);
+      if (!m)
+        throw new Error(
+          `${name}: "${one}" is an rgb()/rgba() form this sweep does not parse — only the comma-separated 0-255 form. Declare it as #rrggbb.`
+        );
+      if (m[4] !== undefined && Number(m[4]) !== 1) {
+        throw new Error(
+          `${name}: "${one}" is translucent (alpha ${m[4]}). Its rendered color depends on what is behind it, so no ring can be proven against it in isolation — composite it explicitly, or declare an opaque value.`
+        );
+      }
+      // CSS clamps out-of-range channels; this matches the browser.
+      const hex = [m[1], m[2], m[3]]
+        .map((c) => Math.min(255, Number(c)).toString(16).padStart(2, '0'))
+        .join('');
+      return { kind: 'color', hex: '#' + hex };
+    }
+
+    if (COLOR_FUNCTIONS.has(f)) {
+      throw new Error(
+        `${name}: "${one}" uses the ${f}() color notation, which this sweep does not convert. Conversion is standards-defined, but matching the browser's gamut mapping for out-of-sRGB values is untested surface here, and a verdict computed from a differently-mapped color is confidently wrong rather than absent. Declare the token as #rrggbb, or add a TESTED conversion and extend this branch.`
+      );
+    }
+
+    throw new Error(
+      `${name}: "${one}" uses the unknown function ${f}(). It is not classified as a non-color, because substitution and conditional functions can produce colors and a silent skip is exactly the defect this guard exists to prevent. Add ${f} to NON_COLOR_FUNCTIONS if it certainly is not a color.`
+    );
+  }
+
+  if (NUMERIC.test(one)) return { kind: 'not-a-color', why: 'numeric' };
+  if (NON_COLOR_KEYWORDS.has(one.toLowerCase())) return { kind: 'not-a-color', why: 'keyword' };
+
+  throw new Error(
+    `${name}: "${one}" is not a value this sweep recognises. A CSS named color (white, transparent, currentColor) and a non-color keyword are indistinguishable here, so it refuses to guess: declare a color as #rrggbb, or add the keyword to NON_COLOR_KEYWORDS in contrast.ts.`
+  );
+}
+
+/**
+ * Every `--ds-*` token in the palette that is an opaque color, in any notation.
+ *
+ * Was `/^#[0-9a-fA-F]{6}$/` and a silent skip for everything else (ds-spu), so
+ * the first palette entry written as `rgb()`, `oklch()`, `color-mix()` or
+ * `var(--other)` would have left the ring sweep with the test still green. Now
+ * every declaration is classified: a color, a reasoned non-color, or a throw.
+ */
+export function colorTokens(css: string): Record<string, string> {
+  const palette = paletteOf(css);
   const out: Record<string, string> = {};
-  for (const m of stripped.matchAll(/(--ds-[\w-]+)\s*:\s*([^;]+);/g)) {
-    const value = m[2].trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(value)) out[m[1]] = value;
+  for (const [name, value] of palette) {
+    const classified = classifyTokenValue(palette, name, value);
+    if (classified.kind === 'color') out[name] = classified.hex;
   }
   return out;
 }

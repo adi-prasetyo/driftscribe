@@ -1,8 +1,22 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-import { colorTokens, composite, contrastOver, contrastRatio, readToken, resolveColor, shadowLayers } from './contrast';
+import { dirname, join, relative, resolve } from 'node:path';
+import { compile } from 'svelte/compiler';
+import { parse as acornParse } from 'acorn';
+import {
+  classifyTokenValue,
+  colorTokens,
+  composite,
+  contrastOver,
+  contrastRatio,
+  paletteOf,
+  readToken,
+  resolveColor,
+  shadowLayers,
+  tokenDeclarations,
+  type TokenClass
+} from './contrast';
 
 // ---------------------------------------------------------------------------
 // Contrast floors, enforced (ds-dce, ds-16e).
@@ -18,6 +32,8 @@ import { colorTokens, composite, contrastOver, contrastRatio, readToken, resolve
 
 const here = dirname(fileURLToPath(import.meta.url));
 const srcDir = resolve(here, '../../src');
+/** The frontend project root: the build can import from anywhere under it. */
+const projectDir = resolve(here, '../..');
 
 /** WCAG 1.4.11 non-text contrast, and 1.4.3's large-text floor. Same number. */
 const FLOOR = 3.0;
@@ -143,6 +159,722 @@ describe('focus ring', () => {
       failures,
       `no ring layer clears ${FLOOR}:1 against:\n  ${failures.join('\n  ')}`
     ).toEqual([]);
+  });
+});
+
+describe('palette declaration parsing (ds-spu)', () => {
+  // A second, INDEPENDENT declaration counter, used to cross-check the real
+  // parser. Independence is the whole point, so it must NOT reuse the regex
+  // comment-strip: with that shared, a pair of tokens whose values are the
+  // quoted strings "/*" and "*/" erases every declaration between them from
+  // both counters, and they agree while jointly blind. CSS does not treat
+  // comment delimiters inside strings as comments; neither does this.
+  //
+  // Line comments deliberately, not JSDoc: the delimiters this is about cannot
+  // be written inside a block comment.
+  const scan = (source: string) => {
+    let out = '';
+    let i = 0;
+    let quote: string | null = null;
+    while (i < source.length) {
+      const c = source[i];
+      if (quote) {
+        if (c === '\\') {
+          i += 2;
+          continue;
+        }
+        if (c === quote) quote = null;
+        i++;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        quote = c;
+        i++;
+        continue;
+      }
+      if (c === '/' && source[i + 1] === '*') {
+        const end = source.indexOf('*/', i + 2);
+        i = end === -1 ? source.length : end + 2;
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return [...out.matchAll(/--ds-[\w-]+\s*:/g)].length;
+  };
+
+  it('sees a final declaration that omits its semicolon', () => {
+    const css = ':root { --ds-a: #111111; --ds-b: #222222 }';
+    expect(tokenDeclarations(css).map((d) => d.name)).toEqual(['--ds-a', '--ds-b']);
+  });
+
+  it('refuses a duplicated token name rather than picking one', () => {
+    // readToken() returns the FIRST match; the cascade uses the LAST. An alias
+    // would be swept against a colour the browser never paints.
+    const css = ':root { --ds-a: #111111; --ds-a: #222222; }';
+    expect(() => tokenDeclarations(css)).toThrow(/--ds-a/);
+  });
+
+  it('counts the same palette as an INDEPENDENTLY written scanner', () => {
+    // The premise every other guard rests on. Not a hardcoded 74: that must be
+    // edited on every legitimate palette addition and stops meaning anything
+    // the first time it is.
+    expect(scan(tokens)).toBeGreaterThan(60); // premise: the file was read
+    expect(tokenDeclarations(tokens).length).toBe(scan(tokens));
+  });
+
+  it('the independent scanner is actually independent', () => {
+    // Parity is only worth having if the second counter cannot go blind the
+    // same way the first does. Quoted components are not hypothetical here —
+    // the three font tokens are quoted strings — so this pins the property on a
+    // fixture rather than leaving it to be demonstrated by an injection that
+    // today's palette cannot exhibit.
+    expect(
+      scan(
+        '--ds-font-a: "A/*", sans-serif;\n--ds-hidden: oklch(0.6 0.2 250);\n--ds-font-b: "*/", serif;\n'
+      )
+    ).toBe(3);
+  });
+
+  it('no --ds-* name appears outside tokens.css, by any route that names it', () => {
+    // Deliberately NOT tokenDeclarations(). That parser requires a declaration
+    // to end at `;` or `}` — true of a stylesheet rule, false of most of the
+    // ways a stray token actually arrives. FIVE spellings were verified in a
+    // real browser to declare a token; each one defeated an earlier version of
+    // this guard, so each has its own rule below:
+    //
+    //   <div style="--ds-x: #00ff00">     terminated by a QUOTE, so the
+    //                                     declaration parser never saw it
+    //   el.style.setProperty('--ds-x', v) no declaration syntax at all, and in
+    //                                     a .ts file the walk never opened it
+    //   <div style:--ds-x={'#f00'}>       a Svelte style DIRECTIVE. Compiles to
+    //                                     set_style(..., {'--ds-x': …}) — the
+    //                                     source contains neither `--ds-x:` nor
+    //                                     `.setProperty(`
+    //   :root { --ds-x/**/: #f00 }        CSS allows a comment between the
+    //                                     property name and the colon
+    //   :root { --d\73-bg: #f00 }         `\73` decodes to `s`. A text scanner
+    //                                     cannot see the name that CSS sees
+    //
+    // So this scans SOURCE TEXT with several narrow rules and does no parsing it
+    // could get wrong. The escape rule is the interesting one: it does not try
+    // to DECODE escapes — that is precisely what a source scanner cannot do (the
+    // classifier refuses it too). It flags their PRESENCE. There are zero
+    // backslashes in any .css or .svelte file today, so "none" is both cheaper
+    // and stronger than a decoder that could be wrong.
+    //
+    // Blunt on purpose: it has no comment parser for the token rule, so prose
+    // that puts a token name immediately before a colon trips it. That is the
+    // safe direction — it fails loudly and the fix is to reword. A comment
+    // stripper here would make the guard LESS sensitive, which hides bugs.
+    //
+    // WHAT THIS PROVES, AND WHAT IT DOES NOT — stated precisely, because five
+    // rewrites of this guard each believed they were complete and each was
+    // wrong, and twice the overclaim was in the test's own NAME.
+    //
+    // Proves: no file under src/ outside tokens.css and the components' own CSS
+    // contains a `--ds-*` name at all, and no file calls a style-mutation API.
+    // Because every route to declaring a custom property needs the NAME, that
+    // covers every API — present or future — for any STATICALLY NAMED write.
+    // The walk has no extension allowlist, so it holds for `.mts`, `.d.ts` or
+    // anything else added later.
+    //
+    // Does not prove: (a) a name assembled at runtime and never written
+    // literally — `style[m]('-' + '-ds-' + key, v)`, or one from the server;
+    // (b) CSS that reaches the bundle without a literal import this scan can
+    // read — a Vite plugin or virtual module, or an `<link>` in index.html
+    // (dev shell only: the production build's Rollup input is src/main.ts).
+    //
+    // THIS TEST IS NOT THE PREMISE THAT MAKES THE SWEEP COMPLETE, and should
+    // not be cited as one. Twelve review rounds found eighteen routes here, six
+    // of them in successive rewrites of this guard, because source scanning
+    // cannot enumerate the ways CSS reaches a build. The instrument that can is
+    // the OUTPUT: scan the emitted CSS bundle and require every --ds-* in it to
+    // originate in tokens.css. That is ds-g3z, and it belongs in the ui-smoke
+    // gate, which already builds. What this test does is pin the routes it
+    // names — which is worth having, and is less than it once claimed.
+    // The walk root is the PROJECT, not src/. Vite's entry lives in src/ but
+    // its imports need not: `import '../reviewProbe.css'` from main.ts is a
+    // production build input a src/-rooted walk never opens, and the build
+    // really does emit --ds-bg twice with the later one winning.
+    //
+    // This is NOT a superset of the build graph. An earlier version of this
+    // comment claimed it was; `import '../tests/probe.css'` disproved that,
+    // since `tests/` is pruned and that import still ships and still wins. The
+    // prune list is a practical necessity (the test tree names tokens on every
+    // other line, node_modules cannot be walked at all), and what makes it safe
+    // is not a superset argument but the reachability pin further down, which
+    // forbids any CSS import landing behind it. Pruned: dependencies, build
+    // output, and the test tree.
+    const PRUNE = /^(node_modules|dist|coverage|test-results|playwright-report|tests|\.svelte-kit|\.git)$/;
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (PRUNE.test(entry.name)) continue;
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        // EVERY file, no extension allowlist. An allowlist is an enumeration,
+        // and this one missed `.mts` — a first-class Vite/TS build input.
+        else files.push(full);
+      }
+    };
+    walk(projectDir);
+    // Premise: the walk reached the tree AND can see its own subject. A guard
+    // that cannot reach what it checks reports clean and proves nothing (#293).
+    expect(files.length).toBeGreaterThan(30);
+    // Premise: it climbed ABOVE src/, or round 10's finding 2 is silently back.
+    expect(
+      files.some((f) => !f.startsWith(srcDir)),
+      'walk never left src/, so a build input imported from outside it is invisible'
+    ).toBe(true);
+    const tokensFile = files.find((f) => f.endsWith(join('styles', 'tokens.css')));
+    expect(tokensFile, 'walk never reached tokens.css').toBeDefined();
+    expect(
+      files.filter((f) => f.endsWith('.ts')).length,
+      'walk never reached a .ts file, where a CSSOM mutation would live'
+    ).toBeGreaterThan(0);
+    // The directive and escape rules only ever bite in a .svelte file, so a walk
+    // that reached none of them would report clean while checking nothing.
+    expect(
+      files.filter((f) => f.endsWith('.svelte')).length,
+      'walk never reached a .svelte file, where a style: directive would live'
+    ).toBeGreaterThan(0);
+
+    const strays: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      const where = relative(srcDir, file);
+      if (file !== tokensFile) {
+        // Tolerates a comment between the name and the colon, which CSS allows.
+        for (const m of source.matchAll(/--ds-[\w-]+(?=(?:\s|\/\*[\s\S]*?\*\/)*:)/g)) {
+          strays.push(`${where} declares ${m[0]}`);
+        }
+        // `@property --ds-x { … }` REGISTERS the name and is bound by `{`, not
+        // `:`, so the rule above cannot see it — and it is not a near-miss: a
+        // registered property with `initial-value: #f00` supplies that colour
+        // to every consumer with no ordinary declaration anywhere.
+        //
+        // Matched as the CONSTRUCT, not as "name followed by `{`". The looser
+        // form flagged `--ds-crew-{verb}` written in a CrewGlyph doc comment,
+        // and rewording good prose to satisfy a punctuation heuristic is the
+        // wrong trade when the construct is this easy to name. CSS binds a
+        // custom-property name with exactly two constructs — a declaration and
+        // this one — and unlike the DOM API surface, that pair is closed
+        // grammar rather than an open list.
+        // The separator tolerates comments for the same reason the colon rule
+        // does: CSS lets a comment sit between the at-keyword and its prelude,
+        // and `@property/**/--ds-x { … }` normalises to a valid registration in
+        // the emitted build. Requiring literal whitespace here was recognising
+        // the construct with a character regex rather than by its grammar.
+        for (const m of source.matchAll(
+          /@property(?:\s|\/\*[\s\S]*?\*\/)+(--ds-[\w-]+)/g
+        )) {
+          strays.push(`${where} registers ${m[1]} with @property`);
+        }
+      }
+      // A Svelte style directive on ANY custom property, not just a --ds-* one:
+      // there are zero in src today (style:flex and style:width are ordinary
+      // properties and do not match), so "none" needs no name analysis.
+      for (const m of source.matchAll(/\bstyle:--[\w-]*/g)) {
+        strays.push(`${where} sets ${m[0]} via a Svelte style directive`);
+      }
+      // THE RULE THAT CARRIES THE JS SIDE, and the one that stopped the
+      // enumeration: outside CSS and Svelte, a file may not contain the string
+      // `--ds-` at all. Every way to write a custom property — setProperty,
+      // setAttribute, cssText, attributeStyleMap, CSS Typed OM, anything added
+      // to the platform next year — needs the NAME. Ban the name and the API
+      // list stops mattering. There are zero mentions across all 52 .ts files
+      // today, so it costs nothing, and it holds for `.mts`, `.d.ts`, `.json`
+      // or any extension nobody has thought of yet because the walk above has
+      // no allowlist. Deliberately blunt: a .ts file that so much as names a
+      // token in a comment trips it, which is the safe direction.
+      if (!/\.(css|svelte)$/.test(file)) {
+        for (const m of source.matchAll(/--ds-[\w-]*/g)) {
+          strays.push(`${where} names ${m[0]} (offset ${m.index}); only CSS and components may`);
+        }
+      }
+      // Style-mutation APIs by name. This IS an enumeration and is no longer
+      // load-bearing: for a statically named write the rule above already has
+      // it, whatever API is used. This adds the case that rule cannot see — a
+      // name assembled at runtime — for the handful of APIs worth naming. Zero
+      // in src, so a blanket match costs nothing. Not a completeness claim.
+      for (const m of source.matchAll(
+        /\bsetProperty\b|\bcssText\b|\bsetAttribute\b|\battributeStyleMap\b|\bstyleMap\b|\.style\s*\??\s*\[/g
+      )) {
+        strays.push(`${where} writes style via CSSOM (offset ${m.index}) — see the note in this test`);
+      }
+      // An escape can spell a --ds-* name that no text scan can recognise, so in
+      // the two file types that carry CSS the escape ITSELF is the finding. This
+      // covers tokens.css too: an escaped name there would be misparsed just as
+      // badly. Not applied to .ts/.js, where backslashes are ordinary regex and
+      // string syntax and CSS can only be reached through the CSSOM rule above.
+      if (/\.(css|svelte)$/.test(file)) {
+        const bs = [...source.matchAll(/\\/g)];
+        if (bs.length > 0) {
+          strays.push(
+            `${where} contains ${bs.length} backslash escape(s) (first at offset ${bs[0].index}) — ` +
+              `this scanner cannot decode escapes, so it cannot prove none of them spells a --ds-* name`
+          );
+        }
+      }
+    }
+    // The prune list above is only sound if nothing the build ships can live
+    // behind it. Pruning `tests/` was NOT a superset of Vite's graph: an
+    // `import '../tests/probe.css'` from main.ts really does ship, and really
+    // does win over tokens.css by declaration order. So rather than claim a
+    // superset, PIN THE PREMISE — every CSS import in the project must resolve
+    // to a file this walk actually visited. That also covers `node_modules`,
+    // which can never be walked: a bare CSS specifier is reported rather than
+    // waved through. There are exactly two CSS imports today, both in main.ts.
+    const walked = new Set(files.map((f) => resolve(f)));
+    let cssImportsSeen = 0;
+    for (const file of files) {
+      const where = relative(projectDir, file);
+      const source = readFileSync(file, 'utf8');
+      // The specifier may carry a Vite query suffix (`?url`, `?inline`, or any
+      // arbitrary one — `foo.css?anything` still bundles the CSS). An earlier
+      // version required the closing quote immediately after `.css` and a
+      // `?review` suffix walked straight past it.
+      for (const m of source.matchAll(
+        /(?:@import\s+(?:url\()?|from\s*|import\s*)['"]([^'"]+\.s?css)(\?[^'"]*)?['"]/g
+      )) {
+        cssImportsSeen++;
+        const spec = m[1];
+        if (!spec.startsWith('.')) {
+          strays.push(`${where} imports CSS from a package (${spec}); the walk cannot see it`);
+        } else if (!walked.has(resolve(dirname(file), spec))) {
+          strays.push(`${where} imports ${spec}, which this walk never visited`);
+        }
+      }
+      // A glob import names a SET, not a file, so this scan cannot say where it
+      // lands. Zero today, so report any of them.
+      for (const m of source.matchAll(/import\.meta\.glob\s*\(/g)) {
+        strays.push(`${where} uses import.meta.glob (offset ${m.index}); this scan cannot resolve a set`);
+      }
+      // A dynamic import is fine when its specifier is a literal this scan can
+      // read — `await import('mermaid')` in InfraDiagram is exactly that, and
+      // flagging it was the blunt rule being blunt in the wrong place. Flag it
+      // when the specifier is CSS, or when it is NOT a literal and so cannot be
+      // checked at all.
+      // The argument must be NON-EMPTY to count as computed: prose in this very
+      // codebase writes "`await import()`-ed", and an empty-argument match read
+      // that as an unresolvable specifier.
+      for (const m of source.matchAll(
+        /(?<![.\w$])import\s*\(\s*(?:(['"])([^'"]*)\1|([^\s)]))/g
+      )) {
+        const literal = m[2];
+        if (literal === undefined) {
+          strays.push(`${where} has a dynamic import with a computed specifier (offset ${m.index})`);
+        } else if (/\.s?css(\?|$)/.test(literal)) {
+          strays.push(`${where} dynamically imports CSS (${literal}); this scan cannot place it`);
+        }
+      }
+    }
+    // Premise: pinned on the MATCHER's own output, not on an independent search
+    // for `.css'` text. The previous version asserted the latter — replacing the
+    // matcher with an impossible regex left it green, so the premise it claimed
+    // to pin was not pinned at all. Same defect as a control that proves
+    // extraction while claiming to prove a write.
+    expect(
+      cssImportsSeen,
+      'the CSS-import matcher produced no matches at all; main.ts has two'
+    ).toBeGreaterThan(0);
+
+    expect(
+      strays,
+      `the ring sweep reads only tokens.css, so a --ds-* that lives anywhere else is never measured:\n  ${strays.join('\n  ')}`
+    ).toEqual([]);
+  });
+
+  it('no Svelte component names a --ds-* anywhere in its compiled module', () => {
+    // The rules above scan SOURCE, and source scanning is spelling-by-spelling:
+    // three separate reviews each produced a new way to write a declaration that
+    // the previous scan missed. `style:--ds-x={…}` and `style={{'--ds-x': …}}`
+    // look nothing alike in source and compile to the same call. (They do NOT
+    // behave the same: the installed Svelte stringifies the object and only the
+    // directive actually writes the property. That is exactly the distinction an
+    // earlier revision of this file got wrong — see the controls below.)
+    //
+    // So this checks the COMPILER'S OUTPUT instead — one mechanism rather than a
+    // list of spellings. Every Svelte style write, whatever its surface syntax,
+    // ends up in the emitted module: a `set_style(...)` call for the dynamic
+    // forms, a `from_html` template for the static attribute.
+    //
+    // It PARSES the emitted module with acorn and reads its string literals,
+    // rather than pattern-matching the text. An earlier version paren-matched
+    // the arguments of `set_style` and missed both of these. Neither turned out
+    // to write the property in the installed Svelte, so neither was a live
+    // fail-open — but a matcher that loses a literal it was pointed at is broken
+    // regardless of whether that literal happened to matter:
+    //
+    //   <div style={styles}>          with `const styles = {'--ds-bg': …}` emits
+    //                                 `set_style(div, styles)`. The literal is
+    //                                 elsewhere in the module, so scanning the
+    //                                 call's arguments never saw it
+    //   { t: /[)]/.source, '--ds-x': … }  the `)` inside a regex character class
+    //                                 read as structural, ending extraction early
+    //
+    // Hand-rolling a JS scanner is the same mistake as hand-rolling a CSS one,
+    // made one layer down. A real parse also removes comments for free, which
+    // matters because doc comments in <script> survive compilation and both
+    // CrewGlyph and SealStamp name tokens in prose.
+    const svelteFiles: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.svelte')) svelteFiles.push(full);
+      }
+    };
+    walk(srcDir);
+    expect(svelteFiles.length).toBeGreaterThan(30);
+
+    /** Every string the compiled module actually contains, via a real JS parse. */
+    const stringLiterals = (node: unknown, out: string[] = []): string[] => {
+      if (!node || typeof node !== 'object') return out;
+      if (Array.isArray(node)) {
+        for (const child of node) stringLiterals(child, out);
+        return out;
+      }
+      const n = node as Record<string, unknown> & { type?: string };
+      if (n.type === 'Literal' && typeof n.value === 'string') out.push(n.value);
+      if (n.type === 'TemplateLiteral') {
+        for (const q of n.quasis as { value: { cooked?: string; raw: string } }[]) {
+          out.push(q.value.cooked ?? q.value.raw);
+        }
+      }
+      for (const key of Object.keys(n)) {
+        if (key !== 'loc' && key !== 'range') stringLiterals(n[key], out);
+      }
+      return out;
+    };
+    // Anchored so a BEM modifier cannot read as a custom property: in
+    // `btn--ds-primary` the `--ds-` is preceded by a word character. There are
+    // ~120 such class names in src, and matching them would have made this
+    // guard unusable — which is how a guard ends up deleted rather than fixed.
+    const NAME = /(?:^|[^\w-])(--ds-[\w-]+)/g;
+    const namesIn = (source: string): string[] =>
+      stringLiterals(
+        acornParse(compile(source, { generate: 'client' }).js.code, {
+          ecmaVersion: 'latest',
+          sourceType: 'module'
+        })
+      ).flatMap((s) => [...s.matchAll(NAME)].map((m) => m[1]));
+
+    // Premise, and the one that matters most here: if this pipeline ever yielded
+    // nothing — a compiler change, a parse that silently returns an empty body —
+    // every file below reports clean while inspecting nothing. So pin it on
+    // fixtures whose answers are known, one per spelling, plus the negative.
+    //
+    // These two DO write the property. Verified by rendering, not by reading
+    // compiler output — see the note below about why that distinction bit.
+    for (const [spelling, src] of [
+      ['directive', `<div style:--ds-probe={'#f00'}></div>`],
+      ['static attribute', `<div style="--ds-probe: #f00"></div>`]
+    ] as const) {
+      expect(namesIn(src), `positive control: a ${spelling} style write is no longer seen`).toContain(
+        '--ds-probe'
+      );
+    }
+    // These three do NOT write the property in the installed Svelte: `style={obj}`
+    // stringifies the object into the style attribute, and rendering each leaves
+    // getPropertyValue('--ds-probe') === ''. They are kept as EXTRACTION controls
+    // — they pin that the parser still finds a literal through indirection and
+    // past a regex literal, which is what the previous paren-matcher failed — and
+    // as cheap cover should a future Svelte start honouring style objects.
+    // Labelled honestly, because an earlier revision of this file called them
+    // proven ways to declare a token on the strength of compiler output alone.
+    for (const [shape, src] of [
+      ['object literal', `<div style={{ '--ds-probe': '#f00' }}></div>`],
+      ['static indirection', `<script>const s={'--ds-probe':'#f00'}</script><div style={s}></div>`],
+      ['regex-literal neighbour', `<div style={{ t: /[)]/.source, '--ds-probe': '#f00' }}></div>`]
+    ] as const) {
+      expect(namesIn(src), `extraction control: the parser no longer sees a ${shape}`).toContain(
+        '--ds-probe'
+      );
+    }
+    expect(
+      namesIn(`<div class="btn btn--ds-primary">x</div>`),
+      'negative control: a BEM modifier must not read as a custom property'
+    ).toEqual([]);
+
+    const strays: string[] = [];
+    for (const file of svelteFiles) {
+      for (const name of namesIn(readFileSync(file, 'utf8'))) {
+        strays.push(`${relative(srcDir, file)} names ${name} in compiled output`);
+      }
+    }
+
+    expect(
+      strays,
+      `a custom property named in a component is never in tokens.css, so the sweep cannot see it:\n  ${strays.join('\n  ')}`
+    ).toEqual([]);
+  });
+});
+
+describe('palette token classification (ds-spu)', () => {
+  /** A palette for the direct cases; most need no aliases. */
+  const P = (css = '') => paletteOf(css);
+
+  it('classifies EVERY --ds-* declaration, and returns a usable answer for each', () => {
+    const palette = paletteOf(tokens);
+    const decls = tokenDeclarations(tokens);
+    expect(decls.length).toBeGreaterThan(60); // premise: parsed the palette
+
+    const bad: string[] = [];
+    for (const { name, value } of decls) {
+      let c: TokenClass;
+      try {
+        c = classifyTokenValue(palette, name, value);
+      } catch (e) {
+        bad.push(`${name}: ${value} -> ${(e as Error).message}`);
+        continue;
+      }
+      // "Did not throw" is not a result. An implementation returning undefined
+      // or {} would pass a truthiness check while classifying nothing.
+      if (c?.kind === 'color') {
+        if (!/^#[0-9a-f]{6}$/.test(c.hex))
+          bad.push(`${name}: colour is not canonical #rrggbb: ${c.hex}`);
+      } else if (c?.kind === 'not-a-color') {
+        if (!c.why?.trim()) bad.push(`${name}: classified not-a-colour with no reason`);
+      } else {
+        bad.push(`${name}: unrecognised classification ${JSON.stringify(c)}`);
+      }
+    }
+    expect(
+      bad,
+      `every palette declaration must resolve to a colour or be provably not one:\n  ${bad.join('\n  ')}`
+    ).toEqual([]);
+  });
+
+  it('resolves an INLINE alias, which readToken() cannot see', () => {
+    // The two-parsers-disagree bug: readToken() is line-anchored, so it finds
+    // nothing here while tokenDeclarations() finds both. Alias resolution used
+    // the former and accounting the latter.
+    //
+    // This must CLASSIFY --ds-b, not merely look up --ds-a. Asserting the
+    // lookup alone would stay green with alias resolution switched back to
+    // readToken(), which is exactly the injection it is supposed to pin.
+    const p = paletteOf(':root { --ds-a: #ffffff; --ds-b: var(--ds-a); }');
+    expect(classifyTokenValue(p, '--ds-b', p.get('--ds-b')!)).toEqual({
+      kind: 'color',
+      hex: '#ffffff'
+    });
+  });
+
+  it('follows a var() alias to the colour it really is', () => {
+    const p = P('--ds-a: #4285f4;');
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a)')).toEqual({
+      kind: 'color',
+      hex: '#4285f4'
+    });
+  });
+
+  it('does not mistake an alias to a shorthand for a colour', () => {
+    const p = P('--ds-a: 2px solid #4285f4;');
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a)').kind).toBe('not-a-color');
+  });
+
+  it('ignores the fallback entirely when the primary is a colour', () => {
+    // Even an unsupported notation in the fallback is irrelevant: it cannot
+    // render, so rejecting on it would fail a token that is perfectly fine.
+    const p = P('--ds-a: #4285f4;');
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a, oklch(0.6 0.2 250))')).toEqual({
+      kind: 'color',
+      hex: '#4285f4'
+    });
+  });
+
+  it('propagates a failure from the aliased declaration, naming the chain', () => {
+    const p = P('--ds-a: oklch(0.6 0.2 250);');
+    expect(() => classifyTokenValue(p, '--ds-b', 'var(--ds-a)')).toThrow(
+      /--ds-b -> --ds-a[\s\S]*oklch/
+    );
+  });
+
+  it('ignores the fallback when the primary is declared as a NON-colour too', () => {
+    // The token is whatever the primary is. `--ds-a: 2px` substitutes fine, so
+    // --ds-b computes to `2px` and the fallback never renders (verified in
+    // Chromium). An earlier draft threw here, on the
+    // theory that the consuming declaration goes invalid at computed-value time
+    // and paints something unknowable. That confuses the TOKEN with a
+    // DECLARATION that consumes it: `border-width: var(--ds-b)` is perfectly
+    // valid, and the same argument would have condemned the no-fallback form,
+    // which this classifies as not-a-colour without complaint.
+    const p = P('--ds-a: 2px;');
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a, #ffffff)')).toEqual(
+      classifyTokenValue(p, '--ds-b', 'var(--ds-a)')
+    );
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a, #ffffff)').kind).toBe('not-a-color');
+  });
+
+  it('throws rather than ignoring a fallback the browser WOULD follow', () => {
+    // The rule above ("declared -> ignore the fallback") is only sound because
+    // the classifier returns a verdict solely for a primary it could classify.
+    // A DECLARED primary can still be the guaranteed-invalid value, and then the
+    // browser does follow the fallback. All three forms below were verified in
+    // Chromium to compute to the fallback #ff0000. So the boundary that has to
+    // hold is "declared AND classifiable" — each of these must throw, never
+    // return the primary's verdict and never quietly return the fallback's.
+    expect(() => classifyTokenValue(P('--ds-a: initial;'), '--ds-b', 'var(--ds-a, #ffffff)')).toThrow(
+      /--ds-b/
+    );
+    expect(() =>
+      classifyTokenValue(P('--ds-a: var(--ds-nope);'), '--ds-b', 'var(--ds-a, #ffffff)')
+    ).toThrow(/--ds-nope/);
+    expect(() =>
+      classifyTokenValue(P('--ds-a: var(--ds-c);\n--ds-c: var(--ds-a);'), '--ds-b', 'var(--ds-a, #ffffff)')
+    ).toThrow(/cycle/);
+  });
+
+  it('refuses a fallback whose primary is not in the palette at all', () => {
+    // "absent from this string" is not "undefined in the browser": another
+    // stylesheet, an inline style or script may define it, and then the fallback
+    // never renders. The live component uses of this form are not palette tokens.
+    expect(() => classifyTokenValue(P(), '--ds-b', 'var(--external-brand, #ffffff)')).toThrow(
+      /--ds-b/
+    );
+    expect(() => classifyTokenValue(P(), '--ds-b', 'var(--ds-missing)')).toThrow(/--ds-b/);
+  });
+
+  it('names the cycle instead of recursing until the stack gives out', () => {
+    const p = P('--ds-a: var(--ds-b);\n--ds-b: var(--ds-a);');
+    // The DIAGNOSTIC, not merely "it threw" — a RangeError from an exhausted
+    // stack would also throw, and would tell the next reader nothing.
+    expect(() => classifyTokenValue(p, '--ds-a', 'var(--ds-b)')).toThrow(/cycle/i);
+  });
+
+  it('converts the rgb() form it can convert exactly', () => {
+    expect(classifyTokenValue(P(), '--ds-x', 'rgb(18, 21, 28)')).toEqual({
+      kind: 'color',
+      hex: '#12151c'
+    });
+    expect(classifyTokenValue(P(), '--ds-x', 'rgba(18, 21, 28, 1)').kind).toBe('color');
+    // CSS clamps out-of-range channels rather than dropping the declaration, so
+    // this matches the browser instead of inventing a failure.
+    expect(classifyTokenValue(P(), '--ds-x', 'rgb(300, 0, 0)')).toEqual({
+      kind: 'color',
+      hex: '#ff0000'
+    });
+  });
+
+  it('names the token AND the notation for a colour it will not convert', () => {
+    // Asserts the SPECIFIC diagnostic, not just "it threw". Otherwise dropping a
+    // name from COLOR_FUNCTIONS still lands on the unknown-function throw, whose
+    // message also contains the token and the function — and the test would not
+    // notice that the notation-specific guidance had disappeared.
+    for (const [value, notation] of [
+      ['oklch(0.6 0.2 250)', 'oklch'],
+      ['color-mix(in srgb, #4285f4 42%, transparent)', 'color-mix'],
+      ['hsl(210, 90%, 60%)', 'hsl'],
+      ['lab(50% 40 59.5)', 'lab'],
+      ['contrast-color(#4285f4)', 'contrast-color']
+    ] as const) {
+      expect(() => classifyTokenValue(P(), '--ds-accent', value), value).toThrow(
+        new RegExp(`--ds-accent[\\s\\S]*${notation}\\(\\) color notation`)
+      );
+    }
+  });
+
+  it('throws on an UNKNOWN function rather than calling it not-a-colour', () => {
+    // Round 1's actual bug. Substitution and conditional functions can produce
+    // colours, so no denylist of colour functions is complete and "unknown" must
+    // never resolve to "safe to skip".
+    for (const v of ['env(--brand, #fff)', 'attr(data-c type(<color>), red)', 'whatever(1)']) {
+      expect(() => classifyTokenValue(P(), '--ds-x', v), v).toThrow(/unknown function/);
+    }
+  });
+
+  it('rejects a translucent colour rather than measuring the wrong thing', () => {
+    expect(() => classifyTokenValue(P(), '--ds-x', 'rgba(18, 21, 28, 0.42)')).toThrow(/translucent/);
+    expect(() => classifyTokenValue(P(), '--ds-x', '#12151c6b')).toThrow(/alpha channel/);
+  });
+
+  it('rejects an rgb() form it does not parse instead of guessing', () => {
+    expect(() => classifyTokenValue(P(), '--ds-x', 'rgb(18 21 28)')).toThrow(/--ds-x/);
+  });
+
+  it('lets a known non-colour function through', () => {
+    expect(classifyTokenValue(P(), '--ds-ease', 'cubic-bezier(0.2, 0.7, 0.2, 1)').kind).toBe(
+      'not-a-color'
+    );
+  });
+
+  it('lets a plain number or length through as not-a-colour', () => {
+    for (const v of ['400', '1.55', '0.8125rem', '999px', '68ch', '120ms', '0.06em', '56rem']) {
+      expect(classifyTokenValue(P(), '--ds-x', v).kind, v).toBe('not-a-color');
+    }
+  });
+
+  it('refuses to guess whether a bare keyword is a colour', () => {
+    for (const v of ['white', 'transparent', 'currentColor', 'rebeccapurple']) {
+      expect(() => classifyTokenValue(P(), '--ds-x', v), v).toThrow(/--ds-x/);
+    }
+    // CSS-wide keywords are NOT safe: each can expose an inherited or cascaded
+    // custom-property value, which may well be a colour.
+    for (const v of ['inherit', 'initial', 'unset', 'revert', 'revert-layer']) {
+      expect(() => classifyTokenValue(P(), '--ds-x', v), v).toThrow(/--ds-x/);
+    }
+    expect(classifyTokenValue(P(), '--ds-x', 'none').kind).toBe('not-a-color');
+  });
+
+  it('strips !important, which is a declaration suffix and not part of the colour', () => {
+    expect(classifyTokenValue(P(), '--ds-x', '#4285f4 !important')).toEqual({
+      kind: 'color',
+      hex: '#4285f4'
+    });
+  });
+
+  it('does not let a quoted string split into a false multi-part value', () => {
+    // Distinguishes quote tracking on its own. The real font stacks have
+    // top-level commas either way and so prove nothing about it; a single quoted
+    // string containing a comma is one component, and must reach the bare-value
+    // throw rather than be waved through as a comma-separated list.
+    expect(() => classifyTokenValue(P(), '--ds-x', '"a,b"')).toThrow(/--ds-x/);
+  });
+
+  it('refuses a value containing a backslash escape', () => {
+    // `r\67 b(...)` is one token to a browser and two to this scanner. Also
+    // closes the escaped-quote gap, which the scanner does not model.
+    expect(() => classifyTokenValue(P(), '--ds-x', 'r\\67 b(18, 21, 28)')).toThrow(/backslash/);
+  });
+
+  it('sweeps a colour token written in a non-hex notation', () => {
+    const css = '--ds-base: #12151c;\n--ds-alias: var(--ds-base);\n--ds-rgb: rgb(66, 133, 244);\n';
+    expect(colorTokens(css)).toEqual({
+      '--ds-base': '#12151c',
+      '--ds-alias': '#12151c',
+      '--ds-rgb': '#4285f4'
+    });
+  });
+
+  it('propagates the failure instead of skipping the token', () => {
+    // Directly, not via today's palette — every current declaration classifies
+    // cleanly, so a `try {} catch {}` inside colorTokens would otherwise leave
+    // the whole suite green.
+    expect(() => colorTokens('--ds-x: oklch(0.6 0.2 250);')).toThrow(/--ds-x[\s\S]*oklch/);
+  });
+
+  it('still sweeps every hex token it swept before, with the same value', () => {
+    // The change must move no cheese on today's palette. A property rather than a
+    // count: a count would need editing on every legitimate palette addition, and
+    // would stop meaning anything the first time it was.
+    const swept = colorTokens(tokens);
+    const hexes = tokenDeclarations(tokens).filter((d) => /^#[0-9a-fA-F]{6}$/.test(d.value));
+    expect(hexes.length).toBeGreaterThan(25); // premise: found the palette
+    for (const { name, value } of hexes) {
+      expect(swept[name], `${name} left the sweep`).toBe(value.toLowerCase());
+    }
+  });
+
+  it('resolveColor accepts any notation the sweep accepts', () => {
+    // Otherwise the palette cannot actually adopt one: --ds-navy is swept here
+    // AND resolved by the instrument-band test.
+    expect(resolveColor('--ds-a: rgb(14, 27, 95);', 'var(--ds-a)')).toBe('#0e1b5f');
+    expect(() => resolveColor('', 'rgba(0, 0, 0, 0.5)')).toThrow(/translucent/);
+    expect(() => resolveColor('', '2px solid #fff')).toThrow(/not a colou?r|shorthand/i);
+    // Pre-existing hole: /^#[0-9a-fA-F]{3,8}$/ accepted invalid 5- and 7-digit hex.
+    expect(() => resolveColor('', '#abcde')).toThrow();
   });
 });
 
