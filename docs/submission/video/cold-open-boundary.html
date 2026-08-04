@@ -2219,13 +2219,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     /* A gesture driven by rAF does not end at its nominal duration — it ends at
        the first frame boundary AFTER it, so each one hands the next link of the
        serial chain a fraction of a frame late, and the error accumulates. The
-       burst and the ring lerp are the two that gate later links. Measured over
-       three runs (2026-08-04, 271 chars): .tf.done 28039, ring-draw 28300,
-       ring-land 29101, ring-landed 30110, committed 31601 — spread under 10ms
-       run to run. Nominal arithmetic alone lands ~20ms early by ring-land and
-       ~30ms early by ring-landed; one frame of tail at each rAF gesture brings
-       every mark within 6ms. Re-measure with a MutationObserver on body.class
-       if you retime the chain. */
+       burst and the ring lerp are the two that gate later links. Measured on
+       the v4 clock (2026-08-05, 271 chars): ring-draw 37299, ring-land 38100,
+       ring-landed 39112, committed 40601 — within 5ms of the arithmetic below.
+       Re-measure with a MutationObserver on body.class if you retime the
+       chain. */
     var RAF_TAIL  = 16;
     var TYPE_MS   = CODE_TEXT.length*4.5 + RAF_TAIL;   /* typeCode: 4.5ms/char */
     var C_TYPE    = 35800,                        /* beat9Chain anchor */
