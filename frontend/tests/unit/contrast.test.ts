@@ -234,7 +234,7 @@ describe('palette declaration parsing (ds-spu)', () => {
     ).toBe(3);
   });
 
-  it('is reading the WHOLE palette — no --ds-* is declared outside tokens.css', () => {
+  it('no --ds-* is declared outside tokens.css by any STATICALLY VISIBLE route', () => {
     // Deliberately NOT tokenDeclarations(). That parser requires a declaration
     // to end at `;` or `}` — true of a stylesheet rule, false of most of the
     // ways a stray token actually arrives. FIVE spellings were verified in a
@@ -265,6 +265,16 @@ describe('palette declaration parsing (ds-spu)', () => {
     // that puts a token name immediately before a colon trips it. That is the
     // safe direction — it fails loudly and the fix is to reword. A comment
     // stripper here would make the guard LESS sensitive, which hides bugs.
+    //
+    // WHAT THIS DOES NOT PROVE, stated because four rewrites of this guard each
+    // believed they were complete and each was wrong: a static check cannot see
+    // a write whose property name, or whose whole declaration, is assembled at
+    // runtime — `style[m]('--ds-' + key, v)`, a generic serializer, a helper
+    // imported from elsewhere. The rules here cover every route that is visible
+    // in source or in a compiled component, which is why the name says
+    // STATICALLY VISIBLE rather than "the whole palette". Closing the rest needs
+    // a runtime check that instruments writes during the Playwright flows;
+    // that is ds-ley, and it is filed rather than pretended away.
     const files: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -306,16 +316,21 @@ describe('palette declaration parsing (ds-spu)', () => {
       for (const m of source.matchAll(/\bstyle:--[\w-]*/g)) {
         strays.push(`${where} sets ${m[0]} via a Svelte style directive`);
       }
-      // Any CSSOM custom-property write at all, not just a --ds-* one: there
-      // are zero in src today, so "none" is a cheaper and stronger invariant
-      // than parsing the first argument. Named, not dotted, because the call is
-      // spellable as `style.setProperty(…)`, `style['setProperty'](…)` and
-      // `style.setProperty?.(…)` — all three write the property, and the first
-      // version of this rule matched only the first. Bracketed access to .style
-      // is flagged on its own for the same reason: the five real uses in src are
-      // all plain `.style.overflow` / `.style.height` assignments, so requiring
-      // dot-access costs nothing and removes a whole family of spellings.
-      for (const m of source.matchAll(/\bsetProperty\b|\bcssText\b|\.style\s*\??\s*\[/g)) {
+      // Any CSSOM style write at all, not just a --ds-* one: there are zero in
+      // src today, so "none" is cheaper and stronger than parsing the first
+      // argument. Matched by NAME, never as a dotted call, because the same
+      // write is spellable as `style.setProperty(…)`, `style['setProperty'](…)`
+      // and `style.setProperty?.(…)`; an earlier version matched only the first.
+      // Bracketed `.style[…]` is flagged for the same reason — the five real
+      // uses in src are all plain `.style.overflow` / `.style.height`.
+      //
+      // `setAttribute` is here because `el.setAttribute('style', '--ds-x: red')`
+      // really does declare the property (verified in jsdom), reaching it
+      // without touching `.style` or `setProperty` at all. Zero in src, so the
+      // blanket name costs nothing.
+      for (const m of source.matchAll(
+        /\bsetProperty\b|\bcssText\b|\bsetAttribute\b|\.style\s*\??\s*\[/g
+      )) {
         strays.push(`${where} writes style via CSSOM (offset ${m.index}) — see the note in this test`);
       }
       // An escape can spell a --ds-* name that no text scan can recognise, so in
@@ -339,7 +354,7 @@ describe('palette declaration parsing (ds-spu)', () => {
     ).toEqual([]);
   });
 
-  it('is reading the WHOLE palette — no Svelte template writes one either', () => {
+  it('no Svelte component names a --ds-* anywhere in its compiled module', () => {
     // The rules above scan SOURCE, and source scanning is spelling-by-spelling:
     // three separate reviews each produced a new way to write a declaration that
     // the previous scan missed. `style:--ds-x={…}` and `style={{'--ds-x': …}}`
@@ -412,16 +427,31 @@ describe('palette declaration parsing (ds-spu)', () => {
     // nothing — a compiler change, a parse that silently returns an empty body —
     // every file below reports clean while inspecting nothing. So pin it on
     // fixtures whose answers are known, one per spelling, plus the negative.
+    //
+    // These two DO write the property. Verified by rendering, not by reading
+    // compiler output — see the note below about why that distinction bit.
     for (const [spelling, src] of [
       ['directive', `<div style:--ds-probe={'#f00'}></div>`],
-      ['object literal', `<div style={{ '--ds-probe': '#f00' }}></div>`],
-      ['static attribute', `<div style="--ds-probe: #f00"></div>`],
-      ['static indirection', `<script>const s={'--ds-probe':'#f00'}</script><div style={s}></div>`],
-      // A `)` inside a regex character class broke the hand-rolled paren matcher
-      // this replaced. A real parser is the point; this pins that it stays one.
-      ['regex-literal neighbour', `<div style={{ t: /[)]/.source, '--ds-probe': '#f00' }}></div>`]
+      ['static attribute', `<div style="--ds-probe: #f00"></div>`]
     ] as const) {
       expect(namesIn(src), `positive control: a ${spelling} style write is no longer seen`).toContain(
+        '--ds-probe'
+      );
+    }
+    // These three do NOT write the property in the installed Svelte: `style={obj}`
+    // stringifies the object into the style attribute, and rendering each leaves
+    // getPropertyValue('--ds-probe') === ''. They are kept as EXTRACTION controls
+    // — they pin that the parser still finds a literal through indirection and
+    // past a regex literal, which is what the previous paren-matcher failed — and
+    // as cheap cover should a future Svelte start honouring style objects.
+    // Labelled honestly, because an earlier revision of this file called them
+    // proven ways to declare a token on the strength of compiler output alone.
+    for (const [shape, src] of [
+      ['object literal', `<div style={{ '--ds-probe': '#f00' }}></div>`],
+      ['static indirection', `<script>const s={'--ds-probe':'#f00'}</script><div style={s}></div>`],
+      ['regex-literal neighbour', `<div style={{ t: /[)]/.source, '--ds-probe': '#f00' }}></div>`]
+    ] as const) {
+      expect(namesIn(src), `extraction control: the parser no longer sees a ${shape}`).toContain(
         '--ds-probe'
       );
     }

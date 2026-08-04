@@ -154,10 +154,18 @@ it throws on all three — but the stated boundary had to change from "declared"
 **"declared and successfully classified"**, and now has a test.
 
 **Round 6 — a sixth spelling, and the point where enumerating stopped being the
-answer.** Three more, all verified: `<div style={{ '--ds-x': '#f00' }}>` (a
-Svelte style **object**, which compiles to `set_style(div, {'--ds-x': …})` and
-looks nothing like the directive in source), `style['setProperty'](…)`, and
-`style.setProperty?.(…)`.
+answer.** Three more: `style['setProperty'](…)`, `style.setProperty?.(…)`, and a
+Svelte style **object** `<div style={{ '--ds-x': '#f00' }}>` which compiles to
+`set_style(div, {'--ds-x': …})` and looks nothing like the directive in source.
+
+> ⚠️ **Round 8 correction to that third one.** I recorded it as a proven way to
+> declare a token on the strength of the compiler output. It is not. The
+> installed Svelte stringifies the object into the style attribute, and rendering
+> it leaves `getPropertyValue('--ds-x') === ''`. I had verified the *compilation*
+> and written it down as verified *behaviour* — the exact mistake this change is
+> about, made while documenting the change. The guard still covers the shape, as
+> an extraction control and as cover if a future Svelte honours style objects,
+> but it is no longer claimed to declare anything.
 
 Six spellings found across three rounds is not a list that was nearly complete —
 it is evidence that **scanning source text for surface syntax cannot enforce this
@@ -193,15 +201,41 @@ at runtime (`` `--ds-${key}` `` fed to a bracketed call) is invisible to every
 rule here. Only a runtime check — rendering the app and enumerating the custom
 properties actually set — would close it, and that is filed rather than bodged.
 
-The pattern across all seven rounds is worth naming: **every round, the weakest
+**Round 8 — an eleventh route, and a claim of mine that was simply false.**
+`el.setAttribute('style', '--ds-x: #ff0000')` declares the property while
+touching neither `.style` nor `setProperty`, and passed both guards. Zero
+`setAttribute` calls exist in `src/`, so the blanket name joins the CSSOM rule at
+no cost. But the review's sharper point stands: one more rule is one more
+spelling, and equivalent routes (a generic serializer, an imported helper) will
+keep existing.
+
+So the guard's **claim** was narrowed to match what it can actually prove. The
+test is no longer called "is reading the WHOLE palette"; it is *"no `--ds-*` is
+declared outside tokens.css by any **statically visible** route"*, and it states
+in full what it does not cover — any write whose name or declaration is assembled
+at runtime. That is ds-ley, and per the same review it should **instrument
+writes** during the Playwright flows rather than enumerate final rendered
+properties, which would miss unexercised branches and properties written then
+removed.
+
+Round 8 also caught three of my positive controls proving the wrong thing (see
+the round-6 correction above): the object-based shapes are extraction controls,
+not write controls, and are now labelled that way.
+
+The pattern across all eight rounds is worth naming: **every round, the weakest
 thing was a test that could not fail.** The classifier itself was wrong twice
-(round 1's denylist, round 4's fallback row); the instruments were wrong fourteen
-times — and the last eight were a guard added *in this change*, found in the four
-rounds *after* the reviews had already started finding exactly that. Four times
-running, the fix for a fail-open guard was itself fail-open. What finally worked
-was not a better pattern but **matching the instrument to the substrate**: text
-rules where the substrate is text, a real parser where it is code, and a reported
-backslash where the scanner honestly cannot read what CSS reads.
+(round 1's denylist, round 4's fallback row); the instruments were wrong
+eighteen times — and most of those were a guard added *in this change*, found in
+the five rounds *after* the reviews had already started finding exactly that.
+Five times running, the fix for a fail-open guard was itself fail-open.
+
+Two things ended it, and neither was a better pattern. **Match the instrument to
+the substrate**: text rules where the substrate is text, a real parser where it
+is code, a reported backslash where the scanner honestly cannot read what CSS
+reads. And **narrow the claim to what the instrument proves** — the last round
+found not only a missed route but a test whose name promised more than any static
+check can deliver, and three controls I had labelled "verified" on the strength of
+compiler output I never rendered.
 
 ## Design decisions, and what was rejected
 
@@ -247,6 +281,12 @@ translucent value has no contrast ratio of its own. It needs a substrate
 specific proof like the ds-2fp premise test. Recorded on that bead.
 
 ## Scope premise this also has to pin
+
+> **Read the instrument table below before adding a rule here.** Eleven routes
+> were found across five review rounds, four of them in guards written *during*
+> this change. If the answer to a new one looks like "add another regex", it is
+> probably the wrong answer.
+
 
 The sweep reads exactly one file. True today — 74 declarations in
 `src/styles/tokens.css` and zero elsewhere in `src/`. Nothing enforced it. This
@@ -1106,7 +1146,7 @@ git commit -m "fix(ui): the palette sweep discovers colours in any notation, or 
 
 **Step 1: Write the test**
 
-**This is the round-6 version, and there are now TWO tests.** The first draft
+**This is the round-8 version, and there are now TWO tests.** The first draft
 used `tokenDeclarations()` over `.svelte`/`.css` only; rounds 4, 5 and 6 each
 proved the then-current guard fail-open. The source test below keeps the rules
 that suit a textual substrate; the compiled test that follows it replaces
@@ -1146,7 +1186,13 @@ it('is reading the WHOLE palette — no --ds-* is declared outside tokens.css', 
     for (const m of source.matchAll(/\bstyle:--[\w-]*/g)) {
       strays.push(`${where} sets ${m[0]} via a Svelte style directive`);
     }
-    for (const m of source.matchAll(/\.(?:setProperty\s*\(|cssText\s*=)/g)) {
+    // The NAME, never a dotted call: `style.setProperty(…)`,
+    // `style['setProperty'](…)` and `style.setProperty?.(…)` are one write.
+    // `setAttribute` is here because `setAttribute('style','--ds-x: red')` also
+    // declares the property without touching `.style` at all.
+    for (const m of source.matchAll(
+      /\bsetProperty\b|\bcssText\b|\bsetAttribute\b|\.style\s*\??\s*\[/g
+    )) {
       strays.push(`${where} writes style via CSSOM (offset ${m.index})`);
     }
     // The scanner cannot DECODE escapes, so it flags their PRESENCE. Zero today.
@@ -1165,7 +1211,7 @@ it('is reading the WHOLE palette — no --ds-* is declared outside tokens.css', 
 `readdirSync` is already imported; add `join` and `relative` to the `node:path`
 import.
 
-**Step 2: Run, then prove it can fail — in all FIVE ways a stray arrives**
+**Step 2: Run, then prove it can fail — in all ELEVEN ways a stray arrives**
 
 Green immediately (there are no strays), which proves nothing on its own. One
 injection is nowhere near enough here: this guard was rewritten twice, and each
@@ -1192,6 +1238,8 @@ printf '\n:root { --d\\73 -esc-escaped: #00ff00; }\n'  >> src/styles/base.css
 #    <div style={{ t: /[)]/.source, '--ds-x': '#0f0' }}></div>
 # I. bracketed CSSOM       style['setProperty']('--ds-x', v)   in src/main.ts
 # J. optional-call CSSOM   style.setProperty?.('--ds-x', v)    in src/main.ts
+# K. setAttribute — declares the property without touching .style at all
+#    el.setAttribute('style', '--ds-x: #ff0000')          in src/main.ts
 
 npm run test:unit -- --run tests/unit/contrast.test.ts -t 'WHOLE palette'   # each must FAIL, naming the file
 ```
@@ -1267,6 +1315,7 @@ the scope guard had been passing while three real spellings walked through it.
 | 24 | scope guard: `<script>const s={'--ds-x':…}</script><div style={s}>` | compiled-output test REDDENS | round 7. **Static indirection** — not a computed name. The literal is in the module but not in the `set_style` call, which is why argument-scanning was replaced by a full parse |
 | 25 | scope guard: `<div style={{ t: /[)]/.source, '--ds-x': … }}>` | compiled-output test REDDENS | round 7. The `)` in a regex character class ended the hand-rolled paren match early. Pinned by a positive control so the parser cannot regress to a matcher |
 | 26 | the name match drops its `(?:^\|[^\w-])` anchor | the BEM **negative control** REDDENS | round 7. ~120 `btn--ds-*` class names would flag; an unusable guard gets deleted, not fixed |
+| 27 | scope guard: `el.setAttribute('style', '--ds-x: #ff0000')` in a `.ts` | CSSOM rule REDDENS | round 8. Declares the property touching neither `.style` nor `setProperty`. Zero `setAttribute` in `src/`, so the blanket name is free |
 
 Record each outcome in the PR body, including #14's honest "unproven".
 
