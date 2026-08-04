@@ -32,6 +32,8 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const srcDir = resolve(here, '../../src');
+/** The frontend project root: the build can import from anywhere under it. */
+const projectDir = resolve(here, '../..');
 
 /** WCAG 1.4.11 non-text contrast, and 1.4.3's large-text floor. Same number. */
 const FLOOR = 3.0;
@@ -283,9 +285,20 @@ describe('palette declaration parsing (ds-spu)', () => {
     // is not claimed to be complete. Closing it properly needs a runtime check
     // that instruments writes during the Playwright flows: ds-ley, filed rather
     // than pretended away.
+    // The walk root is the PROJECT, not src/. Vite's entry lives in src/ but
+    // its imports need not: `import '../reviewProbe.css'` from main.ts is a
+    // production build input a src/-rooted walk never opens, and the build
+    // really does emit --ds-bg twice with the later one winning. The true
+    // boundary is the build graph; this is a deliberate SUPERSET of it, which
+    // is the safe direction — a superset can only produce a false positive,
+    // never a miss, and a directory root cannot silently shrink the way the
+    // extension allowlist did. Pruned: dependencies, build output, and the test
+    // tree, which is not a build input and names tokens on every other line.
+    const PRUNE = /^(node_modules|dist|coverage|test-results|playwright-report|tests|\.svelte-kit|\.git)$/;
     const files: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (PRUNE.test(entry.name)) continue;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
         // EVERY file, no extension allowlist. An allowlist is an enumeration,
@@ -293,10 +306,15 @@ describe('palette declaration parsing (ds-spu)', () => {
         else files.push(full);
       }
     };
-    walk(srcDir);
+    walk(projectDir);
     // Premise: the walk reached the tree AND can see its own subject. A guard
     // that cannot reach what it checks reports clean and proves nothing (#293).
     expect(files.length).toBeGreaterThan(30);
+    // Premise: it climbed ABOVE src/, or round 10's finding 2 is silently back.
+    expect(
+      files.some((f) => !f.startsWith(srcDir)),
+      'walk never left src/, so a build input imported from outside it is invisible'
+    ).toBe(true);
     const tokensFile = files.find((f) => f.endsWith(join('styles', 'tokens.css')));
     expect(tokensFile, 'walk never reached tokens.css').toBeDefined();
     expect(
@@ -318,6 +336,21 @@ describe('palette declaration parsing (ds-spu)', () => {
         // Tolerates a comment between the name and the colon, which CSS allows.
         for (const m of source.matchAll(/--ds-[\w-]+(?=(?:\s|\/\*[\s\S]*?\*\/)*:)/g)) {
           strays.push(`${where} declares ${m[0]}`);
+        }
+        // `@property --ds-x { … }` REGISTERS the name and is bound by `{`, not
+        // `:`, so the rule above cannot see it — and it is not a near-miss: a
+        // registered property with `initial-value: #f00` supplies that colour
+        // to every consumer with no ordinary declaration anywhere.
+        //
+        // Matched as the CONSTRUCT, not as "name followed by `{`". The looser
+        // form flagged `--ds-crew-{verb}` written in a CrewGlyph doc comment,
+        // and rewording good prose to satisfy a punctuation heuristic is the
+        // wrong trade when the construct is this easy to name. CSS binds a
+        // custom-property name with exactly two constructs — a declaration and
+        // this one — and unlike the DOM API surface, that pair is closed
+        // grammar rather than an open list.
+        for (const m of source.matchAll(/@property\s+(--ds-[\w-]+)/g)) {
+          strays.push(`${where} registers ${m[1]} with @property`);
         }
       }
       // A Svelte style directive on ANY custom property, not just a --ds-* one:
