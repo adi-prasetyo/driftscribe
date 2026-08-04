@@ -2614,7 +2614,23 @@
        min-content sizes, not a property of the shell. */
     min-height: 0;
     padding: 0 var(--ds-sp-6);
+    /* Centred in the track the rail leaves, not flush against it — the same
+       `width: 100% / max-width / margin: auto` triple ApprovalDesk uses, so the
+       two views agree about where the page is. Before this the column resolved
+       to the START of the track (a grid item capped below its area sits at the
+       start) and dumped every spare pixel on the right: 264px of dead space at
+       1440, 744px at 1920. Below ~1176px the column fills the track and the
+       margins collapse to 0, which is why the miss survived to ds-2cq.
+
+       `width: 100%` is load-bearing, not belt-and-braces. A grid item only
+       stretches to its area when its margins are NOT auto, so the auto margins
+       switch the used width from stretch-then-clamp to shrink-to-fit — and an
+       empty new chat, whose only content is the composer and four chips, would
+       shrink-wrap well under the cap. The explicit width restores "fill the
+       track, then clamp" and lets the margins do nothing but centre. */
+    width: 100%;
     max-width: var(--ds-page-max);
+    margin-inline: auto;
   }
   /* The chat view's single scroll container. Vertical padding lives here rather
      than on .chat-area so the scrollbar runs the full height of the column
