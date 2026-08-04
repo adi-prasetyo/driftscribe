@@ -288,12 +288,16 @@ describe('palette declaration parsing (ds-spu)', () => {
     // The walk root is the PROJECT, not src/. Vite's entry lives in src/ but
     // its imports need not: `import '../reviewProbe.css'` from main.ts is a
     // production build input a src/-rooted walk never opens, and the build
-    // really does emit --ds-bg twice with the later one winning. The true
-    // boundary is the build graph; this is a deliberate SUPERSET of it, which
-    // is the safe direction — a superset can only produce a false positive,
-    // never a miss, and a directory root cannot silently shrink the way the
-    // extension allowlist did. Pruned: dependencies, build output, and the test
-    // tree, which is not a build input and names tokens on every other line.
+    // really does emit --ds-bg twice with the later one winning.
+    //
+    // This is NOT a superset of the build graph. An earlier version of this
+    // comment claimed it was; `import '../tests/probe.css'` disproved that,
+    // since `tests/` is pruned and that import still ships and still wins. The
+    // prune list is a practical necessity (the test tree names tokens on every
+    // other line, node_modules cannot be walked at all), and what makes it safe
+    // is not a superset argument but the reachability pin further down, which
+    // forbids any CSS import landing behind it. Pruned: dependencies, build
+    // output, and the test tree.
     const PRUNE = /^(node_modules|dist|coverage|test-results|playwright-report|tests|\.svelte-kit|\.git)$/;
     const files: string[] = [];
     const walk = (dir: string) => {
@@ -415,11 +419,18 @@ describe('palette declaration parsing (ds-spu)', () => {
     // which can never be walked: a bare CSS specifier is reported rather than
     // waved through. There are exactly two CSS imports today, both in main.ts.
     const walked = new Set(files.map((f) => resolve(f)));
+    let cssImportsSeen = 0;
     for (const file of files) {
       const where = relative(projectDir, file);
-      for (const m of readFileSync(file, 'utf8').matchAll(
-        /(?:@import\s+(?:url\()?|from\s*|import\s*)['"]([^'"]+\.s?css)['"]/g
+      const source = readFileSync(file, 'utf8');
+      // The specifier may carry a Vite query suffix (`?url`, `?inline`, or any
+      // arbitrary one — `foo.css?anything` still bundles the CSS). An earlier
+      // version required the closing quote immediately after `.css` and a
+      // `?review` suffix walked straight past it.
+      for (const m of source.matchAll(
+        /(?:@import\s+(?:url\()?|from\s*|import\s*)['"]([^'"]+\.s?css)(\?[^'"]*)?['"]/g
       )) {
+        cssImportsSeen++;
         const spec = m[1];
         if (!spec.startsWith('.')) {
           strays.push(`${where} imports CSS from a package (${spec}); the walk cannot see it`);
@@ -427,12 +438,38 @@ describe('palette declaration parsing (ds-spu)', () => {
           strays.push(`${where} imports ${spec}, which this walk never visited`);
         }
       }
+      // A glob import names a SET, not a file, so this scan cannot say where it
+      // lands. Zero today, so report any of them.
+      for (const m of source.matchAll(/import\.meta\.glob\s*\(/g)) {
+        strays.push(`${where} uses import.meta.glob (offset ${m.index}); this scan cannot resolve a set`);
+      }
+      // A dynamic import is fine when its specifier is a literal this scan can
+      // read — `await import('mermaid')` in InfraDiagram is exactly that, and
+      // flagging it was the blunt rule being blunt in the wrong place. Flag it
+      // when the specifier is CSS, or when it is NOT a literal and so cannot be
+      // checked at all.
+      // The argument must be NON-EMPTY to count as computed: prose in this very
+      // codebase writes "`await import()`-ed", and an empty-argument match read
+      // that as an unresolvable specifier.
+      for (const m of source.matchAll(
+        /(?<![.\w$])import\s*\(\s*(?:(['"])([^'"]*)\1|([^\s)]))/g
+      )) {
+        const literal = m[2];
+        if (literal === undefined) {
+          strays.push(`${where} has a dynamic import with a computed specifier (offset ${m.index})`);
+        } else if (/\.s?css(\?|$)/.test(literal)) {
+          strays.push(`${where} dynamically imports CSS (${literal}); this scan cannot place it`);
+        }
+      }
     }
-    // Premise: the import scan found the imports we know exist. If the pattern
-    // silently matched nothing, the check above would pass while proving zero.
+    // Premise: pinned on the MATCHER's own output, not on an independent search
+    // for `.css'` text. The previous version asserted the latter — replacing the
+    // matcher with an impossible regex left it green, so the premise it claimed
+    // to pin was not pinned at all. Same defect as a control that proves
+    // extraction while claiming to prove a write.
     expect(
-      files.filter((f) => /\.s?css['"]/.test(readFileSync(f, 'utf8'))).length,
-      'import scan found no CSS imports at all; main.ts has two'
+      cssImportsSeen,
+      'the CSS-import matcher produced no matches at all; main.ts has two'
     ).toBeGreaterThan(0);
 
     expect(
