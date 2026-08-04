@@ -1,8 +1,9 @@
 # Cold open — socket build, fix-forward round (implementation plan)
 
-**Bead: ds-22b.1.1 (child of ds-22b.1). Status: BUILT 2026-08-04, NOT COMMITTED,
-NOT RECORDED.** All of A–H plus the §3 decision are in the working tree
-(`docs/submission/video/cold-open-boundary.html`, uncommitted). Runtime 34.6 →
+**Bead: ds-22b.1.1 (child of ds-22b.1). Status: BUILT + COMMITTED 2026-08-04 as
+`709d713` on `main` (socket build `252772b`, pre-socket baseline `fa7d024`).
+NOT RECORDED, NOT PUSHED.** All of A–H plus the §3 decision are in
+`docs/submission/video/cold-open-boundary.html`. Runtime 34.6 →
 **34.9s**. See §9 for what the build changed relative to this plan and what it
 found that the plan did not predict.
 
