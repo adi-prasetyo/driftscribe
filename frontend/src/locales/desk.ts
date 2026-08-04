@@ -365,6 +365,15 @@ export const desk = {
     // identity and must not keep its verdict.
     'desk.estate.prPendingUnrefreshed': 'PR #{pr} · status not refreshed',
     'desk.estate.driftMore': '…{n} more drift',
+    // ds-3em. The drift group shows its first three rows; these work the
+    // toggle. TWO-WAY, unlike the ledger's one-way show-more one card up — drift
+    // rows hold no open-record state, so re-capping can hide nothing.
+    // `n` is the TOTAL, matching desk.ledger.showMore's rule: "Show all 6" says
+    // what you get, "Show 3 more" makes you do the sum. It counts only rows this
+    // client HOLDS — the `driftMore` trailer above reports the backend's own
+    // truncation, and the two must never be added together.
+    'desk.estate.driftShowAll': 'Show all {n}',
+    'desk.estate.driftShowLess': 'Show fewer',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
     // Pluralized on the TYPE count via i18n.ts's `.one`/`.other` convention —
     // a live estate very often has exactly one out-of-scope type, and the
@@ -530,6 +539,10 @@ export const desk = {
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
     'desk.estate.prPendingUnrefreshed': 'PR #{pr} ・ 状態は未更新',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
+    // ds-3em。残りの件数ではなく総数を出す（desk.ledger.showMore と同じ規則）。
+    // 上の driftMore はサーバー側で打ち切られた分なので、足し合わせないこと。
+    'desk.estate.driftShowAll': '{n}件すべて表示',
+    'desk.estate.driftShowLess': '表示を畳む',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',
     // JA carries no grammatical plural, so .one/.other are identical text
     // (i18n.ts `plural()` convention) — both forms still get catalogued.
