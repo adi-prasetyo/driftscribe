@@ -206,23 +206,34 @@ body.playing .camera{animation:push 40s linear both}
    scale creeps 1.35 -> 1.40 -> 1.45 so the camera never comes to a full stop. */
 body[data-beat="0"] .rig,
 body[data-beat="1"] .rig{transform:translate(0px,0px) scale(1)}
-/* Beat 2 re-derived again for the socket rework (build plan
-   docs/plans/2026-08-03-cold-open-socket-build-plan.md §3/§4 step 2). The old
-   2.06/-860.5/-678.5 framing existed to fit TWO full-size cards (定義+実際)
-   beside the blob; with only one card left (§6 — deleting 実際 dissolves that
-   constraint), the frame can go wider and calmer: the socket field, the
-   subject displaced from it, the one HCL card anchored to that socket, AND
-   the 見張る側 badge the beat-2 ripple travels to, all in one composition.
-   Derivation: world point P lands at T + s*P. s=1.7; content spans world
-   x ~180 (b-watch badge left edge) .. ~1240 (card right edge) and y ~310
-   (badge top) .. ~720 (mark field bottom), centre (710,515), placed at
-   screen centre (960,540): T = (960-1.7*710, 540-1.7*515) = (-247,-335.5). */
-body[data-beat="2"] .rig,
-body[data-beat="3"] .rig{transform:translate(-247px,-335.5px) scale(1.7)}
-body[data-beat="4"] .rig{transform:translate(-66px,-216px) scale(1.35)}
-body[data-beat="5"] .rig{transform:translate(-104px,-224px) scale(1.4)}
-body[data-beat="6"] .rig,
-body[data-beat="7"] .rig{transform:translate(-142px,-272px) scale(1.45)}
+/* Beats 2-7 share one interior framing family, re-derived for v4 (ds-22b.3):
+   the census card (world 975,170 .. 1405,~426) replaced the pdef card, and it
+   must stay on screen from the census (2) through the fix (7) so the drift
+   flare and the green flip can hit its payment-demo line. Derivation:
+   world point P lands at T + s*P; content spans x 180 (b-watch left edge) ..
+   1405 (census card right edge), so Tx=(1920-1225*s)/2 - 180*s. For beats
+   2-4 Ty pins the card TOP (y=170) at screen 40: Ty = 40 - 170*s. For beats
+   5-7 the gate (470..~700) and the stamp (bottom y~718) join the frame, so
+   Ty pins the stamp bottom at screen 800 instead: Ty = 800 - 718*s — which
+   crops the card's top lines at those scales. That crop is BUDGETED FOR: the
+   census lists payment-demo LAST, at the card's bottom, so the one line the
+   beats 3-7 story needs is the one that can never be cropped. The scale
+   creeps 1.36 -> 1.46 so the camera never comes to a full stop, easing back
+   to 1.45 for the fix. */
+body[data-beat="2"] .rig{transform:translate(-117.8px,-191.2px) scale(1.36)}
+body[data-beat="3"] .rig{transform:translate(-133.4px,-194.6px) scale(1.38)}
+body[data-beat="4"] .rig{transform:translate(-149.5px,-198px) scale(1.4)}
+body[data-beat="5"] .rig{transform:translate(-181.2px,-233.9px) scale(1.44)}
+body[data-beat="6"] .rig{transform:translate(-197.1px,-248.3px) scale(1.46)}
+body[data-beat="7"] .rig{transform:translate(-189px,-241px) scale(1.45)}
+/* THE BEAT-1 TAIL CARRIES THE ZOOM (ds-22b.2 defect 1). Beat 1's last motion
+   used to end ~5780 against a 7400 cut — 1.6s of frozen frame. The camera
+   push into beat 2's framing now starts at 5900 (a timer adds .prezoom) and
+   its 1500ms ride LANDS on the cut, so beat 2 opens already magnified and
+   settled. Specificity (0,2,2) beats the beat-1 rig rule's (0,1,2), and the
+   [data-beat="1"] scope means the lingering class cannot leak into any later
+   beat. Must match beat 2's transform EXACTLY or the cut moves. */
+body.prezoom[data-beat="1"] .rig{transform:translate(-117.8px,-191.2px) scale(1.36)}
 body[data-beat="8"] .rig,
 body[data-beat="9"] .rig{transform:translate(0px,0px) scale(1)}
 body[data-beat="10"] .rig{transform:translate(-57.6px,-32.4px) scale(1.06)}
@@ -454,6 +465,12 @@ body[data-beat="8"] .tgt-halo{border-color:var(--faint);
 body[data-beat="0"] .mklbl.inlbl{opacity:1; transition-delay:300ms}
 /* the three OUTSIDE labels arrive AFTER the line has drawn (1.5s) — see above */
 body[data-beat="1"] .mklbl{opacity:1; transition-delay:calc(1500ms + var(--ls,0ms))}
+/* ...and RETIRE as the tail zoom starts (5900): at scale 1.36 the two edge
+   labels crop mid-word at the frame boundary, and clipped type on the beat's
+   end state reads as a framing defect. They have made their argument by then;
+   beat 8's own rules bring the outside names back for the sweep. Specificity
+   (0,2,3) beats the arrival rule's (0,1,2). */
+body.prezoom[data-beat="1"] .mklbl.out{opacity:0; transition-delay:0ms}
 /* beat 6: the outside is the subject, so the outside keeps its names and the
    inside one has said its piece. The target is brought up to full ink. */
 body[data-beat="8"] .mklbl.out{opacity:.85; transition-delay:700ms}
@@ -545,21 +562,24 @@ body[data-beat="10"] .bd-tag{top:300px}
 /* 見張る側 — Anchor */
 .b-watch{left:180px; top:310px; width:250px}
 .b-watch .bdot{background:var(--crew-anchor)}
-/* fades up at beat 2 as the ripple ARRIVES (700+900=1600ms) — the event
-   reaching Anchor is the cause; beat 3's caption + radar ping is it noticing */
-body[data-beat="2"] .b-watch{opacity:1; transform:none; transition-delay:1550ms}
-body[data-beat="3"] .b-watch,
-body[data-beat="4"] .b-watch,
+/* fades up at the propose beat as the ripple ARRIVES (100+900=1000ms) — the
+   event reaching Anchor is the cause; the ping and the proposal card are it
+   reacting. Stays through the fix so the proposer watches its proposal land. */
+body[data-beat="4"] .b-watch{opacity:1; transform:none; transition-delay:750ms}
 body[data-beat="5"] .b-watch,
-body[data-beat="6"] .b-watch{opacity:1; transform:none}
+body[data-beat="6"] .b-watch,
+body[data-beat="7"] .b-watch{opacity:1; transform:none}
 /* radar ping while it is scanning */
 .b-watch .ping{position:absolute; left:15px; top:50%; width:44px; height:44px; margin:-22px 0 0 -16px;
   border-radius:50%; border:2px solid var(--crew-anchor); opacity:0}
 body[data-beat="4"] .b-watch .ping{animation:ping 1.8s cubic-bezier(.25,.6,.35,1) infinite}
 @keyframes ping{0%{opacity:.5; transform:scale(.4)} 70%,100%{opacity:0; transform:scale(1.1)}}
 
-/* 実行側 — the worker that will act, and therefore mints the key */
-.b-act{left:1010px; top:310px; width:280px}
+/* 実行側 — the worker that will act, and therefore mints the key. Moved from
+   (1010,310) — the census card owns that region now — to above the blob, still
+   OUTSIDE the line (blob top is y~360 at this x), which the lnk-act comment
+   depends on: the worker is outside, the resource inside. */
+.b-act{left:620px; top:240px; width:280px}
 .b-act .bdot{background:var(--navy)}
 body[data-beat="5"] .b-act,
 body[data-beat="6"] .b-act,
@@ -583,7 +603,8 @@ body[data-beat="9"] .b-write{opacity:1; transform:none}
   font-weight:500; margin-top:3px}
 body[data-beat="4"] .prop,
 body[data-beat="5"] .prop,
-body[data-beat="6"] .prop{opacity:1; transform:none; transition-delay:700ms}
+body[data-beat="6"] .prop,
+body[data-beat="7"] .prop{opacity:1; transform:none; transition-delay:700ms}
 
 /* =======================================================================
    THE KEY — the beat the whole piece turns on. The proposer's reach is
@@ -593,31 +614,28 @@ body[data-beat="6"] .prop{opacity:1; transform:none; transition-delay:700ms}
 
 
 
-/* the ripple — the Eventarc event itself, travelling from the displaced
-   SQUARE to the watcher that will react to it (build plan §3 beat 2: "a
-   ripple travels square -> 見張る側 badge" — literally the square, not the
-   socket it vacated; positioned at the mark's displaced centre, world
-   (755,537) = INSIDE[SUBJ] (600,578) + the .mk.subj beat-2 transform
-   (155,-41). Fixed 2026-08-03, Codex review: this used to start from the
-   socket's un-displaced position). One-shot; its settled end state is simply
-   gone, same shape as the ring at beat 7 (§5 trap 5) — no ?hold= restatement
-   needed, the base opacity:0 already is that state.
-   ⚠ Both this position AND the keyframe's end offset are derived from that
-   displacement. It was widened 90->155px in the fix-forward round; anything
-   that moves it again has to move these two numbers and .teth and .lnk-lead. */
+/* the ripple — the Eventarc event itself, travelling from the SEATED subject
+   square (v4: it never moves) to the watcher that will react to it. Fires at
+   the PROPOSE beat's open, i.e. after the beat-3 drift flare: change (silent)
+   -> flare (drift is a fact) -> ripple (the event travels) -> ping (Anchor
+   reacts). One-shot; its settled end state is simply gone (base opacity:0),
+   so ?hold= needs no restatement.
+   ⚠ Position = INSIDE[SUBJ] centre (600,578) minus 6px half-size; the travel
+   delta is derived from the b-watch badge centre (~305,340). Move either
+   endpoint and both numbers move. */
 .ripple{
-  position:absolute; left:749px; top:531px; width:12px; height:12px;
+  position:absolute; left:594px; top:572px; width:12px; height:12px;
   border-radius:50%; background:var(--crew-anchor); opacity:0; pointer-events:none;
   box-shadow:0 0 0 3px rgba(31,111,235,.22);
 }
-body[data-beat="2"] .ripple{
-  animation:ripple-travel 900ms cubic-bezier(.4,0,.2,1) 700ms 1 both;
+body[data-beat="4"] .ripple{
+  animation:ripple-travel 900ms cubic-bezier(.4,0,.2,1) 100ms 1 both;
 }
 @keyframes ripple-travel{
   0%{opacity:0; transform:translate(0,0) scale(.6)}
   14%{opacity:1; transform:translate(0,0) scale(1)}
   82%{opacity:1}
-  100%{opacity:0; transform:translate(-450px,-195px) scale(.65)}
+  100%{opacity:0; transform:translate(-295px,-238px) scale(.65)}
 }
 
 /* refused reach: marches out toward the LOCK, is stopped short of it, withdraws.
@@ -1146,12 +1164,15 @@ body.no-anim[data-beat="9"] .bd .bpropfill{opacity:1}
 body.no-anim[data-beat="4"] .b-watch,
 body.no-anim[data-beat="5"] .b-watch,
 body.no-anim[data-beat="6"] .b-watch,
+body.no-anim[data-beat="7"] .b-watch,
 body.no-anim[data-beat="5"] .b-act,
 body.no-anim[data-beat="6"] .b-act,
+body.no-anim[data-beat="7"] .b-act,
 body.no-anim[data-beat="9"] .b-write{opacity:1; transform:none}
 body.no-anim[data-beat="4"] .prop,
 body.no-anim[data-beat="5"] .prop,
-body.no-anim[data-beat="6"] .prop{opacity:1; transform:none}
+body.no-anim[data-beat="6"] .prop,
+body.no-anim[data-beat="7"] .prop{opacity:1; transform:none}
 body.no-anim[data-beat="5"] .lnk-blocked{opacity:1; stroke:var(--muted); stroke-dashoffset:0}
 /* the tip's SETTLED (recoiled) position — without this the hold frame shows it
    fully extended and touching the x, i.e. a refusal that never recoiled */
@@ -1223,21 +1244,21 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
              gate) to a point ~66px short of the header padlock at (984,490), so
              what the reach is denied is legibly the KEY. See .lnk-blocked.
            - stopx: the two arms of the refusal x, centred on the contact point.
-           - lnk-key   beat 5, 0-900ms: the 実行側 worker -> the LOCK, where it
+           - lnk-key   the seal beat: the 実行側 worker -> the LOCK, where it
              sets the key down and then withdraws. It ends at the key's bow, not
              at the padlock body, because what the hand is holding is the key.
              Never draw this to another BADGE (see .lnk-key's invariants).
-           - lnk-act   beat 5, 2000ms: the 実行側 worker -> the square's re-seat
-             point. Routed left of the gate (x < 960 by the time it is level with
-             the gate's top) and it enters the boundary near the end, which is
-             correct: the worker is outside the line, the resource is inside it. -->
+           - lnk-act   the fix beat: the 実行側 worker -> the subject square.
+             Routed left of the gate and it enters the boundary near the end,
+             which is correct: the worker is outside the line, the resource is
+             inside it. Both start at the relocated badge (620,240 w280). -->
       <svg class="links" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
         <path class="lnk-blocked" d="M430 342 C 565 268.2, 756.7 293.22, 888.46 409.77"></path>
         <path class="lnk-tip" d="M888.46 409.77 C 903.1 422.72, 917 436.8, 930 452"></path>
         <line class="stopx" x1="917.8" y1="462.3" x2="942.2" y2="441.7"></line>
         <line class="stopx" x1="919.7" y1="439.8" x2="940.3" y2="464.2"></line>
-        <path class="lnk-key" d="M1030 368 C 1014 404, 990 440, 968 484"></path>
-        <path class="lnk-act" d="M1030 366 C 950 424, 800 512, 615 580"></path>
+        <path class="lnk-key" d="M760 302 C 810 350, 900 424, 964 480"></path>
+        <path class="lnk-act" d="M700 302 C 660 400, 628 490, 606 566"></path>
       </svg>
 
       <!-- what the x MEANS, beside it. Right-aligned so it ends at x=912, i.e.
@@ -1822,7 +1843,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
 
   window.play=function(){
     clear();
-    body.classList.remove('no-anim','playing','ring-draw','ring-land','ring-landed','boundary-committed');
+    body.classList.remove('no-anim','playing','prezoom','ring-draw','ring-land','ring-landed','boundary-committed');
     body.setAttribute('data-beat','0');
     codeEl.innerHTML=CODE_HTML; tfEl.classList.remove('done');
     /* the ring carries INLINE geometry across a run (dasharray for the draw-on,
@@ -1836,8 +1857,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     MARKS.forEach(function(m){
       timers.push(setTimeout(function(){ body.setAttribute('data-beat', m[1]); }, m[0]));
     });
-    /* the only two clock anchors left in beat 7/8: the chain's start, and the
-       approval, which belongs to beat 8's mark and nothing else */
+    /* the beat-1 tail zoom: the camera starts its 1500ms ride at 5900 so it
+       LANDS on the 7400 cut (see body.prezoom) */
+    timers.push(setTimeout(function(){ body.classList.add('prezoom'); }, 5900));
+    /* the only two clock anchors left in beats 9/10: the chain's start, and the
+       approval, which belongs to beat 10's mark and nothing else */
     timers.push(setTimeout(beat7Chain, 35800));       /* beat 9 + 500ms */
     timers.push(setTimeout(commitBoundary, 40600));   /* beat 10 + 100ms */
   };
@@ -1856,6 +1880,8 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     var h=Math.max(0, Math.min(10, parseInt(qp.get('hold'),10)||0));
     body.classList.add('no-anim');
     body.setAttribute('data-beat', String(h));
+    /* beat 1's END state is zoomed — the tail zoom lands on the cut */
+    if(h===1){ body.classList.add('prezoom'); }
     /* beat 7 = proposed (dashed out, solid still at base); beat 8 = committed.
        boundary-committed is normally set from inside commitBoundary(), which
        hold mode never calls — set it directly so the socket's solid snap (now
@@ -1953,7 +1979,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
 
     function render(T){
       clear();
-      body.classList.remove('no-anim','playing','ring-draw','ring-land','ring-landed','boundary-committed');
+      body.classList.remove('no-anim','playing','prezoom','ring-draw','ring-land','ring-landed','boundary-committed');
       body.setAttribute('data-beat','0');
       codeEl.innerHTML=CODE_HTML; tfEl.classList.remove('done');
       ringEl.removeAttribute('d'); ringPts=null;
@@ -1982,6 +2008,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       MARKS.forEach(function(m){
         ev.push([m[0], function(){ body.setAttribute('data-beat', m[1]); }]);
       });
+      ev.push([5900, function(){ body.classList.add('prezoom'); }]);   /* beat-1 tail zoom */
       ev.push([C_TYPE,  function(){ tfEl.classList.remove('done'); codeEl.textContent=''; }]);
       ev.push([C_DONE,  function(){ codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); }]);
       ev.push([C_RING,  function(){ ringDraw(); }]);
@@ -2022,6 +2049,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       MARKS.forEach(function(m){
         if(m[0] > T) timers.push(setTimeout(function(){ body.setAttribute('data-beat', m[1]); }, m[0]-T));
       });
+      if(T < 5900) timers.push(setTimeout(function(){ body.classList.add('prezoom'); }, 5900-T));
       if(T < C_TYPE)       timers.push(setTimeout(beat7Chain, C_TYPE-T));
       else if(T < C_DONE)  typeCode(chainType, T-C_TYPE);
       else if(T < C_RING)  timers.push(setTimeout(chainRing, C_RING-T));
