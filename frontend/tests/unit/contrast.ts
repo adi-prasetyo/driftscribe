@@ -249,6 +249,42 @@ export function shadowLayers(css: string, shadow: string): ShadowLayer[] {
   return layers;
 }
 
+/**
+ * Every `--ds-*` declaration in the source, comments stripped, in file order.
+ *
+ * Terminated by `;` OR by the closing `}`, because a final declaration may
+ * legally omit its semicolon. That matters more than it looks: this one
+ * function feeds the ring sweep, alias resolution and the scope guard, so
+ * anything it cannot see is invisible to all three at once.
+ *
+ * Duplicates THROW. `readToken` returns the first match and the cascade uses
+ * the last, so a duplicated name means an alias could be swept against a color
+ * the browser never paints.
+ */
+export function tokenDeclarations(css: string): { name: string; value: string }[] {
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const out: { name: string; value: string }[] = [];
+  const seen = new Set<string>();
+  for (const m of stripped.matchAll(/(--ds-[\w-]+)\s*:\s*([^;{}]+)(?=[;}])/g)) {
+    const name = m[1];
+    if (seen.has(name)) {
+      throw new Error(
+        `${name} is declared more than once; the cascade uses the last and readToken() reads the first`
+      );
+    }
+    seen.add(name);
+    out.push({ name, value: m[2].trim().replace(/\s+/g, ' ') });
+  }
+  return out;
+}
+
+/** The palette as a lookup, so alias resolution and accounting share one source. */
+export type Palette = Map<string, string>;
+
+export function paletteOf(css: string): Palette {
+  return new Map(tokenDeclarations(css).map((d) => [d.name, d.value]));
+}
+
 /** Every `--ds-*` token in the palette whose value is an opaque hex color. */
 export function colorTokens(css: string): Record<string, string> {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');

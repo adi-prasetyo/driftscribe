@@ -2,7 +2,16 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { colorTokens, composite, contrastOver, contrastRatio, readToken, resolveColor, shadowLayers } from './contrast';
+import {
+  colorTokens,
+  composite,
+  contrastOver,
+  contrastRatio,
+  readToken,
+  resolveColor,
+  shadowLayers,
+  tokenDeclarations
+} from './contrast';
 
 // ---------------------------------------------------------------------------
 // Contrast floors, enforced (ds-dce, ds-16e).
@@ -143,6 +152,81 @@ describe('focus ring', () => {
       failures,
       `no ring layer clears ${FLOOR}:1 against:\n  ${failures.join('\n  ')}`
     ).toEqual([]);
+  });
+});
+
+describe('palette declaration parsing (ds-spu)', () => {
+  // A second, INDEPENDENT declaration counter, used to cross-check the real
+  // parser. Independence is the whole point, so it must NOT reuse the regex
+  // comment-strip: with that shared, a pair of tokens whose values are the
+  // quoted strings "/*" and "*/" erases every declaration between them from
+  // both counters, and they agree while jointly blind. CSS does not treat
+  // comment delimiters inside strings as comments; neither does this.
+  //
+  // Line comments deliberately, not JSDoc: the delimiters this is about cannot
+  // be written inside a block comment.
+  const scan = (source: string) => {
+    let out = '';
+    let i = 0;
+    let quote: string | null = null;
+    while (i < source.length) {
+      const c = source[i];
+      if (quote) {
+        if (c === '\\') {
+          i += 2;
+          continue;
+        }
+        if (c === quote) quote = null;
+        i++;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        quote = c;
+        i++;
+        continue;
+      }
+      if (c === '/' && source[i + 1] === '*') {
+        const end = source.indexOf('*/', i + 2);
+        i = end === -1 ? source.length : end + 2;
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return [...out.matchAll(/--ds-[\w-]+\s*:/g)].length;
+  };
+
+  it('sees a final declaration that omits its semicolon', () => {
+    const css = ':root { --ds-a: #111111; --ds-b: #222222 }';
+    expect(tokenDeclarations(css).map((d) => d.name)).toEqual(['--ds-a', '--ds-b']);
+  });
+
+  it('refuses a duplicated token name rather than picking one', () => {
+    // readToken() returns the FIRST match; the cascade uses the LAST. An alias
+    // would be swept against a colour the browser never paints.
+    const css = ':root { --ds-a: #111111; --ds-a: #222222; }';
+    expect(() => tokenDeclarations(css)).toThrow(/--ds-a/);
+  });
+
+  it('counts the same palette as an INDEPENDENTLY written scanner', () => {
+    // The premise every other guard rests on. Not a hardcoded 74: that must be
+    // edited on every legitimate palette addition and stops meaning anything
+    // the first time it is.
+    expect(scan(tokens)).toBeGreaterThan(60); // premise: the file was read
+    expect(tokenDeclarations(tokens).length).toBe(scan(tokens));
+  });
+
+  it('the independent scanner is actually independent', () => {
+    // Parity is only worth having if the second counter cannot go blind the
+    // same way the first does. Quoted components are not hypothetical here —
+    // the three font tokens are quoted strings — so this pins the property on a
+    // fixture rather than leaving it to be demonstrated by an injection that
+    // today's palette cannot exhibit.
+    expect(
+      scan(
+        '--ds-font-a: "A/*", sans-serif;\n--ds-hidden: oklch(0.6 0.2 250);\n--ds-font-b: "*/", serif;\n'
+      )
+    ).toBe(3);
   });
 });
 
