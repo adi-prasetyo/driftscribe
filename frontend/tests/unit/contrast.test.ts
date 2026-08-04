@@ -279,12 +279,20 @@ describe('palette declaration parsing (ds-spu)', () => {
     // The walk has no extension allowlist, so it holds for `.mts`, `.d.ts` or
     // anything else added later.
     //
-    // Does not prove: a name assembled at runtime and never written literally,
-    // e.g. `style[m]('-' + '-ds-' + key, v)` or a name arriving from the server.
-    // The API rule catches the common shape of that, but is an enumeration and
-    // is not claimed to be complete. Closing it properly needs a runtime check
-    // that instruments writes during the Playwright flows: ds-ley, filed rather
-    // than pretended away.
+    // Does not prove: (a) a name assembled at runtime and never written
+    // literally — `style[m]('-' + '-ds-' + key, v)`, or one from the server;
+    // (b) CSS that reaches the bundle without a literal import this scan can
+    // read — a Vite plugin or virtual module, or an `<link>` in index.html
+    // (dev shell only: the production build's Rollup input is src/main.ts).
+    //
+    // THIS TEST IS NOT THE PREMISE THAT MAKES THE SWEEP COMPLETE, and should
+    // not be cited as one. Twelve review rounds found eighteen routes here, six
+    // of them in successive rewrites of this guard, because source scanning
+    // cannot enumerate the ways CSS reaches a build. The instrument that can is
+    // the OUTPUT: scan the emitted CSS bundle and require every --ds-* in it to
+    // originate in tokens.css. That is ds-g3z, and it belongs in the ui-smoke
+    // gate, which already builds. What this test does is pin the routes it
+    // names — which is worth having, and is less than it once claimed.
     // The walk root is the PROJECT, not src/. Vite's entry lives in src/ but
     // its imports need not: `import '../reviewProbe.css'` from main.ts is a
     // production build input a src/-rooted walk never opens, and the build
