@@ -285,6 +285,121 @@ export function paletteOf(css: string): Palette {
   return new Map(tokenDeclarations(css).map((d) => [d.name, d.value]));
 }
 
+export type TokenClass = { kind: 'color'; hex: string } | { kind: 'not-a-color'; why: string };
+
+/**
+ * A value's top-level components, splitting on whitespace and commas outside
+ * `()` and outside quotes.
+ *
+ * The discrimination this rests on: **a color is exactly ONE top-level CSS
+ * component value.** Every notation is a single token or a single function
+ * call, and the commas inside those functions are nested. So a top-level space
+ * or comma means a list or a shorthand, whatever colors it may contain —
+ * `2px solid var(--ds-stream-ink)` and `0 1px 2px rgba(18, 21, 28, 0.04)` are
+ * both settled here, with no allowlist of "non-color shapes" to maintain.
+ *
+ * A source scanner, NOT a CSS tokenizer, and the difference is real:
+ * `r\67 b(18, 21, 28)` is one token to a browser and two to this. Callers
+ * therefore reject backslashes outright rather than pretend to tokenize.
+ */
+function topLevelParts(value: string): {
+  parts: string[];
+  hasTopLevelComma: boolean;
+  unbalanced: boolean;
+} {
+  const parts: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let quote: string | null = null;
+  let hasTopLevelComma = false;
+  const flush = () => {
+    if (cur.trim()) parts.push(cur.trim());
+    cur = '';
+  };
+  for (const c of value.trim()) {
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    if (depth === 0 && (c === ',' || /\s/.test(c))) {
+      if (c === ',') hasTopLevelComma = true;
+      flush();
+      continue;
+    }
+    cur += c;
+  }
+  flush();
+  return { parts, hasTopLevelComma, unbalanced: depth !== 0 || quote !== null };
+}
+
+/**
+ * What a `--ds-*` declaration is, for the ring sweep.
+ *
+ * TOTAL by construction: a color, a reasoned not-a-color, or a THROW naming
+ * the token and the notation. No fourth outcome, and in particular no silent
+ * skip — that is the defect this closes (ds-spu). The previous implementation
+ * kept `/^#[0-9a-fA-F]{6}$/` and dropped the rest on the floor, so a palette
+ * entry written as `rgb()`, `oklch()` or `color-mix()` left the sweep and the
+ * ring stopped being proven against it, with the test green.
+ */
+export function classifyTokenValue(
+  palette: Palette,
+  name: string,
+  value: string,
+  seen: readonly string[] = []
+): TokenClass {
+  const v = value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*!\s*important$/i, '')
+    .trim();
+  if (v.includes('\\')) {
+    throw new Error(
+      `${name}: "${v}" contains a backslash escape; this scanner is not a CSS tokenizer and will not guess at its token boundaries.`
+    );
+  }
+  const { parts, hasTopLevelComma, unbalanced } = topLevelParts(v);
+  if (unbalanced) throw new Error(`${name}: unbalanced parenthesis or quote in "${v}"`);
+  if (!parts.length) throw new Error(`${name}: empty value`);
+  if (hasTopLevelComma || parts.length > 1) {
+    return {
+      kind: 'not-a-color',
+      why: hasTopLevelComma ? 'comma-separated list' : 'multi-part shorthand'
+    };
+  }
+  const one = parts[0];
+
+  const hex = /^#([0-9a-fA-F]+)$/.exec(one);
+  if (hex) {
+    const digits = hex[1].length;
+    if (digits === 4 || digits === 8) {
+      throw new Error(
+        `${name}: "${one}" carries an alpha channel. A translucent token renders as itself mixed with whatever is behind it, so no ring can be proven against it in isolation — composite it explicitly, or declare an opaque value.`
+      );
+    }
+    if (digits !== 3 && digits !== 6) throw new Error(`${name}: "${one}" is not a valid hex color`);
+    const full =
+      digits === 3
+        ? one
+            .slice(1)
+            .split('')
+            .map((c) => c + c)
+            .join('')
+        : one.slice(1);
+    return { kind: 'color', hex: '#' + full.toLowerCase() };
+  }
+
+  throw new Error(`${name}: unclassifiable value "${one}"`);
+}
+
 /** Every `--ds-*` token in the palette whose value is an opaque hex color. */
 export function colorTokens(css: string): Record<string, string> {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');

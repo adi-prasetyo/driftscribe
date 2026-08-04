@@ -3,14 +3,17 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import {
+  classifyTokenValue,
   colorTokens,
   composite,
   contrastOver,
   contrastRatio,
+  paletteOf,
   readToken,
   resolveColor,
   shadowLayers,
-  tokenDeclarations
+  tokenDeclarations,
+  type TokenClass
 } from './contrast';
 
 // ---------------------------------------------------------------------------
@@ -227,6 +230,42 @@ describe('palette declaration parsing (ds-spu)', () => {
         '--ds-font-a: "A/*", sans-serif;\n--ds-hidden: oklch(0.6 0.2 250);\n--ds-font-b: "*/", serif;\n'
       )
     ).toBe(3);
+  });
+});
+
+describe('palette token classification (ds-spu)', () => {
+  /** A palette for the direct cases; most need no aliases. */
+  const P = (css = '') => paletteOf(css);
+
+  it('classifies EVERY --ds-* declaration, and returns a usable answer for each', () => {
+    const palette = paletteOf(tokens);
+    const decls = tokenDeclarations(tokens);
+    expect(decls.length).toBeGreaterThan(60); // premise: parsed the palette
+
+    const bad: string[] = [];
+    for (const { name, value } of decls) {
+      let c: TokenClass;
+      try {
+        c = classifyTokenValue(palette, name, value);
+      } catch (e) {
+        bad.push(`${name}: ${value} -> ${(e as Error).message}`);
+        continue;
+      }
+      // "Did not throw" is not a result. An implementation returning undefined
+      // or {} would pass a truthiness check while classifying nothing.
+      if (c?.kind === 'color') {
+        if (!/^#[0-9a-f]{6}$/.test(c.hex))
+          bad.push(`${name}: colour is not canonical #rrggbb: ${c.hex}`);
+      } else if (c?.kind === 'not-a-color') {
+        if (!c.why?.trim()) bad.push(`${name}: classified not-a-colour with no reason`);
+      } else {
+        bad.push(`${name}: unrecognised classification ${JSON.stringify(c)}`);
+      }
+    }
+    expect(
+      bad,
+      `every palette declaration must resolve to a colour or be provably not one:\n  ${bad.join('\n  ')}`
+    ).toEqual([]);
   });
 });
 
