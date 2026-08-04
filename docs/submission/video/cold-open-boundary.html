@@ -775,8 +775,20 @@ body[data-beat="6"] .prop,
 body[data-beat="7"] .prop{opacity:1; transform:none; transition-delay:700ms}
 
 /* =======================================================================
-   THE KEY — the beat the whole piece turns on. The proposer's reach is
-   REFUSED; the key arrives from the role that will actually act.
+   THE KEY — the beat the whole piece turns on. The proposer's approach is
+   REFUSED (beat 5); the key arrives from the role that will actually act
+   (beat 6). v4 retimed the whole seal +500ms wider AND slower inside: the
+   operator could not follow place->stamp->turn->open at the old tempo
+   without replays. Beat-6 order (ms, beat-relative):
+     0-1100    実行側 extends, PLACES the key, WITHDRAWS. Key sits unturned.
+     1100-1500 stillness.
+     1500-2120 the 判子 lands, ALONE — nothing else moves.
+     2120-2600 stillness — the gate turns green under the stamp.
+     2600-3000 the key turns.
+     2950-3250 the shackle swings open.
+     3400-4000 the credential crumbles; single-use, spent.
+     4000-4500 settle. The FIX is the next beat's business (lnk-act moved
+               to beat 7): approval completes before anything is repaired.
    ======================================================================= */
 .links{position:absolute; inset:0; overflow:visible; pointer-events:none}
 
@@ -910,7 +922,7 @@ body[data-beat="6"] .xlbl{opacity:0; transition-delay:0ms}
   stroke-dasharray:var(--kl,132px); stroke-dashoffset:var(--kl,132px); opacity:0;
 }
 body[data-beat="6"] .lnk-key{opacity:.85;
-  animation:keyreach 900ms cubic-bezier(.4,0,.25,1) both}
+  animation:keyreach 1100ms cubic-bezier(.4,0,.25,1) both}
 @keyframes keyreach{
   0%{stroke-dashoffset:var(--kl,132px)}
   40%,62%{stroke-dashoffset:0}
@@ -923,29 +935,33 @@ body[data-beat="6"] .lnk-key{opacity:.85;
    outranks the earlier ones on the same property. So the life of the key is a
    single timeline and the percentages below are that timeline in ms/2650. */
 .key{
-  position:absolute; left:960px; top:478px; width:30px; height:30px; opacity:0;
+  position:absolute; left:950px; top:472px; width:44px; height:44px; opacity:0;
   color:var(--navy); z-index:6;
-  /* pivot on the key's TIP (19.5/24 of the box = 24.4px), so the turn rotates it
-     IN the lock instead of orbiting the whole glyph around its own middle — and
-     so the placement at 300ms lands tip-first */
-  transform-origin:24.4px 24.4px;
+  /* 44px, not 30 — the fix-forward round already taught that an icon sized to
+     be recognised is not sized to be watched, and this beat turns on watching
+     the key. Pivot on the key's TIP (19.5/24 of the box = 35.8px), so the turn
+     rotates it IN the lock instead of orbiting the glyph around its middle —
+     and so the placement lands tip-first at the keyhole (~986,508 now that the
+     2.6em lock deepened the header). */
+  transform-origin:35.8px 35.8px;
   /* paper halo so it reads as an object landing ON the header, not a stray icon */
   filter:drop-shadow(0 0 5px rgba(251,250,248,.95)) drop-shadow(0 0 2px rgba(251,250,248,1));
 }
 .key svg{width:100%; height:100%; display:block}
-body[data-beat="6"] .key{animation:keylife 2650ms linear both}
+body[data-beat="6"] .key{animation:keylife 4000ms linear both}
 @keyframes keylife{
-  /* placed, tip first, while the worker's line is at full extension */
-  0%,11.3%{opacity:0; transform:rotate(-14deg) scale(1.9);
+  /* placed, tip first, while the worker's line is at full extension
+     (percentages are ms/4000) */
+  0%,7.5%{opacity:0; transform:rotate(-14deg) scale(1.9);
     animation-timing-function:cubic-bezier(.3,1.35,.45,1)}
-  17%{opacity:1; transform:rotate(-14deg) scale(.94);
+  11.3%{opacity:1; transform:rotate(-14deg) scale(.94);
     animation-timing-function:cubic-bezier(.3,1.35,.45,1)}
-  /* UNTURNED, and held that way across the whole 判子 — this stillness is the
-     point of the beat, not dead air in it */
-  25.7%,57.4%{opacity:1; transform:rotate(-14deg) scale(1);
+  /* UNTURNED, and held that way across the whole 判子 AND the stillness after
+     it — this stillness is the point of the beat, not dead air in it */
+  16%,65%{opacity:1; transform:rotate(-14deg) scale(1);
     animation-timing-function:cubic-bezier(.35,1.4,.5,1)}
-  /* the turn, AFTER the stamp */
-  67.9%,75.5%{opacity:1; transform:rotate(20deg) scale(1);
+  /* the turn, AFTER the stamp, with air on both sides */
+  72.5%,76%{opacity:1; transform:rotate(20deg) scale(1);
     animation-timing-function:cubic-bezier(.4,0,.7,1)}
   /* spent once: a single-use, 15-minute credential does not linger once it has
      turned the lock (design §5 made literal) */
@@ -961,10 +977,10 @@ body[data-beat="6"] .key{animation:keylife 2650ms linear both}
    above the 0 0 24 24 viewBox mid-swing and an SVG root clips by default. */
 .gate .lock .shackle{transform-box:fill-box; transform-origin:100% 100%}
 body[data-beat="6"] .gate .lock .shackle{
-  animation:unshackle 230ms cubic-bezier(.3,1.3,.5,1) 1750ms both}
+  animation:unshackle 300ms cubic-bezier(.3,1.3,.5,1) 2950ms both}
 @keyframes unshackle{
   0%{transform:translateY(0) rotate(0deg)}
-  100%{transform:translateY(-1.6px) rotate(20deg)}
+  100%{transform:translateY(-2.3px) rotate(20deg)}
 }
 
 /* THE EXECUTION — the 実行側 badge keeps its job, it just is not the source of
@@ -985,8 +1001,8 @@ body[data-beat="6"] .gate .lock .shackle{
   stroke-dasharray:var(--al,470px); stroke-dashoffset:var(--al,470px); opacity:0;
   transition:opacity 400ms ease;
 }
-body[data-beat="6"] .lnk-act{opacity:.85; stroke-dashoffset:0;
-  animation:actdraw 650ms cubic-bezier(.4,0,.25,1) 2000ms backwards}
+/* v4: no execution path in the seal beat — approval COMPLETES before any
+   repair begins. The fix beat (7) draws lnk-act. */
 @keyframes actdraw{from{stroke-dashoffset:var(--al,470px)} to{stroke-dashoffset:0}}
 
 /* --- the approval gate --------------------------------------------------- */
@@ -1000,24 +1016,25 @@ body[data-beat="6"] .lnk-act{opacity:.85; stroke-dashoffset:0;
 body[data-beat="5"] .gate,
 body[data-beat="6"] .gate,
 body[data-beat="7"] .gate{opacity:1; transform:none}
-/* the gate turns over WITH the 判子 (which now lands at 900+620=1520ms), not the
-   instant the beat opens. Retimed with the rest of beat 5 — see .lnk-key. */
-body[data-beat="6"] .gate{border-color:var(--green-border); transition-delay:1520ms}
+/* the gate turns over WITH the 判子 (which lands at 1500+620=2120ms), not the
+   instant the beat opens. Retimed with the rest of beat 6 — see .lnk-key. */
+body[data-beat="6"] .gate{border-color:var(--green-border); transition-delay:2120ms}
 .gate .ghead{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
   padding:11px 15px; background:var(--amber-surface); border-bottom:1px solid var(--amber-border);
   transition:background var(--move), border-color var(--move);
 }
 body[data-beat="6"] .gate .ghead{background:var(--green-surface);
-  border-bottom-color:var(--green-border); transition-delay:1520ms}
+  border-bottom-color:var(--green-border); transition-delay:2120ms}
 .gate .gt{display:flex; align-items:center; gap:9px;
   font-family:var(--ui); font-weight:700; font-size:17px; color:var(--amber-ink);
   transition:color var(--move)}
-body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:1520ms}
-/* 1.9em, not 1em. At 1em the padlock was ~17 world px — about 25 screen px at
-   beat 5's scale(1.45) — which is large enough to be an icon and far too small
-   to be a thing that visibly OPENS. The beat turns on watching it open. */
-.gate .gt svg{width:1.9em; height:1.9em; flex:none; overflow:visible}
+body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:2120ms}
+/* 2.6em (v4; was 1.9, before that 1). At 1em the padlock was ~25 screen px —
+   an icon, not a thing that visibly OPENS. The beat turns on watching it
+   open, and the operator still could not follow it at 1.9em; ~44px world is
+   watchable at the beat-6 framing. The header deepens ~12px with it. */
+.gate .gt svg{width:2.6em; height:2.6em; flex:none; overflow:visible}
 .gate .gbadge{font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--amber-ink);
   border:1px solid var(--amber-border); border-radius:999px; padding:3px 9px; white-space:nowrap}
 .gate .gbody{padding:14px 15px 15px; position:relative}
@@ -1051,7 +1068,7 @@ body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:1520ms}
   border-radius:9px; padding:9px 22px; transition:opacity 300ms ease;
 }
 /* the button goes as the stamp lands on it, not 500ms before */
-body[data-beat="6"] .gate .gbtn{opacity:0; transition-delay:900ms}
+body[data-beat="6"] .gate .gbtn{opacity:0; transition-delay:1900ms}
 /* 判子 — the only vermilion in the piece.
    MOVED OUT OF THE CARD (2026-08-04). It used to be `right:12px; bottom:16px`
    inside .gbody — tucked into the corner of a card that carries overflow:hidden,
@@ -1078,11 +1095,12 @@ body[data-beat="6"] .gate .gbtn{opacity:0; transition-delay:900ms}
   opacity:0; transform:rotate(-9deg) scale(2.1);
   mix-blend-mode:multiply; z-index:7;
 }
-/* lands ALONE at 900ms: the worker's line has withdrawn, the key is sitting
-   unturned and does not move for another 620ms, and nothing else on screen is
-   animating. That stillness IS the beat — it is what makes the stamp the cause
-   of everything after it rather than one more event in a queue. */
-body[data-beat="6"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 900ms both}
+/* lands ALONE at 1500ms: the worker's line has withdrawn at 1100, the key
+   sits unturned, and 400ms of genuine stillness separates the two — then
+   another 480ms separates the stamp from the turn. That stillness IS the
+   beat — it makes the stamp the cause of everything after it rather than one
+   more event in a queue. */
+body[data-beat="6"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 1500ms both}
 @keyframes stampin{
   0%{opacity:0; transform:rotate(-9deg) scale(2.1); filter:blur(2.5px)}
   55%{opacity:1; transform:rotate(-9deg) scale(.94); filter:blur(0)}
@@ -1330,13 +1348,13 @@ body.no-anim[data-beat="5"] .xlbl{opacity:1}
    and the x and its label go with it — and the base rules already own opacity:0,
    so no restatement is needed (same shape as the ring, the ripple and the
    crumbled key: a one-shot gesture's end state is that it is gone). */
-body.no-anim[data-beat="6"] .lnk-act{opacity:.85; stroke-dashoffset:0}
+
 /* THE LOCK IS OPEN at the end of beat 5 and an animation delivers that, so hold
    mode has to restate it or every static frame shows a padlock that shut again.
    ⚠ this is the trap the .stopx/.lnk-tip block above already documents, and it
    is now the second thing in this file whose beat-5 end state exists only
    inside a keyframe. */
-body.no-anim[data-beat="6"] .gate .lock .shackle{transform:translateY(-1.6px) rotate(20deg)}
+body.no-anim[data-beat="6"] .gate .lock .shackle{transform:translateY(-2.3px) rotate(20deg)}
 /* beat 4 no longer has a key at all — the worker brings it at beat 5 (see the
    BEAT 5 block), and its absence during the refusal is the point. Beat 5's own
    settled state is crumbled, i.e. gone, and the base .key opacity:0 already IS
