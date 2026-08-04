@@ -397,6 +397,38 @@ export function classifyTokenValue(
     return { kind: 'color', hex: '#' + full.toLowerCase() };
   }
 
+  // `var()` is indirection, not a function to classify — and it must be handled
+  // before the general function branch or it reads as an unknown function.
+  //
+  // Cycles are detected by NAME, not by a recursion counter: a counter only
+  // bounds the damage and its limit is arbitrary, while the visited set states
+  // the actual invariant and its message names the loop.
+  const varCall = /^var\(\s*(--[\w-]+)\s*(?:,([\s\S]*))?\)$/.exec(one);
+  if (varCall) {
+    const [, ref, fallback] = varCall;
+    if (seen.includes(ref)) {
+      throw new Error(`${name}: var() alias cycle: ${[...seen, ref].join(' -> ')}`);
+    }
+    if (!palette.has(ref)) {
+      throw new Error(
+        `${name}: var(${ref}) is not declared in the palette source, so this sweep cannot know what it paints.` +
+          (fallback === undefined
+            ? ''
+            : ` It has a fallback, but "absent here" is not "undefined in the browser" — another stylesheet, an inline style or script may define ${ref}, and then the fallback never renders.`)
+      );
+    }
+    const target = classifyTokenValue(palette, `${name} -> ${ref}`, palette.get(ref)!, [
+      ...seen,
+      ref
+    ]);
+    if (target.kind === 'not-a-color' && fallback !== undefined) {
+      throw new Error(
+        `${name}: ${ref} is declared but is not a color (${target.why}), and a fallback is present. The browser does not use the fallback here — substitution succeeds and the consuming declaration becomes invalid at computed-value time, so what paints is an inherited or initial value this sweep cannot see.`
+      );
+    }
+    return target;
+  }
+
   throw new Error(`${name}: unclassifiable value "${one}"`);
 }
 

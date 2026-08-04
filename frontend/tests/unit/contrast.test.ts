@@ -267,6 +267,76 @@ describe('palette token classification (ds-spu)', () => {
       `every palette declaration must resolve to a colour or be provably not one:\n  ${bad.join('\n  ')}`
     ).toEqual([]);
   });
+
+  it('resolves an INLINE alias, which readToken() cannot see', () => {
+    // The two-parsers-disagree bug: readToken() is line-anchored, so it finds
+    // nothing here while tokenDeclarations() finds both. Alias resolution used
+    // the former and accounting the latter.
+    //
+    // This must CLASSIFY --ds-b, not merely look up --ds-a. Asserting the
+    // lookup alone would stay green with alias resolution switched back to
+    // readToken(), which is exactly the injection it is supposed to pin.
+    const p = paletteOf(':root { --ds-a: #ffffff; --ds-b: var(--ds-a); }');
+    expect(classifyTokenValue(p, '--ds-b', p.get('--ds-b')!)).toEqual({
+      kind: 'color',
+      hex: '#ffffff'
+    });
+  });
+
+  it('follows a var() alias to the colour it really is', () => {
+    const p = P('--ds-a: #4285f4;');
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a)')).toEqual({
+      kind: 'color',
+      hex: '#4285f4'
+    });
+  });
+
+  it('does not mistake an alias to a shorthand for a colour', () => {
+    const p = P('--ds-a: 2px solid #4285f4;');
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a)').kind).toBe('not-a-color');
+  });
+
+  it('ignores the fallback entirely when the primary is a colour', () => {
+    // Even an unsupported notation in the fallback is irrelevant: it cannot
+    // render, so rejecting on it would fail a token that is perfectly fine.
+    const p = P('--ds-a: #4285f4;');
+    expect(classifyTokenValue(p, '--ds-b', 'var(--ds-a, oklch(0.6 0.2 250))')).toEqual({
+      kind: 'color',
+      hex: '#4285f4'
+    });
+  });
+
+  it('propagates a failure from the aliased declaration, naming the chain', () => {
+    const p = P('--ds-a: oklch(0.6 0.2 250);');
+    expect(() => classifyTokenValue(p, '--ds-b', 'var(--ds-a)')).toThrow(
+      /--ds-b -> --ds-a[\s\S]*oklch/
+    );
+  });
+
+  it('refuses a fallback whose primary is declared but is not a colour', () => {
+    // The browser does NOT fall back here. `2px` substitutes fine and the
+    // consuming declaration goes invalid at computed-value time, so what paints
+    // is inherited/initial — unknowable from this file, so: throw.
+    const p = P('--ds-a: 2px;');
+    expect(() => classifyTokenValue(p, '--ds-b', 'var(--ds-a, #ffffff)')).toThrow(/--ds-b/);
+  });
+
+  it('refuses a fallback whose primary is not in the palette at all', () => {
+    // "absent from this string" is not "undefined in the browser": another
+    // stylesheet, an inline style or script may define it, and then the fallback
+    // never renders. The live component uses of this form are not palette tokens.
+    expect(() => classifyTokenValue(P(), '--ds-b', 'var(--external-brand, #ffffff)')).toThrow(
+      /--ds-b/
+    );
+    expect(() => classifyTokenValue(P(), '--ds-b', 'var(--ds-missing)')).toThrow(/--ds-b/);
+  });
+
+  it('names the cycle instead of recursing until the stack gives out', () => {
+    const p = P('--ds-a: var(--ds-b);\n--ds-b: var(--ds-a);');
+    // The DIAGNOSTIC, not merely "it threw" — a RangeError from an exhausted
+    // stack would also throw, and would tell the next reader nothing.
+    expect(() => classifyTokenValue(p, '--ds-a', 'var(--ds-b)')).toThrow(/cycle/i);
+  });
 });
 
 describe('instrument band numerals', () => {
