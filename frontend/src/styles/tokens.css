@@ -208,6 +208,12 @@
      order is declaration order, so giving the first layer the larger spread
      would hide the blue band entirely while every color here stayed correct.
 
+     That "32" is a COUNT, not a constraint on how a token may be written
+     (ds-spu). The sweep classifies every --ds-* declaration and takes any
+     notation it can resolve — hex, rgb(), var(--other) — while a notation it
+     cannot resolve fails the test by name rather than being skipped. Add a
+     color in any form; if the sweep cannot read it, it will say so.
+
      Note this is a 4px ring where the old one was 3px, and box-shadow is not
      clipped by layout but IS clipped by an ancestor's overflow:hidden — see
      AutonomyPill's segmented control for a pre-existing instance. */
