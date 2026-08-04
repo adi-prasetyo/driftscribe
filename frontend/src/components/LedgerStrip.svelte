@@ -1,8 +1,16 @@
 <script lang="ts">
   /**
-   * LedgerStrip — the desk's "Recent record" ledger (Task 3.4, mockup
+   * LedgerStrip — the desk page's "Recent record" ledger (Task 3.4, mockup
    * ".striph"/".strip"/".srow" — docs/plans/2026-07-28-composite-mockup.html
-   * lines ~145-162 for the CSS, ~327-348 for the markup). Reduces the same
+   * lines ~145-162 for the CSS, ~327-348 for the markup).
+   *
+   * ds-3em: its own CARD, mounted by App between the desk and the estate. It
+   * used to render inside ApprovalDesk's card, and the border grouped it with
+   * the one pending proposal — so this estate-wide ledger read as that PR's
+   * history. The name "strip" is kept because every selector, test and mockup
+   * reference uses it; what changed is the shell, not the rows.
+   *
+   * Reduces the same
    * `decisions` list the rail already holds to a handful of rows via the pure
    * `ledgerRows()` (lib/ledger.ts) — this component only renders what that
    * function already decided; it computes no classification itself (mirrors
@@ -329,13 +337,35 @@
 {/if}
 
 <style>
+  /* Its own card since ds-3em, where it used to be a strip inside the desk's.
+     The `width: 100% / max-width / margin: 0 auto` triple is copied VERBATIM
+     from `.estate-view` and `.approval-desk`, and `width: 100%` is the
+     load-bearing member of it: this is a grid item in `.layout--full` with auto
+     margins, so without an explicit width it is sized shrink-to-fit and lands
+     on whatever its widest row happens to measure — 384px against two 780px
+     cards, which is exactly the ds-cmc failure. Keep all three identical to its
+     two siblings; a card that reaches 780px by accident stops the moment its
+     contents change. */
+  .ledger-strip {
+    width: 100%;
+    max-width: 780px;
+    margin: 0 auto;
+    background: var(--ds-bg);
+    color: var(--ds-fg);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius, 6px);
+    overflow: hidden;
+  }
+
+  /* No `border-top`: the card's own border is now the line that used to
+     separate this heading from the desk content above it, and keeping both
+     drew two rules 1px apart. */
   .ledger-strip__heading {
     padding: 10px 40px;
     font-family: var(--ds-font-mono);
     font-size: 10.5px;
     letter-spacing: 0.2em;
     color: var(--ds-faint);
-    border-top: 1px solid var(--ds-border);
     display: flex;
     align-items: center;
     gap: 14px;

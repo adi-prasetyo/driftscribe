@@ -37,6 +37,7 @@
   import InfraDiagram from './components/InfraDiagram.svelte';
   import ApprovalDesk from './components/ApprovalDesk.svelte';
   import DecisionRecord from './components/DecisionRecord.svelte';
+  import LedgerStrip from './components/LedgerStrip.svelte';
   import EstateView from './components/EstateView.svelte';
   import { previewPrFromSearch } from './lib/infra_graph';
   import { reconcileApprovals } from './lib/estate';
@@ -2266,6 +2267,26 @@
     lastError={$overview.lastError}
     refresh={overview.refresh}
     onShowEstate={scrollToEstate}
+    onRecordChange={setDeskRecord}
+  />
+  <!-- The record, as its own card (ds-3em, 2026-08-05, mockup A′). It mounted
+       INSIDE the desk card until now, directly under the Approve/Reject
+       buttons, and the card's border did the rest: an estate-wide ledger of
+       rollbacks, no-action notes and adoptions read as the history of the one
+       PR named in the hero above it. A clarifying heading was considered and
+       rejected — if the heading is what saves the reading, the structure is
+       already wrong. As a desk/estate sibling it reads as what it is.
+
+       Placement is load-bearing, not incidental: the approve → 判子 stamp →
+       new-row-lands-directly-below beat has to stay in one viewport, which is
+       why this sits between the two cards rather than under the estate.
+
+       `max={3}` is a decision about THIS page, not about the component (whose
+       own default is 4): three rows plus the one-way show-all keeps the card
+       short enough that the estate stays on screen. -->
+  <LedgerStrip
+    decisions={$overview.decisions}
+    max={3}
     recordTraceId={deskRecordTraceId}
     cache={traceCache}
     onRecordChange={setDeskRecord}
@@ -2552,6 +2573,27 @@
      280px gap where the rails used to sit. */
   .layout--full {
     grid-template-columns: minmax(0, 1fr);
+    /* The COLUMN owns the seam between its cards (ds-3em), and BOTH lines are
+       needed to give it one.
+       `align-content` is the load-bearing half, and what it fixes is not a
+       missing gap but a WRONG one. This grid is `flex: 1`, so it is as tall as
+       the viewport leaves it, while its rows only need their content — and the
+       initial `normal` resolves to stretch, which hands every leftover pixel to
+       the rows. The desk↔estate seam was therefore whatever the page happened
+       not to use, divided by the number of cards: measured on the smoke fixture
+       at 236px at 1280 wide and 196px at 700. Not a designed distance, and not
+       a stable one — it moves when the window resizes, when a card grows, and
+       (as this change would have) when a card is ADDED. `start` lets the rows
+       size to their content and leaves the slack at the bottom of the page,
+       where it costs nothing.
+       `row-gap` then supplies the actual seam. Putting it here rather than on
+       each card is what makes the three gaps provably equal — siblings cannot
+       disagree about a spacing none of them owns — and it is why
+       `.desk-preview` and `.desk-pinned-record` below no longer carry the
+       one-sided margins they used to. Mockup A′'s column uses 18px; sp-5 is the
+       token those two already spent on this same seam. */
+    align-content: start;
+    row-gap: var(--ds-sp-5);
   }
   /* Chat is a fixed-height app shell (ds-jns PR 3): the window does not scroll,
      the transcript does. Desk keeps document flow — it is a landing page you
@@ -2778,16 +2820,19 @@
      share one column and pin it explicitly for exactly the reason ds-cmc
      found — a card that happens to land on 780px by accident stops doing so
      the moment its contents change. */
-  /* Same column as ApprovalDesk/EstateView — the preview sits between them. */
+  /* Same column as ApprovalDesk/EstateView — the preview sits between them.
+     Vertical margins removed with ds-3em: `.layout--full`'s row-gap is the one
+     seam now, and a card carrying its own would render a double gap on the side
+     it happened to declare. */
   .desk-preview {
     width: 100%;
     max-width: 780px;
-    margin: var(--ds-sp-5) auto 0;
+    margin: 0 auto;
   }
   .desk-pinned-record {
     width: 100%;
     max-width: 780px;
-    margin: 0 auto var(--ds-sp-5);
+    margin: 0 auto;
     padding: var(--ds-sp-5) var(--ds-sp-6);
     background: var(--ds-bg);
     border: 1px solid var(--ds-border);

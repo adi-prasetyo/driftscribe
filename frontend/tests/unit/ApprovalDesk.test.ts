@@ -1389,15 +1389,12 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
   });
 });
 
-describe('ApprovalDesk — ledger strip composition', () => {
-  it('renders the ledger strip fed from the same decisions list', () => {
-    const d = iacDecision({ apply_status: 'applied', applied_at: '2026-07-28T05:00:00Z' });
-    const { getByTestId } = render(ApprovalDesk, {
-      props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
-    });
-    expect(getByTestId('ledger-strip')).toBeTruthy();
-  });
-});
+// ds-3em: the "ledger strip composition" suite that stood here asserted the
+// desk MOUNTS the strip. It no longer does — App mounts it as a sibling card,
+// because the desk card's border was what made an estate-wide ledger read as
+// the pending proposal's history. The replacement claim (outside the desk,
+// above the estate) can only be made where both are on screen, so it lives in
+// App.test.ts's ds-jns desk-records suite.
 
 // ---------------------------------------------------------------------------
 // ds-eh6 — the desk must not render its all-clear before it has grounds to.

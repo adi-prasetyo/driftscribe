@@ -539,6 +539,34 @@ describe('LedgerStrip — decision records', () => {
       expect(queryByTestId('ledger-show-more')).toBeNull();
     });
 
+    // ds-3em — App now passes `max={3}`. The number is a layout decision made
+    // at the mount, so these pin the CAP THE DESK ACTUALLY USES rather than the
+    // module default: the card has to stay short enough that the estate below
+    // it is still on the page.
+    it('renders three rows and the show-all control at the desk cap of 3', () => {
+      const { getAllByTestId, getByTestId } = render(LedgerStrip, {
+        props: { decisions: six(), max: 3 },
+      });
+      expect(getAllByTestId('ledger-strip-row')).toHaveLength(3);
+      expect(getByTestId('ledger-show-more').textContent).toContain('6');
+    });
+
+    // The keepTraceId rescue at the NEW cap, not merely at the default of 4.
+    // A deep-linked older record must still have a row to expand under, or the
+    // link lands on a strip that does not contain what it names. s0 is the
+    // OLDEST of six and the strip is newest-first, so a cap of 3 provably drops
+    // it — that is the premise this test needs.
+    it('still renders the open record row when the cap of 3 would drop it', () => {
+      const decisions = six();
+      decisions[0].trace_id = T1;
+      const { getAllByTestId } = render(LedgerStrip, {
+        props: { decisions, max: 3, cache: cache(), recordTraceId: T1, onRecordChange: vi.fn() },
+      });
+      const rows = getAllByTestId('ledger-strip-row');
+      expect(rows).toHaveLength(4);
+      expect(rows[3].getAttribute('aria-expanded')).toBe('true');
+    });
+
     it('does not count a kept out-of-cap row as more to show', () => {
       // The open record's row is appended past the cap (ledgerRows keepTraceId),
       // so 5 rows render out of 6. The control must still offer the sixth.
