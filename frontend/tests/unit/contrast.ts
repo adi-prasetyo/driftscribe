@@ -332,6 +332,20 @@ const COLOR_FUNCTIONS = new Set([
   'color-contrast'
 ]);
 
+/** A number with an optional unit — never a color. */
+const NUMERIC = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:px|rem|em|ch|ex|vh|vw|vmin|vmax|%|ms|s|deg|fr|pt)?$/;
+
+/**
+ * Bare idents that are certainly not colors.
+ *
+ * Deliberately tiny. A bare ident is either a CSS named color (`white`,
+ * `transparent`, `currentColor`) or a keyword, and the value cannot say which,
+ * so anything not listed FAILS rather than being assumed. The CSS-wide keywords
+ * are absent on purpose: `inherit`/`unset`/`revert`/`revert-layer` can expose an
+ * inherited custom-property value, which may be a color.
+ */
+const NON_COLOR_KEYWORDS = new Set(['none', 'auto']);
+
 /**
  * A value's top-level components, splitting on whitespace and commas outside
  * `()` and outside quotes.
@@ -512,7 +526,12 @@ export function classifyTokenValue(
     );
   }
 
-  throw new Error(`${name}: unclassifiable value "${one}"`);
+  if (NUMERIC.test(one)) return { kind: 'not-a-color', why: 'numeric' };
+  if (NON_COLOR_KEYWORDS.has(one.toLowerCase())) return { kind: 'not-a-color', why: 'keyword' };
+
+  throw new Error(
+    `${name}: "${one}" is not a value this sweep recognises. A CSS named color (white, transparent, currentColor) and a non-color keyword are indistinguishable here, so it refuses to guess: declare a color as #rrggbb, or add the keyword to NON_COLOR_KEYWORDS in contrast.ts.`
+  );
 }
 
 /** Every `--ds-*` token in the palette whose value is an opaque hex color. */

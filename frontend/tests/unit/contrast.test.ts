@@ -393,6 +393,45 @@ describe('palette token classification (ds-spu)', () => {
       'not-a-color'
     );
   });
+
+  it('lets a plain number or length through as not-a-colour', () => {
+    for (const v of ['400', '1.55', '0.8125rem', '999px', '68ch', '120ms', '0.06em', '56rem']) {
+      expect(classifyTokenValue(P(), '--ds-x', v).kind, v).toBe('not-a-color');
+    }
+  });
+
+  it('refuses to guess whether a bare keyword is a colour', () => {
+    for (const v of ['white', 'transparent', 'currentColor', 'rebeccapurple']) {
+      expect(() => classifyTokenValue(P(), '--ds-x', v), v).toThrow(/--ds-x/);
+    }
+    // CSS-wide keywords are NOT safe: each can expose an inherited or cascaded
+    // custom-property value, which may well be a colour.
+    for (const v of ['inherit', 'initial', 'unset', 'revert', 'revert-layer']) {
+      expect(() => classifyTokenValue(P(), '--ds-x', v), v).toThrow(/--ds-x/);
+    }
+    expect(classifyTokenValue(P(), '--ds-x', 'none').kind).toBe('not-a-color');
+  });
+
+  it('strips !important, which is a declaration suffix and not part of the colour', () => {
+    expect(classifyTokenValue(P(), '--ds-x', '#4285f4 !important')).toEqual({
+      kind: 'color',
+      hex: '#4285f4'
+    });
+  });
+
+  it('does not let a quoted string split into a false multi-part value', () => {
+    // Distinguishes quote tracking on its own. The real font stacks have
+    // top-level commas either way and so prove nothing about it; a single quoted
+    // string containing a comma is one component, and must reach the bare-value
+    // throw rather than be waved through as a comma-separated list.
+    expect(() => classifyTokenValue(P(), '--ds-x', '"a,b"')).toThrow(/--ds-x/);
+  });
+
+  it('refuses a value containing a backslash escape', () => {
+    // `r\67 b(...)` is one token to a browser and two to this scanner. Also
+    // closes the escaped-quote gap, which the scanner does not model.
+    expect(() => classifyTokenValue(P(), '--ds-x', 'r\\67 b(18, 21, 28)')).toThrow(/backslash/);
+  });
 });
 
 describe('instrument band numerals', () => {
