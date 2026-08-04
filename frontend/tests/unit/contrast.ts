@@ -255,8 +255,15 @@ export function shadowLayers(css: string, shadow: string): ShadowLayer[] {
  *
  * Terminated by `;` OR by the closing `}`, because a final declaration may
  * legally omit its semicolon. That matters more than it looks: this one
- * function feeds the ring sweep, alias resolution and the scope guard, so
- * anything it cannot see is invisible to all three at once.
+ * function feeds both the ring sweep and alias resolution, so anything it
+ * cannot see is invisible to both at once.
+ *
+ * It deliberately does NOT feed the scope guard that checks no `--ds-*` is
+ * declared outside tokens.css. That guard once used this parser and was
+ * fail-open because of it: a `;`/`}` terminator is a property of a stylesheet
+ * rule, and a stray token arrives in ways that have no such terminator (an
+ * inline `style=""`, a Svelte `style:--x` directive, `setProperty`). Reaching
+ * for this function there again would reintroduce that hole.
  *
  * Duplicates THROW. `readToken` returns the first match and the cascade uses
  * the last, so a duplicated name means an alias could be swept against a color
@@ -460,20 +467,28 @@ export function classifyTokenValue(
   // `var()` is indirection, not a function to classify — and it must be handled
   // before the general function branch or it reads as an unknown function.
   //
-  // THE FALLBACK IS NEVER FOLLOWED, and the two halves of that have different
-  // reasons:
+  // THE FALLBACK IS NEVER FOLLOWED. The boundary is not "declared" — it is
+  // DECLARED AND SUCCESSFULLY CLASSIFIED, which is a stricter thing:
   //
-  //   primary DECLARED   the browser ignores the fallback, whatever the primary
-  //                      holds. `--a: 2px; --b: var(--a, #fff)` computes --b to
-  //                      `2px`; the fallback is used only when the primary is
-  //                      the guaranteed-invalid value, i.e. not set at all. So
-  //                      --b is simply whatever --a is, and a fallback that can
-  //                      never render is not this sweep's business.
+  //   primary DECLARED   the browser ignores the fallback and --b is simply
+  //   and CLASSIFIABLE   whatever --a is. `--a: 2px; --b: var(--a, #fff)`
+  //                      computes --b to `2px` (verified in Chromium), so a
+  //                      fallback that can never render is not this sweep's
+  //                      business.
   //   primary ABSENT     the browser WOULD use the fallback — but "absent from
   //                      this string" is not "unset in the browser". Another
   //                      stylesheet, an inline style or script may define it,
-  //                      and then the fallback never renders. Unknowable here,
-  //                      so: throw.
+  //                      and then the fallback never renders. Unknowable, throw.
+  //
+  // The fallback is used whenever the primary is the GUARANTEED-INVALID value,
+  // and "not set at all" is only one way to be that. `--a: initial`, a cycle,
+  // and an unresolved `var()` are all declared yet guaranteed-invalid, and all
+  // three DO fall through to the fallback (verified in Chromium). None of them
+  // is a hole here, because this classifier THROWS on each rather than guessing
+  // — `initial` is a bare keyword, a cycle is caught by name below, and an
+  // unresolved var() by the closed-world check. That is why the boundary has to
+  // be stated as "classifiable", not "declared": the code is only correct to
+  // ignore the fallback in the cases where it returns at all.
   //
   // Cycles are detected by NAME, not by a recursion counter: a counter only
   // bounds the damage and its limit is arbitrary, while the visited set states
