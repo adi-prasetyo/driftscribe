@@ -426,6 +426,18 @@ body[data-beat="6"] .mk.subj{
 body[data-beat="7"] .mk.subj,
 body[data-beat="8"] .mk.subj{background:var(--green-surface); border-color:var(--green);
   box-shadow:0 0 0 4px rgba(26,107,82,.14)}
+/* at beat 7 the green waits for the reversion to finish (2500) — the bare
+   delay is INTENTIONAL on all four transitioned properties: background,
+   border, shadow AND transform hold their beat-6 amber/1.75 state until the
+   healed value is on screen, then flip and descale together. Beat 8 enters
+   with green already applied, so the delay never replays. */
+body[data-beat="7"] .mk.subj{transition-delay:2500ms;
+  animation:fixflare 600ms cubic-bezier(.3,1.4,.4,1) 2500ms both}
+@keyframes fixflare{
+  0%{box-shadow:0 0 0 5px rgba(154,91,18,.16)}
+  45%{box-shadow:0 0 0 14px rgba(26,107,82,.30)}
+  100%{box-shadow:0 0 0 4px rgba(26,107,82,.14)}
+}
 
 /* the resource that gets a definition written for it */
 .mk.tgt{transition:background 800ms ease, border-color 800ms ease, box-shadow 800ms ease,
@@ -639,6 +651,9 @@ body[data-beat="4"] .cn-subj,
 body[data-beat="5"] .cn-subj,
 body[data-beat="6"] .cn-subj{color:var(--amber-ink); font-weight:700}
 body[data-beat="3"] .cn-subj{transition-delay:0ms, 0ms, 0ms, 3000ms, 3000ms}
+/* ...and heals with the fix, same instant as the square and the chip */
+body[data-beat="7"] .cn-subj{color:var(--green-ink); font-weight:700;
+  transition-delay:0ms, 0ms, 0ms, 2500ms, 2500ms}
 
 /* the live value chip under the subject square — the thing the beat-3 edit
    will type over. Appears once the census has claimed payment-demo's name
@@ -699,6 +714,23 @@ body[data-beat="6"] .chip .v-old{width:0}
 body[data-beat="4"] .chip .v-drift,
 body[data-beat="5"] .chip .v-drift,
 body[data-beat="6"] .chip .v-drift{width:4ch}
+/* THE FIX IS THE EDIT REVERSED (beat 7): backspace the drifted value, retype
+   the census value. Same steps() grammar, opposite direction; the backwards
+   fill covers beat-7 entry with the drifted state, and the animations' end
+   IS the base state (v-old 4ch, v-drift 0), so beats 8+ and every hold frame
+   need no restatement — the healed chip is what the markup always said. */
+body[data-beat="7"] .chip .v-drift{animation:chipdel2 600ms steps(4,end) 900ms both}
+@keyframes chipdel2{from{width:4ch} to{width:0ch}}
+body[data-beat="7"] .chip .v-old{animation:chiptype2 600ms steps(4,end) 1700ms both}
+@keyframes chiptype2{from{width:0ch} to{width:4ch}}
+body[data-beat="7"] .chip .chip-caret{animation:chipcaret 1400ms steps(1) 900ms both}
+/* the green flip, 2500: square, chip and census line together — the mirror of
+   the beat-3 flare. The chip holds its amber+scale from beat 6 until then
+   (delays hold the OLD computed values), then descales as it heals: drift
+   inflated it, the fix relaxes it. Delay list order: opacity, transform,
+   color, font-weight. */
+body[data-beat="7"] .chip{color:var(--green-ink); font-weight:700;
+  transition-delay:0ms, 2500ms, 2500ms, 2500ms}
 
 /* =======================================================================
    ROLE BADGES — labelled by JOB, not by product name. The crew name rides
@@ -982,14 +1014,26 @@ body[data-beat="6"] .gate .lock .shackle{
   0%{transform:translateY(0) rotate(0deg)}
   100%{transform:translateY(-2.3px) rotate(20deg)}
 }
+/* beat 7 inherits the SETTLED approval: every beat-6 end state that lived in
+   a delayed transition or an animation fill must be restated as plain values,
+   or the gate snaps back to amber, the shackle shuts, the stamp vanishes and
+   the button returns the instant the beat changes — the exact
+   new-render-surface trap this file keeps re-learning. The key and lnk-key
+   need nothing: their settled state is absence, which base rules own. */
+body[data-beat="7"] .gate{border-color:var(--green-border)}
+body[data-beat="7"] .gate .ghead{background:var(--green-surface);
+  border-bottom-color:var(--green-border)}
+body[data-beat="7"] .gate .gt{color:var(--green-ink)}
+body[data-beat="7"] .gate .gbtn{opacity:0}
+body[data-beat="7"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
+body[data-beat="7"] .gate .lock .shackle{transform:translateY(-2.3px) rotate(20deg)}
 
-/* THE EXECUTION — the 実行側 badge keeps its job, it just is not the source of
-   the authority. Anchored AFTER the lock is open (the shackle finishes at
-   1980ms), so approval visibly completes before anything moves, and it targets
-   the SQUARE'S re-seat point directly. It draws to a close at 2000+650=2650ms,
-   the exact instant the mark's own re-seat transition-delay fires, so the touch
-   and the return happen in the same beat. Solid navy: this is a fact being
-   applied, not a proposal. */
+/* THE EXECUTION — the 実行側 badge keeps its job, it just is not the source
+   of the authority. v4: it lives in the FIX beat, a whole beat after the
+   shackle opened, so approval visibly completes before anything moves. It
+   targets the subject square, and its arrival (~850ms) precedes the first
+   deleted character (900ms): the worker touches, the value reverts. Solid
+   navy: this is a fact being applied, not a proposal. */
 /* ⚠ --al is MEASURED in JS. It used to be a hand-typed 330 against a path that
    is really 468 long, so the last 138px of the curve — the stretch that arrives
    at the square — was drawn through the whole `backwards` fill, i.e. a navy line
@@ -1001,8 +1045,11 @@ body[data-beat="6"] .gate .lock .shackle{
   stroke-dasharray:var(--al,470px); stroke-dashoffset:var(--al,470px); opacity:0;
   transition:opacity 400ms ease;
 }
-/* v4: no execution path in the seal beat — approval COMPLETES before any
-   repair begins. The fix beat (7) draws lnk-act. */
+/* v4: the execution path opens the FIX beat (7). The worker's touch arrives
+   at ~850, and the reversion starts typing at 900 — cause, then effect, with
+   the approved gate still green in frame. */
+body[data-beat="7"] .lnk-act{opacity:.85; stroke-dashoffset:0;
+  animation:actdraw 650ms cubic-bezier(.4,0,.25,1) 200ms backwards}
 @keyframes actdraw{from{stroke-dashoffset:var(--al,470px)} to{stroke-dashoffset:0}}
 
 /* --- the approval gate --------------------------------------------------- */
@@ -1355,6 +1402,10 @@ body.no-anim[data-beat="5"] .xlbl{opacity:1}
    is now the second thing in this file whose beat-5 end state exists only
    inside a keyframe. */
 body.no-anim[data-beat="6"] .gate .lock .shackle{transform:translateY(-2.3px) rotate(20deg)}
+/* hold-7: the settled fix — path drawn, chip healed (base widths), all three
+   greens applied by their (killed) transitions, gate carried by the plain
+   beat-7 rules above */
+body.no-anim[data-beat="7"] .lnk-act{opacity:.85; stroke-dashoffset:0}
 /* beat 4 no longer has a key at all — the worker brings it at beat 5 (see the
    BEAT 5 block), and its absence during the refusal is the point. Beat 5's own
    settled state is crumbled, i.e. gone, and the base .key opacity:0 already IS
