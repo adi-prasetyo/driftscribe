@@ -337,8 +337,9 @@ admit it.** Fifteen routes were probed here — an ordinary rule, an inline
 object reached through a `const` (neither of which actually writes in the
 installed Svelte — see the round-8 correction), a CSSOM write spelled with a
 dot, with brackets or with an optional call, `setAttribute`, CSS Typed OM, a
-`.mts` build input, a comment between name and colon, and an escaped
-identifier. Each guard was written, believed complete,
+`.mts` build input, `@property` registration, a build input imported from
+outside `src/`, a comment between name and colon, and an escaped identifier.
+Each guard was written, believed complete,
 and then shown to pass one nobody had thought of. The ways to spell a style
 write are bounded only by the language, so a scanner over surface syntax cannot
 enforce this premise at all.
