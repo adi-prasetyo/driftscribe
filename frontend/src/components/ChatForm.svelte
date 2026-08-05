@@ -200,6 +200,23 @@
     align-items: stretch;
     gap: var(--ds-sp-2);
     padding: var(--ds-sp-2);
+    /* The row's resting control height, published here for the controls beside
+       the field to match. Deliberately outside the design-token namespace,
+       because this is not a design token — it is one row's local geometry, and
+       tokens.css is the only file allowed to name one. (Naming it the other way
+       would fail contrast.test.ts, which scans source text and is blunt on
+       purpose.)
+       It is the PROMPT FIELD's box, because the field is the row's protagonist
+       and the others align to it: one line of --ds-fs-2 at line-height 1.4, plus
+       .chat-form__input's own 0.62em padding top and bottom, plus its 1px
+       borders. Every term below is a declaration in this file, so the arithmetic
+       cannot quietly disagree with its own source.
+       Custom properties inherit, so this reaches CrewMenu's trigger through the
+       DOM even though Svelte scopes the two components' selectors apart. That
+       direction matters: the container states the height and the controls read
+       it, rather than each control keeping its own copy of the field's metrics
+       and going stale on its own schedule. */
+    --composer-control-h: calc(var(--ds-fs-2) * (1.4 + 0.62 * 2) + 2px);
     /* White fill like the other cards in this column; a thin blue border is the
        only accent, marking this as the interactive composer without the heavier
        tinted fill + 3px left accent bar it used to wear. */
@@ -297,6 +314,18 @@
     background: var(--ds-navy);
     border-color: var(--ds-navy);
     color: #fff;
+    /* Hold the resting height instead of stretching with the row. The row is
+       align-items: stretch, which is right for the field and wrong for a button:
+       a prompt grown to five lines turned Send into a 126px navy slab, the
+       heaviest thing on the page, sized by how much the operator happened to
+       type. flex-start rather than flex-end so the three tops stay flush at
+       every prompt length — the pill, the field's first line and Send read as
+       one row that the field grows downward out of.
+       min-height, not height: .ds-btn's line-height is 1.2 against the field's
+       1.4, so its natural box is a few px short of the row and this floors it;
+       a taller label in another locale still gets its room. */
+    align-self: flex-start;
+    min-height: var(--composer-control-h);
   }
   .chat-form__send:hover {
     background: color-mix(in srgb, var(--ds-navy) 88%, #fff);

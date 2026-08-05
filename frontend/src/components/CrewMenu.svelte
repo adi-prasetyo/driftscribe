@@ -377,6 +377,25 @@
     align-items: center;
     gap: var(--ds-sp-2);
     padding: 0.5em 0.6em;
+    /* Stand as tall as the prompt field beside it. The pill's own type is a step
+       smaller (--ds-fs-1 is the pills/meta size, and a pill at the field's type
+       stops reading as a pill), and because its padding is in `em` the smaller
+       type shrinks the box twice over — the trigger came out ~9px short, and
+       `align-self: flex-start` above put the whole shortfall at the bottom,
+       where it read as a control that had not finished loading.
+       The height is the composer's to state, not this component's to guess:
+       .chat-form publishes --composer-control-h from the field's own box and it
+       inherits down here through the DOM. Unset outside a composer the
+       declaration is simply dropped and the pill takes its natural height, which
+       is the right answer for a menu with no row to line up with.
+       crew-menu.smoke.ts measures the boxes against each other, because a
+       derivation living in another file is the kind that goes stale in silence.
+       min-height and not height because this is a FLOOR: it raises the box to
+       the row without capping what the box may need. (Not, as a first draft of
+       this comment claimed, so the crew name can wrap — .crew-menu__name is
+       nowrap, so that particular rescue cannot happen. A justification that
+       names an impossible case reads as support the choice does not have.) */
+    min-height: var(--composer-control-h);
     border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius-sm);
     background: var(--ds-surface);

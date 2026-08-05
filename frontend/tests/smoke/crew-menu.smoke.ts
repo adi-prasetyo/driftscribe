@@ -151,3 +151,69 @@ test('Shift+Tab returns to the trigger with the menu up, then leaves', async ({ 
   await page.keyboard.press('Shift+Tab');
   await expect(page.getByTestId('crew-menu-popup')).toBeHidden();
 });
+
+// ── The trigger stands as tall as the field beside it ───────────────────────
+//
+// Geometry again, so again a real browser: jsdom computes no box at all, and
+// the unit suite would happily pass a trigger that renders as a stub.
+//
+// The trigger's height is derived from the prompt field's box arithmetic in a
+// DIFFERENT file, which is precisely the arrangement that goes stale quietly —
+// nothing errors when .chat-form__input's padding changes, the row just starts
+// looking wrong again. Measuring the two against each other is what makes the
+// derivation load-bearing instead of decorative.
+//
+// Both locales: the crew names differ in width per locale and Send's label
+// changes size, so a row that balances in EN is not thereby balanced in JA.
+for (const locale of ['en', 'ja'] as const) {
+  test(`the composer's resting controls share one height (${locale})`, async ({ page, baseURL }) => {
+    await seed(page, locale);
+    await mock(page, baseURL!);
+    await page.goto('/?view=chat');
+
+    const trigger = page.getByTestId('crew-menu-trigger');
+    await expect(trigger).toBeVisible();
+
+    const box = async (id: string) => {
+      const b = await page.getByTestId(id).boundingBox();
+      expect(b, `${id} has no box`).not.toBeNull();
+      return b!;
+    };
+    const t = await box('crew-menu-trigger');
+    const input = await box('chat-prompt');
+    const send = await box('chat-submit');
+
+    // Within a pixel, not equal to the decimal: the field's resting height is
+    // set by autoResize() from scrollHeight, which is an INTEGER, while the
+    // trigger's comes from a calc that lands on a fraction. A pixel of slack is
+    // the rounding; nine pixels was the defect.
+    expect(Math.abs(t.height - input.height), 'crew trigger vs prompt field').toBeLessThanOrEqual(1);
+    expect(Math.abs(send.height - input.height), 'Send vs prompt field').toBeLessThanOrEqual(1);
+    // Tops flush too — a matched height that started 9px lower would still read
+    // as a broken row.
+    expect(Math.abs(t.y - input.y), 'crew trigger vs prompt field, top edge').toBeLessThanOrEqual(1);
+
+    // The reason neither is simply stretched to the row: the FIELD is what grows
+    // with a multi-line prompt. Stretching its neighbours to match turned Send
+    // into a 126px navy slab sized by how much the operator happened to type.
+    // Pinning it here keeps a later "just let them stretch" from silently
+    // undoing the two rules above.
+    await page.getByTestId('chat-prompt').click();
+    await page.keyboard.type('one');
+    for (let n = 0; n < 4; n++) {
+      await page.keyboard.press('Shift+Enter');
+      await page.keyboard.type(`line ${n + 2}`);
+    }
+    const grownInput = await box('chat-prompt');
+    expect(grownInput.height, 'the prompt field did not actually grow').toBeGreaterThan(input.height + 20);
+    const grownTrigger = await box('crew-menu-trigger');
+    const grownSend = await box('chat-submit');
+    expect(grownTrigger.height, 'the pill grew with the prompt').toBeCloseTo(t.height, 0);
+    expect(grownSend.height, 'Send grew with the prompt').toBeCloseTo(send.height, 0);
+    // Still one row: all three tops flush while the field grows downward out of
+    // it. A height that held while the control drifted down the row would look
+    // no better than the original defect.
+    expect(Math.abs(grownTrigger.y - grownInput.y), 'pill top vs grown field').toBeLessThanOrEqual(1);
+    expect(Math.abs(grownSend.y - grownInput.y), 'Send top vs grown field').toBeLessThanOrEqual(1);
+  });
+}
