@@ -92,3 +92,62 @@ for (const locale of ['en', 'ja'] as const) {
     expect(seen.size, 'the detail region never changed what it was showing').toBe(CREWS.length);
   });
 }
+
+// ── The Tab contract, which only a real browser can check ───────────────────
+//
+// jsdom moves focus for .focus() and for nothing else — it has no tab order at
+// all — so every unit test in CrewMenu.test.ts is blind to this. That blindness
+// hid a real defect: the roving tab stop was pinned to the SELECTED option
+// rather than the FOCUSED one, so after arrowing away, Tab found another
+// tabbable option still inside the menu, focus never left the root, the
+// focusout dismissal never fired, and the operator was bounced back to the row
+// they had just navigated away from. Nothing else here could see it: the
+// focus-ring state walks with ArrowDown by construction, and the no-reflow spec
+// never leaves the list.
+test('Tab out of the open menu closes it and lands in the prompt', async ({ page, baseURL }) => {
+  await seed(page, 'en');
+  await mock(page, baseURL!);
+  await page.goto('/?view=chat');
+
+  const trigger = page.getByTestId('crew-menu-trigger');
+  await expect(trigger).toBeVisible();
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('crew-menu-popup')).toBeVisible();
+
+  // Arrow AWAY from the selected option — that is the whole precondition. Tab
+  // from the selected row would leave correctly even with the stop misplaced,
+  // which is exactly how this would have shipped looking fine.
+  await page.keyboard.press('ArrowDown');
+  const focusedTestId = () =>
+    page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? null);
+  expect(await focusedTestId()).toBe('crew-menu-option-drift');
+
+  await page.keyboard.press('Tab');
+  await expect(page.getByTestId('crew-menu-popup')).toBeHidden();
+  expect(await focusedTestId()).toBe('chat-prompt');
+});
+
+// Shift+Tab is deliberately NOT symmetrical, and that is worth pinning rather
+// than leaving to be re-litigated: it lands on the trigger, which is part of
+// the same control and steps back into the list with ArrowDown. The menu stays
+// up. Leaving the control entirely is the NEXT Shift+Tab, and that closes it.
+test('Shift+Tab returns to the trigger with the menu up, then leaves', async ({ page, baseURL }) => {
+  await seed(page, 'en');
+  await mock(page, baseURL!);
+  await page.goto('/?view=chat');
+
+  const trigger = page.getByTestId('crew-menu-trigger');
+  await expect(trigger).toBeVisible();
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('crew-menu-popup')).toBeVisible();
+  await page.keyboard.press('ArrowDown');
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByTestId('crew-menu-popup')).toBeVisible();
+  await expect(trigger).toBeFocused();
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByTestId('crew-menu-popup')).toBeHidden();
+});

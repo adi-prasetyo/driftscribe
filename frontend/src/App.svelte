@@ -2216,7 +2216,7 @@
         onSubmit={submitChat}
         onSelectCrew={selectCrew}
         prefill={chatPrefill}
-        threadOpen={conversationWorkload !== null}
+        occupied={chatOccupied}
         bind:workload={composerWorkload}
       />
     </div>

@@ -1764,6 +1764,62 @@ describe('App — choosing a crew from the composer (ds-uyo)', () => {
     await waitFor(() => expect(lastChatPostWorkload()).toBe('drift'));
   });
 
+  it('warns before clearing a turn that NO thread is holding', async () => {
+    // The case the first version of this got wrong. The hint was gated on
+    // `conversationWorkload !== null` — "a thread is open" — but a paused,
+    // one-shot or failed turn renders with no conversation behind it at all.
+    // Choosing another crew calls newChat(), which clears that only in-memory
+    // copy, and the row said nothing. It is the case that most needed the
+    // warning: a persisted thread comes back from the rail and this does not.
+    //
+    // The draft is already gone by then (submit clears it), so the rendered
+    // exchange is the whole of what is at stake.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/chat') && init?.method === 'POST') throw new Error('offline');
+        if (url.includes('/conversations')) return okJson({ conversations: [] });
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+    const { container, findByTestId, queryByTestId } = render(App);
+    await findByTestId('chat-prompt');
+    await sendPrompt(container, 'what is drifting?');
+    await findByTestId('thread-turn-error');
+
+    await fireEvent.click(document.querySelector('[data-testid="crew-menu-trigger"]')!);
+    await waitFor(() =>
+      expect(document.querySelector('[data-testid="crew-menu-popup"]')).not.toBeNull(),
+    );
+    expect(
+      document.querySelector('[data-testid="crew-menu-option-drift"]')!.textContent,
+    ).toContain('starts new chat');
+
+    // And it does what it said: the exchange goes.
+    await fireEvent.click(document.querySelector('[data-testid="crew-menu-option-drift"]')!);
+    await waitFor(() => expect(queryByTestId('thread-turn-error')).toBeNull());
+  });
+
+  it('promises nothing on a screen with nothing on it', async () => {
+    // The other side of the same rule, and the reason it is not just "always
+    // show the hint": on an empty new chat a crew choice costs nothing, so
+    // saying it starts a new chat would be noise attached to every row.
+    stubThreadFetch();
+    const { findByTestId } = render(App);
+    await findByTestId('chat-prompt');
+
+    await fireEvent.click(document.querySelector('[data-testid="crew-menu-trigger"]')!);
+    await waitFor(() =>
+      expect(document.querySelector('[data-testid="crew-menu-popup"]')).not.toBeNull(),
+    );
+    expect(
+      document.querySelector('[data-testid="crew-menu-option-drift"]')!.textContent,
+    ).not.toContain('starts new chat');
+  });
+
   it('does nothing at all when the chosen crew is the one already open', async () => {
     // Confirming what you are looking at must not cost you your thread.
     stubThreadFetch();

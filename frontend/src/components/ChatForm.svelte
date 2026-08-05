@@ -23,7 +23,7 @@
     onSubmit,
     onSelectCrew,
     prefill = null,
-    threadOpen = false,
+    occupied = false,
     workload = $bindable('explore'),
   }: {
     disabled?: boolean;
@@ -37,9 +37,10 @@
      * its own is a child component that will.
      */
     onSelectCrew?: (wl: Workload) => void;
-    /** A persisted thread is open, so another crew means a new one. Passed
-     *  straight through to the menu's pre-click hint. */
-    threadOpen?: boolean;
+    /** There is something on the chat screen a clean slate would clear, so
+     *  another crew costs it. Passed straight through to the menu's pre-click
+     *  hint — see its own doc for why this is broader than "a thread is open". */
+    occupied?: boolean;
     /**
      * Adopt-button bridge (Phase 4): prefill the composer WITHOUT sending — the
      * operator stays in charge (design §6). `epoch` lets the same/another Adopt
@@ -159,7 +160,7 @@
        live). The crew is back, and back as one element rather than the two it
        used to be: a card grid that made you choose before typing, plus nothing
        at all reporting what you had chosen. -->
-  <CrewMenu value={workload} {disabled} {threadOpen} onSelect={selectCrew} />
+  <CrewMenu value={workload} {disabled} {occupied} onSelect={selectCrew} />
   <textarea
     id="prompt-input"
     data-testid="chat-prompt"

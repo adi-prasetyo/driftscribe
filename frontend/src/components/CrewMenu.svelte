@@ -52,7 +52,7 @@
   let {
     value,
     disabled = false,
-    threadOpen = false,
+    occupied = false,
     onSelect,
   }: {
     /** The crew the composer will send to. Display only — this component never
@@ -61,12 +61,25 @@
     /** Busy or resuming. See the inert effect below — this is load-bearing. */
     disabled?: boolean;
     /**
-     * A persisted thread is open, so a different crew means a NEW thread. Drives
-     * the "starts new chat" hint, which is said BEFORE the click: the complaint
-     * this whole control answers was about state changing unannounced, so
-     * announcing it only afterwards would repeat the fault one level up.
+     * There is something on the chat screen that a clean slate would clear.
+     * Drives the "starts new chat" hint, which is said BEFORE the click: the
+     * complaint this whole control answers was about state changing
+     * unannounced, so announcing it only afterwards would repeat the fault one
+     * level up.
+     *
+     * NOT "a persisted thread is open", which is what this asked at first and
+     * is a strictly narrower question. A paused, one-shot or failed turn is
+     * rendered on screen with NO conversation behind it, and `newChat()` clears
+     * that too — and unlike a persisted thread it is not recoverable from the
+     * rail afterwards, so it is the case that most needed the warning and was
+     * the one not getting it. The caller passes its own `chatOccupied`, whose
+     * doc already reads "something a clean slate would clear is on this
+     * screen".
+     *
+     * The copy holds for both, which is why they can share a string: "starts
+     * new chat" says what happens and claims nothing about what survives.
      */
-    threadOpen?: boolean;
+    occupied?: boolean;
     onSelect: (wl: Workload) => void;
   } = $props();
 
@@ -85,6 +98,19 @@
   /** The hovered/focused row, i.e. which lifecycle line is showing. Not the
    *  selection: pointing at a row explains it, it does not choose it. */
   let active = $state<Workload | null>(null);
+  /**
+   * Which option holds the tab stop. This tracks KEYBOARD FOCUS, and it is a
+   * separate thing from both `value` and `active` on purpose.
+   *
+   * Pinning the stop to `value` (the selection) is the obvious-looking version
+   * and it is broken: arrow to another row and Tab then finds the *selected*
+   * option still tabbable further down the list, so focus never leaves the root,
+   * the focusout dismissal never fires, and the operator is thrown back to the
+   * row they navigated away from. Pinning it to `active` is broken differently —
+   * `active` follows the POINTER too, so hovering would move a keyboard user's
+   * tab stop out from under them.
+   */
+  let focused = $state<Workload | null>(null);
   let rootEl = $state<HTMLDivElement | null>(null);
   let triggerEl = $state<HTMLButtonElement | null>(null);
 
@@ -97,6 +123,7 @@
     if (disabled) {
       open = false;
       active = null;
+      focused = null;
     }
   });
 
@@ -108,8 +135,11 @@
     if (disabled || open) return;
     open = true;
     // Focus opens on the SELECTED option, not the first: the operator's own
-    // crew is the anchor they navigate from.
+    // crew is the anchor they navigate from. Seeding the tab stop here as well
+    // as in the option's own onfocus is not redundant — the stop has to be
+    // somewhere sane in the render BEFORE anything is focused.
     active = value;
+    focused = value;
     await tick();
     focusOption(value);
   }
@@ -117,6 +147,7 @@
   function closeMenu(restoreFocus: boolean): void {
     open = false;
     active = null;
+    focused = null;
     if (restoreFocus) triggerEl?.focus();
   }
 
@@ -185,8 +216,9 @@
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
     // Open, or — if the menu is already up and focus came back here by
-    // Shift+Tab — step back into the list rather than doing nothing.
-    if (open) focusOption(active ?? value);
+    // Shift+Tab — step back into the list rather than doing nothing. Back to
+    // where the tab stop is, not to where the pointer last hovered.
+    if (open) focusOption(focused ?? value);
     else void openMenu();
   }
 
@@ -298,11 +330,18 @@
             role="option"
             aria-selected={wl.value === value}
             aria-describedby={descId(wl.value)}
-            tabindex={wl.value === value ? 0 : -1}
+            tabindex={(focused ?? value) === wl.value ? 0 : -1}
             onclick={() => choose(wl.value)}
             onkeydown={(e) => optionKeydown(e, wl.value)}
             onmouseenter={() => (active = wl.value)}
-            onfocus={() => (active = wl.value)}
+            onfocus={() => {
+              // The ONE place the tab stop moves. Every route into a row —
+              // arrows, Home/End, opening the menu, a pointer press — ends here,
+              // so the stop cannot fall out of step with focus by taking a route
+              // somebody forgot to update.
+              focused = wl.value;
+              active = wl.value;
+            }}
           >
             <CrewGlyph verb={wl.value} size={18} animated={false} />
             <span class="crew-menu__option-name">{crewName(wl.value)}</span>
@@ -311,7 +350,7 @@
               <span class="crew-menu__marker">
                 <Icon name="check" size={12} />{$t('composer.crewMenu.current')}
               </span>
-            {:else if threadOpen}
+            {:else if occupied}
               <!-- Never "switch" or "hand over". A handoff continues THIS thread
                    with its context; this opens a clean one. -->
               <span class="crew-menu__hint">{$t('composer.crewMenu.startsNewChat')}</span>

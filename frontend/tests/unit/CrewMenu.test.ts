@@ -153,6 +153,34 @@ describe('CrewMenu — keyboard', () => {
     expect(document.activeElement).toBe(getByTestId('crew-menu-trigger'));
   });
 
+  it('moves the tab stop with focus, not with the selection', async () => {
+    // jsdom has no tab order, so this cannot press Tab — the browser half is in
+    // crew-menu.smoke.ts, and that is where the defect was actually found. What
+    // this pins is the mechanism underneath it: exactly one option is tabbable,
+    // and it is the FOCUSED one. Pinned to the selection instead, Tab finds the
+    // selected option still tabbable further down the list, focus never leaves
+    // the menu, and the operator is thrown back to the row they just left.
+    await openMenu({ value: 'explore' }); // last in catalog order
+    const tabbable = () =>
+      ['drift', 'upgrade', 'provision', 'explore'].filter(
+        (v) => option(v).getAttribute('tabindex') === '0',
+      );
+    await waitFor(() => expect(tabbable()).toEqual(['explore']));
+
+    await fireEvent.keyDown(option('explore'), { key: 'ArrowDown' }); // wraps
+    await waitFor(() => expect(tabbable()).toEqual(['drift']));
+    expect(document.activeElement).toBe(option('drift'));
+  });
+
+  it('leaves the tab stop alone when the POINTER wanders', async () => {
+    // `active` (which line is showing) follows hover; the tab stop must not, or
+    // a passing mouse relocates a keyboard operator's exit.
+    await openMenu({ value: 'explore' });
+    await fireEvent.mouseEnter(option('upgrade'));
+    expect(option('explore').getAttribute('tabindex')).toBe('0');
+    expect(option('upgrade').getAttribute('tabindex')).toBe('-1');
+  });
+
   it('opens from the trigger with ArrowDown', async () => {
     const { getByTestId } = render(CrewMenu, {
       props: { value: 'upgrade', onSelect: noop },
@@ -164,8 +192,8 @@ describe('CrewMenu — keyboard', () => {
 });
 
 describe('CrewMenu — what a click costs, said before the click', () => {
-  it('marks the current row and offers the others a new chat, while a thread is open', async () => {
-    await openMenu({ value: 'explore', threadOpen: true });
+  it('marks the current row and offers the others a new chat, when there is something to clear', async () => {
+    await openMenu({ value: 'explore', occupied: true });
     expect(option('explore').textContent).toContain('current');
     // Never "switch" or "hand over": a handoff continues THIS thread with its
     // context and this does not.
@@ -177,8 +205,13 @@ describe('CrewMenu — what a click costs, said before the click', () => {
     }
   });
 
-  it('says nothing about a new chat when there is no thread to leave', async () => {
-    await openMenu({ value: 'explore', threadOpen: false });
+  it('says nothing about a new chat on a screen with nothing on it', async () => {
+    // `occupied`, not "a thread is open". A paused / one-shot / failed turn is
+    // rendered with no conversation behind it and newChat() clears that too —
+    // and unlike a persisted thread it cannot be reopened from the rail
+    // afterwards, so it is the case that most needed the warning. App passes its
+    // own `chatOccupied`; the App suite covers the wiring.
+    await openMenu({ value: 'explore', occupied: false });
     expect(option('drift').textContent).not.toContain('starts new chat');
     expect(option('explore').textContent).toContain('current');
   });
