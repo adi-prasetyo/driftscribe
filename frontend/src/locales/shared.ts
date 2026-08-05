@@ -115,9 +115,28 @@ export const shared = {
       'Stands infrastructure up. You describe a change; it opens the IaC PR.',
     'shared.crew.explore.lifecycle': 'Explains it. Read-only answers across the whole system.',
 
-    'shared.crew.drift.descriptor': 'Cloud Run config',
+    // A descriptor's job is to DISTINGUISH its crew, and two of these did not
+    // (ds-p84, ds-dfp). They now run four abreast in the composer's crew menu,
+    // which is the surface that made it obvious.
+    //
+    // Anchor: "Cloud Run config" named a subject three crews share — Explore and
+    // Provision both hold drift_read_live_env. What is Anchor's alone is that it
+    // RULES on drift; it is the only holder of drift_patch_docs and
+    // drift_propose_rollback. Not bare "drift", which PR #194 exists because of:
+    // the word is overloaded between Anchor's configuration drift and the
+    // estate's "drift (not in IaC)", and an operator once asked Anchor the
+    // estate's sense and got a true "no drift" that read as the whole estate
+    // being clean.
+    //
+    // Provision: "infra edits" asserted the exact thing Provision's own summary
+    // denies two lines down — "It never touches live infra directly." Its
+    // distinguishing property is the MEDIUM: it writes iac/-only HCL and opens
+    // one PR, and live change happens downstream in the gated tofu-apply worker.
+    // Paired with Anchor's old descriptor the two taught the lane model
+    // backwards (Anchor↔config files, Provision↔live infra).
+    'shared.crew.drift.descriptor': 'Cloud Run config drift',
     'shared.crew.upgrade.descriptor': 'dependencies',
-    'shared.crew.provision.descriptor': 'infra edits',
+    'shared.crew.provision.descriptor': 'IaC PRs',
     'shared.crew.explore.descriptor': 'read-only',
 
     'shared.crew.drift.summary':
@@ -205,9 +224,17 @@ export const shared = {
     'shared.crew.provision.lifecycle': 'インフラを構築します。変更内容を伝えると、IaC のプルリクエストを作成します。',
     'shared.crew.explore.lifecycle': 'システムについて説明します。システム全体を対象に、読み取り専用で回答します。',
 
-    'shared.crew.drift.descriptor': 'Cloud Run の設定',
+    // See the EN block for why these two changed. JA has to make the SAME claim,
+    // not a looser one: the slot runs parallel across four crews and two
+    // locales, so a JA string that says less than its EN twin shows.
+    // Provision's is 'IaC PR の作成' rather than the shorter 'IaC の変更'
+    // precisely because the PR is the distinguishing part — and because
+    // 'インフラの変更' stays in use nearby for the approval-gate prose and the
+    // pending-changes panel, where it accurately means live infrastructure
+    // changing.
+    'shared.crew.drift.descriptor': 'Cloud Run の設定ドリフト',
     'shared.crew.upgrade.descriptor': '依存関係',
-    'shared.crew.provision.descriptor': 'インフラの変更',
+    'shared.crew.provision.descriptor': 'IaC PR の作成',
     'shared.crew.explore.descriptor': '読み取り専用',
 
     'shared.crew.drift.summary':

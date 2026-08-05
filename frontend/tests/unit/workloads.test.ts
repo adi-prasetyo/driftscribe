@@ -45,11 +45,11 @@ const EXPECTED: ReadonlyArray<{
   {
     value: 'drift',
     name: 'Anchor',
-    descriptor: 'Cloud Run config',
+    descriptor: 'Cloud Run config drift',
     summary:
       "Detects configuration drift between a Cloud Run service's live env vars and the declared ops-contract.yaml, then proposes docs PRs for sanctioned changes or rollbacks for unsanctioned ones. Event-triggered via Eventarc: it runs when the service changes, not on a polling loop.",
     group: 'autonomous',
-    label: 'Anchor — Cloud Run config',
+    label: 'Anchor — Cloud Run config drift',
   },
   {
     value: 'upgrade',
@@ -63,11 +63,11 @@ const EXPECTED: ReadonlyArray<{
   {
     value: 'provision',
     name: 'Provision',
-    descriptor: 'infra edits',
+    descriptor: 'IaC PRs',
     summary:
       'Authors OpenTofu (IaC) changes from a chat request and opens one iac/-only PR for the gated apply pipeline. Never touches live infra directly.',
     group: 'on-demand',
-    label: 'Provision — infra edits',
+    label: 'Provision — IaC PRs',
   },
   {
     value: 'explore',

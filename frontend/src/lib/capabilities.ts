@@ -55,7 +55,7 @@ export interface CapWorkload {
   name: string;
   /** Crew identity (e.g. "Anchor"). */
   display_name: string;
-  /** Domain subtitle (e.g. "Cloud Run config"). */
+  /** Domain subtitle (e.g. "Cloud Run config drift"). */
   descriptor: string;
   description: string;
   /** True only when the workload has a LIVE autonomous trigger — derived

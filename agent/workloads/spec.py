@@ -34,7 +34,7 @@ class WorkloadSpec(BaseModel):
             → ``Patch``, plus ``Provision`` / ``Explore``). The symbolic
             ``name`` above is FROZEN; only this display identity changes.
         descriptor: the one-or-two-word domain subtitle shown under the
-            identity (e.g. ``Anchor`` + ``Cloud Run config``). Operator
+            identity (e.g. ``Anchor`` + ``Cloud Run config drift``). Operator
             UI renders ``display_name`` as the bold identity and this as
             the gray descriptor; docs lead with the identity and gloss
             the domain. Required — a workload with no descriptor is a
