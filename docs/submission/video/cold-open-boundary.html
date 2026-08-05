@@ -35,12 +35,16 @@
     the circle into an `iac/` card (beat 2) and stay on it through beat 7.
     Titled iac/, never iac/cloudrun.tf — the ten span eight .tf files.
   - DRIFT IS AN EDIT (beat 3): an unseen cursor backspaces the chip's mock and
-    types live, in neutral ink, against a static camera; then square + chip +
-    census line flare amber TOGETHER. Silent change, loud detection — the flare
-    is Anchor/Eventarc noticing, so the edit itself must never be coloured.
+    types live, in neutral ink, against a static camera; then the square
+    flares and the two VALUES — live on the chip, "mock" in the card — go
+    amber+bold with a marker sweep, plus a fleeting ズレ tag (round 3:
+    values-only; whole-line amber diluted the disagreement). Silent change,
+    loud detection — the flare is Anchor/Eventarc noticing, so the edit
+    itself must never be coloured.
   - THE FIX IS THE EDIT REVERSED (beat 7), a full beat after approval
-    completes: lnk-act touches, live backspaces, mock returns, and square +
-    chip + census line flip green together. 定義値に戻す made literal.
+    completes: lnk-act touches, live backspaces, mock returns, and the square
+    plus both VALUES flip green with the same marker sweep. 定義値に戻す made
+    literal.
   - ANCHOR WALKS TO THE GATE (beat 5) instead of a dashed reach popping in and
     shaking; the rebuff lands ON the badge (鍵は出せない). The key invariants
     are unchanged: worker -> lock only, placed unturned, turned by the 判子.
@@ -669,16 +673,14 @@ body[data-beat="4"] .cn-lbl,
 body[data-beat="5"] .cn-lbl,
 body[data-beat="6"] .cn-lbl,
 body[data-beat="7"] .cn-lbl{opacity:1; left:var(--x1); top:var(--y1)}
-/* the subject's line joins the flare — same instant as the square and the
-   chip (delay 3000 on beat 3), then holds amber through the seal */
-body[data-beat="3"] .cn-subj,
-body[data-beat="4"] .cn-subj,
-body[data-beat="5"] .cn-subj,
-body[data-beat="6"] .cn-subj{color:var(--amber-ink); font-weight:700}
-body[data-beat="3"] .cn-subj{transition-delay:0ms, 0ms, 0ms, 3000ms, 3000ms}
-/* ...and heals with the fix, same instant as the square and the chip */
-body[data-beat="7"] .cn-subj{color:var(--green-ink); font-weight:700;
-  transition-delay:0ms, 0ms, 0ms, 2500ms, 2500ms}
+/* VALUES ONLY (round 3): the flare used to bold+amber the whole subject line
+   and the whole chip, which said "these two THINGS are alert" when the point
+   is "these two WORDS disagree" — the operator judged the drift too subtle
+   under it. The name line now stays neutral ink forever (.cn-subj is an
+   inert marker); the emphasis rules live on the value spans — .v-drift /
+   .v-old on the chip, .cv2 in the card — next to the chip block below. The
+   cn-lbl transition list keeps its 5 properties: the per-property delay
+   lists elsewhere count on that shape. */
 /* THE FILE DICTATES THE VALUE (round 3, replacing round 2's chip-to-census
    flight — two identical static strings co-visible at birth read as a twin,
    not a record). Now: after payment-demo's name lands (~3490), an INDENTED
@@ -750,10 +752,33 @@ body.no-anim[data-beat="2"] .cn-drop{opacity:0}
   transform-origin:0 50%;
   transition:opacity 500ms ease, transform 600ms cubic-bezier(.16,1,.3,1),
              color 400ms ease, font-weight 200ms ease}
+/* position:relative + z-index:0 make each value span a stacking context so
+   its ::after marker-sweep can sit BEHIND the ink (z-index:-1); the spans
+   carry their own colour/weight transitions now that emphasis is
+   values-only (round 3). Width lives in animations; colour in transitions —
+   different properties, no collision. */
 .chip .v-old, .chip .v-drift{display:inline-block; overflow:hidden;
-  white-space:pre; vertical-align:bottom}
+  white-space:pre; vertical-align:bottom; position:relative; z-index:0;
+  transition:color 400ms ease, font-weight 200ms ease}
 .chip .v-old{width:4ch}
 .chip .v-drift{width:0}
+/* THE MARKER SWEEP — a highlighter pass, left to right, then gone: the
+   hand-drawn register (the ring, the 判子) applied to a WORD. Lives on
+   ::after (its own animation slot — the spans' own slots hold the width
+   steps), base opacity 0 = settled absence, and body.no-anim's *::after arm
+   kills it in holds. --swp defaults amber; beat 7 overrides it green. */
+.chip .v-old::after, .chip .v-drift::after, .cv2::after{
+  content:""; position:absolute; inset:-1px -2px; z-index:-1; border-radius:3px;
+  background:var(--swp, rgba(154,91,18,.22)); opacity:0;
+  transform:scaleX(0); transform-origin:left center;
+}
+@keyframes swp{
+  0%{opacity:.95; transform:scaleX(0)}
+  45%{opacity:.95; transform:scaleX(1)}
+  100%{opacity:0; transform:scaleX(1)}
+}
+.cv2{position:relative; z-index:0;
+  transition:color 400ms ease, font-weight 200ms ease}
 /* the caret types; a bare span, deliberately — no actor, no crew colour. The
    change is OUT-OF-BAND and must not read as the agent's hand. One finite
    animation encodes appear/blink/vanish; base opacity 0 IS the settled state,
@@ -772,22 +797,59 @@ body[data-beat="4"] .chip,
 body[data-beat="5"] .chip,
 body[data-beat="6"] .chip,
 body[data-beat="7"] .chip{opacity:1}
-/* beat 3: the summon (scale, delay 0) and the flare (colour + weight, delay
-   3000) share one rule — per-property delays, .lnk-blocked lesson. The edit
-   between them runs in neutral ink on the spans below. */
-/* transform waits 700ms: the .cn-drop is still descending across the cut and
-   fades out ON the chip at ~350-700 — scaling the chip under it smears the
-   landing into a double-image (caught on the round-3 probe). The lean-in
-   starts the instant the delivery is spent, still 100ms before the caret. */
+/* beat 3: the summon is the chip's only job now — the flare moved onto the
+   value spans (values-only emphasis, round 3). Transform waits 700ms: the
+   .cn-drop is still descending across the cut and fades out ON the chip at
+   ~350-700 — scaling the chip under it smears the landing into a
+   double-image (caught on the round-3 probe). The lean-in starts the
+   instant the delivery is spent, still 100ms before the caret. The colour/
+   weight delay slots are dead but the list keeps its 4-property shape. */
 body[data-beat="3"] .chip{transform:scale(1.15);
-  transition-delay:0ms, 700ms, 3000ms, 3000ms}
-body[data-beat="3"] .chip,
-body[data-beat="4"] .chip,
-body[data-beat="5"] .chip,
-body[data-beat="6"] .chip{color:var(--amber-ink); font-weight:700}
+  transition-delay:0ms, 700ms, 0ms, 0ms}
 body[data-beat="4"] .chip,
 body[data-beat="5"] .chip,
 body[data-beat="6"] .chip{transform:scale(1.15)}
+/* THE FLARE, values only: `live` on the square and "mock" in the card go
+   amber+bold and take a marker sweep — the anomaly first (3000), then the
+   reference it was checked against (3200): detection is a COMPARISON, shown
+   as one. The edit before it stays neutral ink (colour = detection, never
+   the change). Sweep ends are clamped inside the beat (3000+800, 3200+700
+   vs the 3900 cut) so the 100% frame — opacity 0, the base state — is on
+   screen before the beat flips and nothing pops. */
+body[data-beat="3"] .chip .v-drift{color:var(--amber-ink); font-weight:700;
+  transition-delay:3000ms, 3000ms}
+body[data-beat="3"] .chip .v-drift::after{
+  animation:swp 800ms cubic-bezier(.3,0,.3,1) 3000ms both}
+body[data-beat="3"] .cv2{color:var(--amber-ink); font-weight:700;
+  transition-delay:3200ms, 3200ms}
+body[data-beat="3"] .cv2::after{animation:swp 700ms cubic-bezier(.3,0,.3,1) 3200ms both}
+/* ズレ — caption D's own word (定義があるから、ズレが見える) landing at the
+   spot the eye is already watching, so the viewer doesn't have to drop to
+   the lower third to get the noun. Detection-phase ONLY: it rides the flare
+   (3150), never the edit, and is gone before the cut (3150+700=3850 vs
+   3900) — base opacity 0 owns every other frame and every hold. Mincho
+   because it IS the caption's word, not a UI label. */
+.zure{position:absolute; left:658px; top:632px; font-family:var(--mincho);
+  font-size:15px; font-weight:700; color:var(--amber-ink); opacity:0;
+  pointer-events:none}
+body[data-beat="3"] .zure{animation:zurelife 700ms ease 3150ms both}
+@keyframes zurelife{
+  0%{opacity:0; transform:translateY(-3px)}
+  18%,72%{opacity:1; transform:translateY(0)}
+  100%{opacity:0; transform:translateY(0)}
+}
+/* the disagreement persists through the seal — both WORDS, nothing else */
+body[data-beat="4"] .chip .v-drift,
+body[data-beat="5"] .chip .v-drift,
+body[data-beat="6"] .chip .v-drift,
+body[data-beat="7"] .chip .v-drift,
+body[data-beat="4"] .cv2,
+body[data-beat="5"] .cv2,
+body[data-beat="6"] .cv2{color:var(--amber-ink); font-weight:700}
+/* beat 7: the drifted value stays amber right up until the reverse edit
+   deletes it (it is still wrong while it exists); the card's "mock" holds
+   amber until the green flip reaches it (the delay holds the OLD computed
+   value, the .lnk-blocked grammar) */
 /* the edit itself: per-character width steps. mock and live are both 4ch, so
    the chip's layout never shifts. End state (v-old 0 / v-drift 4ch) must be
    restated for beats 4-6 — the keyframes only fill within beat 3. */
@@ -811,13 +873,22 @@ body[data-beat="7"] .chip .v-drift{animation:chipdel2 600ms steps(4,end) 900ms b
 body[data-beat="7"] .chip .v-old{animation:chiptype2 600ms steps(4,end) 1700ms both}
 @keyframes chiptype2{from{width:0ch} to{width:4ch}}
 body[data-beat="7"] .chip .chip-caret{animation:chipcaret 1400ms steps(1) 900ms both}
-/* the green flip, 2500: square, chip and census line together — the mirror of
-   the beat-3 flare. The chip holds its amber+scale from beat 6 until then
-   (delays hold the OLD computed values), then descales as it heals: drift
-   inflated it, the fix relaxes it. Delay list order: opacity, transform,
-   color, font-weight. */
-body[data-beat="7"] .chip{color:var(--green-ink); font-weight:700;
-  transition-delay:0ms, 2500ms, 2500ms, 2500ms}
+/* the green flip, 2500 — values only, the mirror of the beat-3 flare: the
+   retyped `mock` on the square and the "mock" in the card go green+bold with
+   a green marker sweep, anomaly-side first (2500), card at 2600. The chip
+   element itself only DESCALES at 2500 (drift inflated it, the fix relaxes
+   it — delay list order: opacity, transform, color, font-weight; the colour
+   slots are dead). Sweeps are clamped inside the 3200ms beat (2500+700,
+   2600+600) so the settled base frame lands before the beat-8 cut. */
+body[data-beat="7"] .chip{transition-delay:0ms, 2500ms, 0ms, 0ms}
+body[data-beat="7"] .chip .v-old{color:var(--green-ink); font-weight:700;
+  transition-delay:2500ms, 2500ms}
+body[data-beat="7"] .chip .v-old::after{--swp:rgba(26,107,82,.20);
+  animation:swp 700ms cubic-bezier(.3,0,.3,1) 2500ms both}
+body[data-beat="7"] .cv2{color:var(--green-ink); font-weight:700;
+  transition-delay:2600ms, 2600ms}
+body[data-beat="7"] .cv2::after{--swp:rgba(26,107,82,.20);
+  animation:swp 600ms cubic-bezier(.3,0,.3,1) 2600ms both}
 
 /* =======================================================================
    ROLE BADGES — labelled by JOB, not by product name. The crew name rides
@@ -1608,6 +1679,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
            (iac/cloudrun.tf:41-44, pinned by demo/ops-contract.yaml); live is
            what the beat-3 out-of-band edit types over it. -->
       <div class="chip"><span class="ck">PAYMENT_MODE = </span><span class="v-old">mock</span><span class="v-drift">live</span><span class="chip-caret"></span></div>
+      <div class="zure">ズレ</div>
 
       <!-- 見張る側 — detects, proposes, and cannot authorise itself -->
       <div class="badge b-watch">
@@ -2045,13 +2117,15 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
        beat 1  4200   line draws; the tail zoom starts at 5900, lands on the cut
        beat 2  4700   census: 260ms stagger x 10 names + 700ms flight; value
                       line types 3550-4250 · .cn-drop flies 4350 · chip 4650
-       beat 3  3900   summon 0-500 · edit 800-2600 · flare 3000 · settle
+       beat 3  3900   summon 0-500 · edit 800-2600 · value flare+sweep
+                      3000 (live) / 3200 ("mock") · ズレ 3150-3850
        beat 4  3100   ripple 100-1000; badge, ping, proposal card
        beat 5  4500   approach 250-3650; contact 1750; label 2050
        beat 6  5300   still 0-800 (cap G reads first) · place 800-1900 · 判子
                       2300-2920 · turn 3400 · open 3750-4050 · crumble 4200-4800
                       (the THE KEY block is the source of truth)
-       beat 7  3200   lnk-act 200-850 · reverse edit 900-2300 · green flip 2500
+       beat 7  3200   lnk-act 200-850 · reverse edit 900-2300 · green value
+                      flip+sweep 2500/2600
        beat 8  4000   pullback + sweep (unchanged from v2/v3)
        beat 9  5200   burst -> highlight -> ring -> lift-off -> lobe. The one
                       beat no rival's demo can show. Never trim it first.
