@@ -377,6 +377,20 @@
     align-items: center;
     gap: var(--ds-sp-2);
     padding: 0.5em 0.6em;
+    /* Stand exactly as tall as the prompt field at rest. The pill's own type is
+       a step smaller (--ds-fs-1 is the pills/meta size, and a pill that matched
+       the field's type would stop reading as a pill), and because its padding is
+       in `em` the smaller type shrinks the box twice over — the trigger came out
+       ~9px short, and `align-self: flex-start` above put the whole shortfall at
+       the bottom where it read as a control that had not finished loading.
+       This is the FIELD's box arithmetic, not a number tuned until it looked
+       right: one line of --ds-fs-2 at line-height 1.4, plus .chat-form__input's
+       0.62em padding top and bottom, plus its 1px borders. Each term is
+       traceable to a declaration in ChatForm.svelte, and crew-menu.smoke.ts
+       measures the two boxes against each other so a change on either side is
+       caught rather than left to drift. min-height rather than height: it is a
+       floor, so a crew name that wraps still gets its room. */
+    min-height: calc(var(--ds-fs-2) * (1.4 + 0.62 * 2) + 2px);
     border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius-sm);
     background: var(--ds-surface);
