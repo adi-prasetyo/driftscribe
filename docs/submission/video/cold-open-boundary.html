@@ -619,7 +619,9 @@ body[data-beat="10"] .bd-tag{top:300px}
    state from the beat cascade for free.
    ======================================================================= */
 .census{
-  position:absolute; left:975px; top:170px; width:430px; height:264px; opacity:0;
+  /* height 285, not 264 (round 3): row 11 is the value line the file dictates
+     (.cn-cfg, y 423). Bottom edge 455 vs gate top 470 — 15px, no contact. */
+  position:absolute; left:975px; top:170px; width:430px; height:285px; opacity:0;
   background:var(--surface); border:1.5px solid var(--border-strong); border-radius:13px;
   box-shadow:0 2px 6px rgba(18,21,28,.07), 0 26px 54px -28px rgba(18,21,28,.4);
   padding:12px 16px; transition:opacity 550ms ease;
@@ -677,26 +679,72 @@ body[data-beat="3"] .cn-subj{transition-delay:0ms, 0ms, 0ms, 3000ms, 3000ms}
 /* ...and heals with the fix, same instant as the square and the chip */
 body[data-beat="7"] .cn-subj{color:var(--green-ink); font-weight:700;
   transition-delay:0ms, 0ms, 0ms, 2500ms, 2500ms}
-/* the VALUE joins the census (operator, 2026-08-06): the chip appears under
-   the square, then a copy of its string peels off and flies into
-   payment-demo's line — the definition legibly CONTAINS the value before
-   anything drifts, so the beat-3 edit reads as square-vs-file DISAGREEMENT
-   rather than a stranger string materializing. The element carries .cn-subj
-   too, so the flare/heal rules above hit the whole line for free. Departs
-   4100, lands ~4800 (~100ms into beat 3, mid-glide across the cut — the
-   beat-3 .cn-lbl rule restates the same endpoint, so the transition finishes
-   untouched). Same specificity as the beat-2 .cn-lbl delay rule; this one
-   wins by SOURCE ORDER — keep it below that rule. */
-body[data-beat="2"] .cn-val{transition-delay:3750ms, 4100ms, 4100ms, 0ms, 0ms}
+/* THE FILE DICTATES THE VALUE (round 3, replacing round 2's chip-to-census
+   flight — two identical static strings co-visible at birth read as a twin,
+   not a record). Now: after payment-demo's name lands (~3490), an INDENTED
+   child line types itself under it — typing is the piece's "the file speaks"
+   verb (beat 9) — and then a copy flies DOWN to the square and BECOMES the
+   chip. Containment (the indent) + delivery (the flight) carry the
+   payment-demo↔PAYMENT_MODE relation wordlessly, and at no instant do two
+   identical static strings coexist: the only duplicate is the one in motion.
+   File shows "mock" (HCL string); square shows mock (runtime value) — the
+   quotes are the file-ness.
+   .cn-cfg IS a .cn-lbl with --x0=--x1 (born in the card, the flight rules
+   are a no-op on it) and --ci:13.3 (opacity in at ~3460, just before the
+   typing). The width reveal lives on the INNER wrapper (.cfgw) so the line
+   element's own animation slot stays free; base width 21ch = the settled
+   state, so beats 3+ and every hold need no restatement. */
+/* letter-spacing 0, unlike the name lines' .02em: the wrapper's width is in
+   ch, and ch counts the glyph advance ONLY — the inherited tracking added
+   ~6px the 21ch clip box doesn't cover, and the closing quote was cut
+   (probe-caught; same family as the measured-dasharray lesson). The chip
+   this value becomes is tracking-free too. */
+.cn-cfg{letter-spacing:0}
+.cn-cfg .cfgw{display:inline-block; overflow:hidden; white-space:pre;
+  vertical-align:bottom; width:21ch}
+body[data-beat="2"] .cn-cfg .cfgw{animation:cfgtype 700ms steps(21,end) 3550ms both}
+@keyframes cfgtype{from{width:0ch} to{width:21ch}}
+/* mini caret riding the reveal edge (it sits AFTER the clipping wrapper, so
+   the growing width pushes it right). One finite blink; base opacity 0 IS
+   the settled state — hold frames are caret-free for free. */
+.cn-cfg .ccaret{display:inline-block; width:8px; height:1.05em;
+  background:var(--ink-soft); vertical-align:-.15em; margin-left:1px; opacity:0}
+body[data-beat="2"] .cn-cfg .ccaret{animation:cfgcaret 800ms steps(1) 3500ms both}
+@keyframes cfgcaret{0%{opacity:0} 5%,30%{opacity:1} 31%,55%{opacity:0}
+  56%,85%{opacity:1} 86%,100%{opacity:0}}
+/* the delivery: departs the card at 4350 (typing settled at 4250), rides
+   700ms down to the square, shrinking 14->12px into chip scale, and lands
+   ~350ms INTO beat 3 — the beat-3 rule restates the same endpoint so the
+   transition finishes untouched (the round-2 cn-val precedent), then fades
+   at the landing instant while the chip fades in underneath: the arrival IS
+   the chip's first appearance. NOT a .cn-lbl — the census cascade must not
+   fly it. No quotes: it becomes the runtime chip. */
+.cn-drop{position:absolute; left:1003px; top:423px; font-family:var(--mono);
+  /* NO letter-spacing (the .cn-lbl .02em would land ~4px wide of the chip's
+     glyphs and smear the crossfade — probe-caught) */
+  font-size:14px; color:var(--ink-soft); white-space:nowrap;
+  opacity:0;
+  transition:opacity 350ms ease,
+             left 700ms cubic-bezier(.16,1,.3,1), top 700ms cubic-bezier(.16,1,.3,1),
+             font-size 700ms cubic-bezier(.16,1,.3,1)}
+body[data-beat="2"] .cn-drop{opacity:1; left:532px; top:610px; font-size:12px;
+  transition-delay:4350ms, 4350ms, 4350ms, 4350ms}
+body[data-beat="3"] .cn-drop{opacity:0; left:532px; top:610px; font-size:12px;
+  transition-delay:350ms, 0ms, 0ms, 0ms}
+/* hold-2 curation only (not a state change): the hold resolves the in-flight
+   transition to its END, which parks the flyer exactly ON the landed chip —
+   identical text double-drawn. The played frame never shows that; the hold
+   should not either. */
+body.no-anim[data-beat="2"] .cn-drop{opacity:0}
 
 /* the live value chip under the subject square — the thing the beat-3 edit
-   will type over. Appears once the census has claimed payment-demo's name
-   (last flight lands ~3490; chip 3550), so the sequence reads: the file owns
-   the name, and THIS is the live value it defines. Then a COPY of the string
-   peels off and flies into the census line (.cn-val) — see there. The spans are pre-staged for the
-   beat-3/beat-7 steps() edits (Task 5/9): v-old carries the DEFINED value,
-   v-drift the drifted one; base state (v-old 4ch, v-drift 0) IS the healed
-   state, so beats 8+ need no restatement. */
+   will type over. Round 3: the chip is the ARRIVAL of the card's value
+   (.cn-drop delivers it, fading out as this fades in at ~4650 across the
+   beat-3 cut), so the sequence reads: the file owns the name, the file
+   dictates the value, and the square RECEIVED it. The spans are pre-staged
+   for the beat-3/beat-7 steps() edits (Task 5/9): v-old carries the DEFINED
+   value, v-drift the drifted one; base state (v-old 4ch, v-drift 0) IS the
+   healed state, so beats 8+ need no restatement. */
 .chip{position:absolute; left:532px; top:610px; font-family:var(--mono);
   font-size:12px; color:var(--ink-soft); white-space:nowrap; opacity:0;
   transform-origin:0 50%;
@@ -718,7 +766,7 @@ body[data-beat="3"] .chip .chip-caret{animation:chipcaret 2000ms steps(1) 700ms 
   37%,48%{opacity:0} 49%,60%{opacity:1} 61%,72%{opacity:0} 73%,86%{opacity:1}
   87%,100%{opacity:0}
 }
-body[data-beat="2"] .chip{opacity:1; transition-delay:3550ms}
+body[data-beat="2"] .chip{opacity:1; transition-delay:4650ms}
 body[data-beat="3"] .chip,
 body[data-beat="4"] .chip,
 body[data-beat="5"] .chip,
@@ -727,8 +775,12 @@ body[data-beat="7"] .chip{opacity:1}
 /* beat 3: the summon (scale, delay 0) and the flare (colour + weight, delay
    3000) share one rule — per-property delays, .lnk-blocked lesson. The edit
    between them runs in neutral ink on the spans below. */
+/* transform waits 700ms: the .cn-drop is still descending across the cut and
+   fades out ON the chip at ~350-700 — scaling the chip under it smears the
+   landing into a double-image (caught on the round-3 probe). The lean-in
+   starts the instant the delivery is spent, still 100ms before the caret. */
 body[data-beat="3"] .chip{transform:scale(1.15);
-  transition-delay:0ms, 0ms, 3000ms, 3000ms}
+  transition-delay:0ms, 700ms, 3000ms, 3000ms}
 body[data-beat="3"] .chip,
 body[data-beat="4"] .chip,
 body[data-beat="5"] .chip,
@@ -1950,15 +2002,22 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     l.style.setProperty('--ci', i);
     worldEl.appendChild(l);
   });
-  /* the value's census copy (see .cn-val). Starts just under the chip
-     (532,610 + one line); lands at the tail of payment-demo's line:
-     x 986 + 12ch of 14px JetBrains Mono (12 x 8.4 = 100.8) + 10px gap. */
-  var val=document.createElement('div');
-  val.className='cn-lbl cn-subj cn-val';
-  val.textContent='PAYMENT_MODE = mock';
-  val.style.setProperty('--x0','532px'); val.style.setProperty('--y0','634px');
-  val.style.setProperty('--x1','1097px'); val.style.setProperty('--y1','402px');
-  worldEl.appendChild(val);
+  /* the value line the file dictates (see .cn-cfg): an indented child row
+     under payment-demo (names at x 986; +2ch of 14px JetBrains Mono = 1003).
+     Born in the card (--x0=--x1), so the census flight rules are a no-op on
+     it; the reveal is the .cfgw width typing. */
+  var cfg=document.createElement('div');
+  cfg.className='cn-lbl cn-cfg';
+  cfg.innerHTML='<span class="cfgw"><span>PAYMENT_MODE = </span><span class="cv2">&quot;mock&quot;</span></span><span class="ccaret"></span>';
+  cfg.style.setProperty('--x0','1003px'); cfg.style.setProperty('--y0','423px');
+  cfg.style.setProperty('--x1','1003px'); cfg.style.setProperty('--y1','423px');
+  cfg.style.setProperty('--ci','13.3');
+  worldEl.appendChild(cfg);
+  /* ...and the copy it sends down to the square (see .cn-drop). */
+  var drop=document.createElement('div');
+  drop.className='cn-drop';
+  drop.textContent='PAYMENT_MODE = mock';
+  worldEl.appendChild(drop);
 
   /* the worker's reach to the lock is drawn AND retracted by a single
      stroke-dashoffset animation, so its dasharray must be the REAL path length:
@@ -1984,7 +2043,8 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
      F (17 chars / 4.0s = 4.25 — better than the 5.0 it ran at its old 3900ms).
        beat 0  3200   field blooms (unchanged)
        beat 1  4200   line draws; the tail zoom starts at 5900, lands on the cut
-       beat 2  4700   census: 260ms stagger x 10 names + 700ms flight; chip 3700
+       beat 2  4700   census: 260ms stagger x 10 names + 700ms flight; value
+                      line types 3550-4250 · .cn-drop flies 4350 · chip 4650
        beat 3  3900   summon 0-500 · edit 800-2600 · flare 3000 · settle
        beat 4  3100   ripple 100-1000; badge, ping, proposal card
        beat 5  4500   approach 250-3650; contact 1750; label 2050
