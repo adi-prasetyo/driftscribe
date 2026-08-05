@@ -851,7 +851,9 @@ body[data-beat="7"] .prop{opacity:1; transform:none; transition-delay:700ms}
    stillness while cap G is read, and only then does anything move.
    Beat-6 order (ms, beat-relative):
      0-800     STILLNESS. Cap G lands and is read; nothing moves.
-     800-1900  実行側 extends, PLACES the key, WITHDRAWS. Key sits unturned.
+     800-1900  the hand-line arcs out; the key fades in AT the worker and
+               rides it to the lock (arrives ~1400), the line withdraws.
+               Key sits unturned.
      1900-2300 stillness.
      2300-2920 the 判子 lands, ALONE — nothing else moves.
      2920-3400 stillness — the gate turns green under the stamp.
@@ -1009,14 +1011,25 @@ body[data-beat="6"] .lnk-key{opacity:.85;
    outranks the earlier ones on the same property. So the life of the key is a
    single timeline and the percentages below are that timeline in ms/4000. */
 .key{
-  position:absolute; left:950px; top:472px; width:44px; height:44px; opacity:0;
+  position:absolute; left:0; top:0; width:44px; height:44px; opacity:0;
   color:var(--navy); z-index:6;
+  /* the key RIDES the worker's line (operator, 2026-08-06: it used to
+     materialize at the lock — now it fades in AT the worker and travels, so
+     the provenance the file only asserted in a comment is on camera: the
+     ACTING worker mints the token, workers/rollback/main.py:718). offset-path
+     is the same arc as .lnk-key, extended to the keyhole; the box sits at
+     0,0 so path coordinates read as world coordinates either way Chromium
+     resolves the origin. offset-anchor pins the key's TIP to the path, so
+     distance 100% seats the tip at the keyhole (985.8,507.8) exactly where
+     left:950/top:472 used to put it. offset-rotate 0: the glyph keeps its
+     own angle, the keylife transform still owns rotation. */
+  offset-path:path('M760 302 C 850 306, 944 420, 985.8 507.8');
+  offset-rotate:0deg; offset-anchor:35.8px 35.8px; offset-distance:100%;
   /* 44px, not 30 — the fix-forward round already taught that an icon sized to
      be recognised is not sized to be watched, and this beat turns on watching
-     the key. Pivot on the key's TIP (19.5/24 of the box = 35.8px), so the turn
-     rotates it IN the lock instead of orbiting the glyph around its middle —
-     and so the placement lands tip-first at the keyhole (~986,508 now that the
-     2.6em lock deepened the header). */
+     the key. Pivot on the key's TIP (19.5/24 of the box = 35.8px), matching
+     offset-anchor: the turn rotates it IN the lock instead of orbiting the
+     glyph around its middle, and the ride lands tip-first at the keyhole. */
   transform-origin:35.8px 35.8px;
   /* paper halo so it reads as an object landing ON the header, not a stray icon */
   filter:drop-shadow(0 0 5px rgba(251,250,248,.95)) drop-shadow(0 0 2px rgba(251,250,248,1));
@@ -1024,15 +1037,20 @@ body[data-beat="6"] .lnk-key{opacity:.85;
 .key svg{width:100%; height:100%; display:block}
 body[data-beat="6"] .key{animation:keylife 4000ms linear 800ms both}
 @keyframes keylife{
-  /* placed, tip first, while the worker's line is at full extension
-     (percentages are ms/4000) */
-  0%,7.5%{opacity:0; transform:rotate(-14deg) scale(1.9);
-    animation-timing-function:cubic-bezier(.3,1.35,.45,1)}
-  11.3%{opacity:1; transform:rotate(-14deg) scale(.94);
+  /* fades in AT the worker while the hand-line draws (line 0-440ms of its
+     own clock), then RIDES the arc: glide 4-15% (960-1400 beat-relative),
+     arriving tip-first while the line is at full extension (1240-1480); the
+     line's retraction after arrival is the withdrawal. offset-distance is
+     pinned by the BASE value (100%) after 15%, so no later frame needs to
+     restate it. (percentages are ms/4000) */
+  0%{opacity:0; offset-distance:0%; transform:rotate(-14deg) scale(1.05)}
+  3%,4%{opacity:1; offset-distance:0%; transform:rotate(-14deg) scale(1.05);
+    animation-timing-function:cubic-bezier(.45,0,.2,1)}
+  15%{opacity:1; offset-distance:100%; transform:rotate(-14deg) scale(.94);
     animation-timing-function:cubic-bezier(.3,1.35,.45,1)}
   /* UNTURNED, and held that way across the whole 判子 AND the stillness after
      it — this stillness is the point of the beat, not dead air in it */
-  16%,65%{opacity:1; transform:rotate(-14deg) scale(1);
+  18%,65%{opacity:1; transform:rotate(-14deg) scale(1);
     animation-timing-function:cubic-bezier(.35,1.4,.5,1)}
   /* the turn, AFTER the stamp, with air on both sides */
   72.5%,76%{opacity:1; transform:rotate(20deg) scale(1);
@@ -1517,7 +1535,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
              an x that lands beside the adopt target reads as marking IT -->
         <line class="stopx" x1="927.8" y1="505.3" x2="952.2" y2="484.7"></line>
         <line class="stopx" x1="929.7" y1="482.8" x2="950.3" y2="507.2"></line>
-        <path class="lnk-key" d="M760 302 C 810 350, 900 424, 964 480"></path>
+        <path class="lnk-key" d="M760 302 C 850 306, 940 415, 964 480"></path>
         <path class="lnk-act" d="M700 302 C 660 400, 628 490, 606 566"></path>
       </svg>
 
