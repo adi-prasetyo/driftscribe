@@ -460,6 +460,75 @@ test.describe('focus rings are never clipped (ds-2fp)', () => {
     await assertFocusRingsIntact(page, 'desk (ja)', { minStops: 10, sentinel: 'autonomy-pill-toggle' });
   });
 
+  // ds-3em added two controls the two states above cannot reach: the drift
+  // group's cap toggle (renders only past 3 drift rows — `mock`'s graph has 1)
+  // and the managed group's fold <summary>. Both live inside `.estate-view`,
+  // which is `overflow: hidden`, and the toggle spans the card's full width —
+  // the exact geometry ds-2fp found four times. Leaving them to the states
+  // above would have recorded them as clean without ever measuring them, which
+  // is how CapabilityCard's four-sided defect survived (header note).
+  test('desk — the estate card past its drift cap', async ({ page, baseURL }) => {
+    await seed(page);
+    await mock(page, baseURL!);
+    await emptyConversations(page);
+    // Registered AFTER mock(), so this graph wins: 6 drift rows (toggle) and 9
+    // managed (fold) of one adoptable type.
+    const BUCKET = 'storage.googleapis.com/Bucket';
+    await page.route('**/infra/graph', (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          generated_at: '2026-08-05T06:00:00Z',
+          project: 'demo-proj',
+          caveat: '',
+          iac_snapshot_stale: false,
+          degraded: false,
+          degraded_reason: null,
+          totals: { resources: 15, managed: 9, drift: 6 },
+          groups: [
+            {
+              asset_type: BUCKET,
+              label: 'Cloud Storage',
+              count: 15,
+              managed: 9,
+              drift: 6,
+              sensitive: false,
+              adoptable: true,
+              nodes: [
+                ...Array.from({ length: 6 }, (_, i) => ({
+                  id: `u${i}`,
+                  label: `drift-bucket-${i}`,
+                  asset_type: BUCKET,
+                  managed: false,
+                  location: 'asia-northeast1',
+                })),
+                ...Array.from({ length: 9 }, (_, i) => ({
+                  id: `m${i}`,
+                  label: `managed-bucket-${i}`,
+                  asset_type: BUCKET,
+                  managed: true,
+                  location: 'asia-northeast1',
+                })),
+              ],
+            },
+          ],
+          edges: [],
+        }),
+      }),
+    );
+    await page.goto('/?view=desk');
+    // Premise: both new controls are actually on screen before anything is
+    // measured, or this test passes by measuring neither.
+    await expect(page.getByTestId('estate-drift-toggle')).toBeVisible();
+    await expect(page.getByTestId('estate-managed-fold')).toBeVisible();
+    await settle(page);
+    await assertFocusRingsIntact(page, 'desk (drift cap)', {
+      minStops: 10,
+      sentinel: 'autonomy-pill-toggle',
+    });
+  });
+
   test('chat', async ({ page, baseURL }) => {
     await seed(page);
     await mock(page, baseURL!);

@@ -642,16 +642,19 @@
      rather than invented: the page now has two "there is more of this" controls
      one card apart, and a second visual language for the same gesture is the
      kind of thing that reads as a bolted-on frontend.
-     One difference is load-bearing. The ledger's button inherits its 40px
-     horizontal inset from its padded parent (`.ledger-strip__rows`); this one's
-     parent is the card itself, so it declares the inset — without it the
-     control sits flush against the card edge while the rows it belongs to are
-     40px in. */
+     One difference is load-bearing, and it has to be spent on MARGIN, not
+     padding. The ledger's button inherits its 40px horizontal inset from its
+     padded parent (`.ledger-strip__rows`); this one's parent is the card
+     itself, so it must declare the inset — and padding would leave the BOX
+     spanning the card's full width. `.estate-view` is `overflow: hidden` and
+     `--ds-ring` is drawn 4px OUTSIDE the box, so that ring was clipped: caught
+     by the ds-2fp suite as "cuts left 4.0px", not by inspection. Margin insets
+     the box, so the ring has somewhere to land. */
   .estate-view__toggle {
     appearance: none;
     display: block;
-    margin: 0;
-    padding: 12px 40px 0;
+    margin: 12px 40px 0;
+    padding: 0;
     border: none;
     background: none;
     cursor: pointer;
