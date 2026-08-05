@@ -30,8 +30,9 @@ describe('workerLabel', () => {
     expect(workerLabel('upgrade_propose_pr_tool', t)).toBe('Upgrade Docs');
   });
 
-  it('maps open_infra_pr_tool to "Open infra PR"', () => {
-    expect(workerLabel('open_infra_pr_tool', t)).toBe('Open infra PR');
+  it('maps open_infra_pr_tool to "Open IaC PR"', () => {
+    // The KEY keeps the ADK tool's __name__; only the label moved (ds-dfp).
+    expect(workerLabel('open_infra_pr_tool', t)).toBe('Open IaC PR');
   });
 
   // Full legacy map preserved verbatim (drift reader/docs/rollback,

@@ -69,7 +69,7 @@ export const timeline = {
     'timeline.worker.upgrade_close_pr_tool': 'Upgrade Docs · close PR',
     'timeline.worker.upgrade_merge_pr_tool': 'Upgrade Docs · merge PR',
     // Provision workload.
-    'timeline.worker.open_infra_pr_tool': 'Open infra PR',
+    'timeline.worker.open_infra_pr_tool': 'Open IaC PR',
     'timeline.worker.propose_adoption_tool': 'Adopt resource (import PR)',
     // Shared.
     'timeline.worker.notify_tool': 'Notifier',
@@ -146,7 +146,7 @@ export const timeline = {
     'timeline.worker.upgrade_propose_pr_tool': 'アップグレードドキュメント',
     'timeline.worker.upgrade_close_pr_tool': 'アップグレードドキュメント・PR をクローズ',
     'timeline.worker.upgrade_merge_pr_tool': 'アップグレードドキュメント・PR をマージ',
-    'timeline.worker.open_infra_pr_tool': 'インフラ PR を開く',
+    'timeline.worker.open_infra_pr_tool': 'IaC PR を開く',
     'timeline.worker.propose_adoption_tool': 'リソースを IaC 管理に取り込む（取り込み PR）',
     'timeline.worker.notify_tool': '通知',
     'timeline.worker.load_iac_plan_tool': 'IaC プランリーダー',

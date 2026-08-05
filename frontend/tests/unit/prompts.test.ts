@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseWorkloadPrompts } from '../../src/lib/prompts';
 
 const OK = {
-  workload: 'drift', display_name: 'Anchor', descriptor: 'Cloud Run config',
+  workload: 'drift', display_name: 'Anchor', descriptor: 'Cloud Run config drift',
   recheck_prompt: 'a', chat_prompt: 'b', chat_prompt_distinct: true,
   source_dir: 'workloads/drift', revision: 'driftscribe-agent-00094-7cr',
   demo_note: 'Demo: ...',

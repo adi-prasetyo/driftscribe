@@ -83,7 +83,7 @@ const CAPABILITIES_FIXTURE = {
     {
       name: 'drift',
       display_name: 'Anchor',
-      descriptor: 'Cloud Run config',
+      descriptor: 'Cloud Run config drift',
       description: 'focus-ring smoke',
       autonomous: true,
       tools: [{ name: 'drift_read_live_env', description: 'smoke', write_capable: false }],

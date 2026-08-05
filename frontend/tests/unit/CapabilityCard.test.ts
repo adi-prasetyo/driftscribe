@@ -29,7 +29,7 @@ const FIXTURE: Capabilities = {
     {
       name: 'drift',
       display_name: 'Anchor',
-      descriptor: 'Cloud Run config',
+      descriptor: 'Cloud Run config drift',
       description: 'Detect configuration drift between a Cloud Run service\'s live env vars and the team\'s declared ops-contract.yaml.',
       autonomous: true,
       tools: [
@@ -72,7 +72,7 @@ const FIXTURE: Capabilities = {
     {
       name: 'provision',
       display_name: 'Provision',
-      descriptor: 'infra edits',
+      descriptor: 'IaC PRs',
       description: 'Author OpenTofu (IaC) changes from a chat request and open ONE iac/-only pull request for the gated apply pipeline to plan, approve, and apply.',
       autonomous: false,
       tools: [
@@ -201,8 +201,8 @@ describe('CapabilityCard', () => {
     for (const crew of ['Anchor', 'Patch', 'Explore', 'Provision']) {
       expect(workloads.textContent).toContain(crew);
     }
-    expect(workloads.textContent).toContain('Cloud Run config');
-    expect(workloads.textContent).toContain('infra edits');
+    expect(workloads.textContent).toContain('Cloud Run config drift');
+    expect(workloads.textContent).toContain('IaC PRs');
 
     // Provision shows the "On-demand · chat only" pill. GLUED-EXACT-STRING PIN
     // on the seam (Svelte 5 whitespace gotcha, PR #83 lesson): the component
@@ -211,14 +211,14 @@ describe('CapabilityCard', () => {
     // strings glue and this assertion FAILS.
     const provisionSummary = workloads.querySelector('[data-testid="cap-workload-provision-summary"]');
     expect(provisionSummary).not.toBeNull();
-    expect(provisionSummary!.textContent).toContain('Provision — infra edits On-demand · chat only');
+    expect(provisionSummary!.textContent).toContain('Provision — IaC PRs On-demand · chat only');
     // And the pill must be the on-demand one, never the autonomous label:
     expect(provisionSummary!.textContent).not.toContain('Autonomous');
 
     // Same glued pin on the autonomous side of the seam (Anchor/drift):
     const driftSummary = workloads.querySelector('[data-testid="cap-workload-drift-summary"]');
     expect(driftSummary).not.toBeNull();
-    expect(driftSummary!.textContent).toContain('Anchor — Cloud Run config Autonomous · also chat');
+    expect(driftSummary!.textContent).toContain('Anchor — Cloud Run config drift Autonomous · also chat');
   });
 
   it('3b. each workload summary leads with its verb glyph (decorative, aria-hidden, keyed on the symbolic value)', async () => {
@@ -465,7 +465,7 @@ describe('CapabilityCard — autonomy note (via prop)', () => {
 describe('CapabilityCard — per-crew prompt disclosure (Task 4)', () => {
   it('lazy-loads and renders a crew prompt with distinct chat prompt', async () => {
     const PROMPTS = {
-      workload: 'drift', display_name: 'Anchor', descriptor: 'Cloud Run config',
+      workload: 'drift', display_name: 'Anchor', descriptor: 'Cloud Run config drift',
       recheck_prompt: 'RECHECK-PROMPT-TEXT', chat_prompt: 'CHAT-PROMPT-TEXT',
       chat_prompt_distinct: true, source_dir: 'workloads/drift',
       revision: 'driftscribe-agent-00094-7cr', demo_note: 'Demo: prompts are soft guidance.',

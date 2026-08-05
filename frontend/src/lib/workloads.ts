@@ -47,7 +47,7 @@ export interface WorkloadOption {
   value: Workload;
   /** Crew identity — the bold name, e.g. "Anchor". */
   name: string;
-  /** Domain subtitle — the gray descriptor, e.g. "Cloud Run config". */
+  /** Domain subtitle — the gray descriptor, e.g. "Cloud Run config drift". */
   descriptor: string;
   /** One-sentence summary of the workload's full description, surfaced as the
    *  crew-card hover/focus tooltip. Longer than ``descriptor`` (which stays the
