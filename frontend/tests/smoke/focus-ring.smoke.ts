@@ -355,14 +355,38 @@ type Stop = NonNullable<ReturnType<typeof PROBE>>;
 
 const TAB_CAP = 160;
 
-async function sweep(page: Page): Promise<{ rows: Stop[]; cycled: boolean; total: number }> {
+/**
+ * How a state is walked. Both default to the Tab traversal every other state
+ * uses; a widget with its OWN keyboard contract needs them.
+ *
+ * `advance` is the key that moves to the next stop. A listbox makes only the
+ * selected option tabbable and closes on Tab, so a Tab sweep would measure one
+ * row of four and then dismiss the thing it came to measure. ArrowDown is how a
+ * keyboard operator actually walks it, and the wrap at the end is what still
+ * lets a completed cycle be detected.
+ *
+ * `enter` runs AFTER the resting snapshot, which is the only place it can run:
+ * SNAPSHOT_RESTING blurs (it has to — see header note 4), and with a non-Tab
+ * advance key there is nothing focused for the first press to move FROM. It
+ * must re-seat focus with a real key press rather than a bare .focus() call, or
+ * Chromium records the modality as programmatic and :focus-visible never
+ * matches — which the sweep's own precondition would then report as the defect.
+ */
+type WalkOpts = { advance?: string; enter?: () => Promise<void> };
+
+async function sweep(
+  page: Page,
+  walk: WalkOpts = {},
+): Promise<{ rows: Stop[]; cycled: boolean; total: number }> {
   const total = await page.evaluate(SNAPSHOT_RESTING, FOCUSABLE);
+  await walk.enter?.();
+  const advance = walk.advance ?? 'Tab';
   const seen = new Set<string>();
   const rows: Stop[] = [];
   let cycled = false;
   let first: string | null = null;
   for (let i = 0; i < TAB_CAP; i++) {
-    await page.keyboard.press('Tab');
+    await page.keyboard.press(advance);
     const stop = await page.evaluate(PROBE);
     if (!stop) continue;
     // Identity is the stamped index, not selector+text: sibling rows share a
@@ -385,16 +409,17 @@ async function sweep(page: Page): Promise<{ rows: Stop[]; cycled: boolean; total
 async function assertFocusRingsIntact(
   page: Page,
   label: string,
-  opts: { minStops: number; sentinel?: string },
+  opts: { minStops: number; sentinel?: string } & WalkOpts,
 ) {
-  const { rows, cycled, total } = await sweep(page);
+  const { rows, cycled, total } = await sweep(page, opts);
 
   // ── Positive controls, FIRST. Every assertion below is satisfied by an empty
   // sweep, so without these a broken probe reads as a clean app.
   expect(rows.length, `${label}: sweep found ${rows.length} focus stops, expected ≥${opts.minStops}`).toBeGreaterThanOrEqual(opts.minStops);
+  const key = opts.advance ?? 'Tab';
   expect(
     cycled,
-    `${label}: Tab traversal never returned to its first stop (visited ${rows.length} stops; ${total} elements matched the focusable SELECTOR, which is an upper bound — it counts disabled controls, tabindex="-1", and descendants of closed <details>) in ${TAB_CAP} presses, so coverage is unknown and a pass here would be silent truncation`,
+    `${label}: ${key} traversal never returned to its first stop (visited ${rows.length} stops; ${total} elements matched the focusable SELECTOR, which is an upper bound — it counts disabled controls, tabindex="-1", and descendants of closed <details>) in ${TAB_CAP} presses, so coverage is unknown and a pass here would be silent truncation`,
   ).toBe(true);
   expect(
     rows.filter((r) => r.outset > 0 || r.inset).length,
@@ -406,10 +431,10 @@ async function assertFocusRingsIntact(
       `${label}: traversal never reached ${opts.sentinel}, so the part of the UI this state exists to cover was not measured`,
     ).toContain(opts.sentinel);
   }
-  // Reaching a control by Tab must genuinely put it in :focus-visible, or every
+  // Reaching a control by key must genuinely put it in :focus-visible, or every
   // focus-styled assertion below is measuring the resting state.
   const notFocusVisible = rows.filter((r) => !r.focusVisible).map((r) => `  ${r.sel} "${r.text}"`);
-  expect(notFocusVisible, `${label}: Tab-reached control did not match :focus-visible\n${notFocusVisible.join('\n')}`).toEqual([]);
+  expect(notFocusVisible, `${label}: ${key}-reached control did not match :focus-visible\n${notFocusVisible.join('\n')}`).toEqual([]);
 
   // ── The invariant.
   const faded = rows
@@ -537,6 +562,37 @@ test.describe('focus rings are never clipped (ds-2fp)', () => {
     await expect(page.getByTestId('chat-prompt')).toBeVisible();
     await settle(page);
     await assertFocusRingsIntact(page, 'chat', { minStops: 8, sentinel: 'chat-submit' });
+  });
+
+  // ds-uyo's crew menu. The state above reaches its TRIGGER and stops there:
+  // the popup is closed, and a listbox makes only the selected option tabbable,
+  // so a Tab sweep would measure one row out of four — and that one row is the
+  // `--current` row, the exception rather than the rule. Leaving it there is
+  // exactly how CapabilityCard's four-sided defect survived (header note): a
+  // state nothing opens is a state nothing measures.
+  //
+  // Opened with a KEY, not a click, so the modality is already keyboard when
+  // openMenu() moves focus onto the selected option — see WalkOpts.
+  test('chat — the composer crew menu, open', async ({ page, baseURL }) => {
+    await seed(page);
+    await mock(page, baseURL!);
+    await emptyConversations(page);
+    await page.goto('/?view=chat');
+    const trigger = page.getByTestId('crew-menu-trigger');
+    await expect(trigger).toBeVisible();
+    await trigger.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('crew-menu-popup')).toBeVisible();
+    await settle(page);
+    await assertFocusRingsIntact(page, 'chat (crew menu open)', {
+      minStops: 4,
+      sentinel: 'crew-menu-option-drift',
+      advance: 'ArrowDown',
+      enter: async () => {
+        await trigger.focus();
+        await page.keyboard.press('ArrowDown');
+      },
+    });
   });
 
   // The reason this spec exists: `.autonomy-segments` is overflow:hidden and cut

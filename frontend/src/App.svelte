@@ -1980,6 +1980,32 @@
     syncReasoningParam(null);
   }
 
+  /** The operator chose a crew from the composer's menu (ds-uyo).
+   *
+   *  Structurally this IS `handleAdopt` with one fewer argument, and the shared
+   *  shape is not a coincidence — Adopt stops being a special second door into
+   *  Provision and becomes this control with text attached.
+   *
+   *  Two things here are load-bearing and neither is interchangeable:
+   *
+   *  The SAME crew is a no-op. Confirming what you are already looking at must
+   *  not cost you your thread, and this is the only place that can tell: the
+   *  menu fires for every activation on purpose, because a guard split across
+   *  two files is a guard nobody owns.
+   *
+   *  `newChat()` FIRST, then the crew. It ends with `composerWorkload =
+   *  'explore'`, so the other order writes the operator's choice and then
+   *  silently overwrites it with Explore. The crew lock is why a new thread is
+   *  the answer at all: `ChatRequest.workload` is a closed Literal and the
+   *  server answers 409 on a mismatch, so the thread on screen cannot be moved
+   *  by anything but a handoff. It is not destroyed either — its id lives in
+   *  /conversations, and the menu says "starts new chat" before the click. */
+  function selectCrew(wl: Workload): void {
+    if (wl === composerWorkload) return;
+    newChat();
+    composerWorkload = wl;
+  }
+
   onMount(() => {
     // No explicit decisions/graph/pending-approvals kickoff here — `overview`
     // (createOverviewStore) already fired its own eager fetch at store
@@ -2188,7 +2214,9 @@
       <ChatForm
         disabled={chatDisabled}
         onSubmit={submitChat}
+        onSelectCrew={selectCrew}
         prefill={chatPrefill}
+        threadOpen={conversationWorkload !== null}
         bind:workload={composerWorkload}
       />
     </div>

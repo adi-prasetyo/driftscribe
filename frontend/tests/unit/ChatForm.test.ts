@@ -204,17 +204,91 @@ describe('ChatForm — keyboard submit (Enter sends, Shift+Enter is a newline)',
   });
 });
 
-describe('ChatForm — no crew picker (single-door handoff)', () => {
-  it('offers the operator no crew choice at all', () => {
-    const { container } = render(ChatForm, { props: { onSubmit: noop } });
-    // No cards, and — the load-bearing half — no control of ANY kind that
-    // selects a workload. Asserting only on the old testids would still pass if
-    // the picker came back wearing a <select>.
+describe('ChatForm — the crew is named, and the name is the control (ds-uyo)', () => {
+  // This block used to assert "no crew choice at all", and that assertion is
+  // now false by design (ds-uyo). Worth recording HOW it read while being
+  // false: it enumerated three shapes — the old testids, a radio, a <select> —
+  // and its own comment said naming only the testids "would still pass if the
+  // picker came back wearing a <select>". It came back wearing a listbox, and
+  // the test passed. An enumeration of shapes is not a claim about capability;
+  // the honest assertion is the one below, which names the control that exists.
+  it('carries exactly one crew control, and it is not the retired picker', () => {
+    const { container, getByTestId } = render(ChatForm, { props: { onSubmit: noop } });
+    expect(getByTestId('crew-menu-trigger')).toBeTruthy();
+    // The picker #255 retired asked the operator to choose before typing and
+    // greyed out three of four cards mid-thread. None of that is back.
     for (const v of ['drift', 'upgrade', 'explore', 'provision']) {
       expect(container.querySelector(`[data-testid="crew-card-${v}"]`)).toBeNull();
     }
     expect(container.querySelector('input[type="radio"]')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
+    // Closed at rest: nothing is declared up front, which is the #255 benefit
+    // this design is constrained to keep.
+    expect(container.querySelector('[data-testid="crew-menu-popup"]')).toBeNull();
+  });
+
+  it('names the crew on the trigger, and follows the prop when a handoff moves it', async () => {
+    // The whole defect in one assertion. App keeps `conversationWorkload` and
+    // `composerWorkload` moving together (adoptCrew), so a completed handoff
+    // arrives here as a changed prop — and the label has to follow it, or the
+    // screen names a crew the thread no longer has.
+    const { getByTestId, rerender } = render(ChatForm, {
+      props: { onSubmit: noop, workload: 'provision' },
+    });
+    expect(getByTestId('crew-menu-trigger').textContent).toContain('Provision');
+    await rerender({ onSubmit: noop, workload: 'drift' });
+    await waitFor(() =>
+      expect(getByTestId('crew-menu-trigger').textContent).toContain('Anchor'),
+    );
+  });
+
+  it('hands a chosen crew to onSelectCrew, keeps the draft, and returns the caret', async () => {
+    // Three claims in one act, because they only matter together: redirecting a
+    // half-typed question to the crew that can answer it is the point of the
+    // control, so losing the text or the caret would make it useless.
+    const onSelectCrew = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: { onSubmit: noop, onSelectCrew, workload: 'explore' },
+    });
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'adopt the bucket' } });
+
+    await fireEvent.click(getByTestId('crew-menu-trigger'));
+    await waitFor(() => expect(getByTestId('crew-menu-popup')).toBeTruthy());
+    await fireEvent.click(getByTestId('crew-menu-option-provision'));
+
+    expect(onSelectCrew).toHaveBeenCalledWith('provision');
+    expect(input.value).toBe('adopt the bucket');
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('without a handler, a choice moves only the composer’s own crew', async () => {
+    // The standalone fallback. A ChatForm with no `onSelectCrew` cannot start a
+    // new thread and must not pretend to — it moves the crew it sends under,
+    // which is all it owns. Observed through the submit path, the only place
+    // the composer's crew is visible.
+    const onSubmit = vi.fn();
+    const { getByTestId } = render(ChatForm, {
+      props: { onSubmit, workload: 'explore' },
+    });
+    await fireEvent.click(getByTestId('crew-menu-trigger'));
+    await waitFor(() => expect(getByTestId('crew-menu-popup')).toBeTruthy());
+    await fireEvent.click(getByTestId('crew-menu-option-drift'));
+
+    const input = getByTestId('chat-prompt') as HTMLTextAreaElement;
+    expect(await submittedWorkload(onSubmit, input)).toBe('drift');
+  });
+
+  it('goes inert with the rest of the form in historical mode', async () => {
+    // Same guard Adopt already carries, and for the same reason: a selection
+    // runs newChat(), which cancels an in-flight stream.
+    const { getByTestId } = render(ChatForm, {
+      props: { onSubmit: noop, disabled: true },
+    });
+    const trigger = getByTestId('crew-menu-trigger') as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
+    await fireEvent.click(trigger);
+    expect(document.querySelector('[data-testid="crew-menu-popup"]')).toBeNull();
   });
 
   it('sends a fresh thread to Explore, the crew that routes an unrouted question', async () => {
@@ -241,15 +315,24 @@ describe('ChatForm — no crew picker (single-door handoff)', () => {
   });
 });
 
-describe('ChatForm — the composer is only the box you type in', () => {
-  it('offers no thread management of its own', () => {
+describe('ChatForm — the composer manages no threads of its own', () => {
+  it('carries the crew trigger and Send, and nothing that starts or ends a thread', () => {
     // New chat moved to the conversations rail (ds-jns PR 3), where the threads
-    // it starts and reopens live. Asserting the OLD testid is gone would pass
-    // just as well if the button had been renamed in place, so this asserts the
-    // shape instead: the form carries exactly one button, and it sends.
+    // it starts and reopens live, and it has NOT come back — the crew menu is
+    // not a second one. Asserting the old testid is gone would pass just as
+    // well if the button had been renamed in place, so this pins the whole
+    // button roster: exactly two, one naming the crew and one sending.
+    //
+    // Note what the roster does NOT prove on its own: the crew trigger can
+    // start a fresh thread through App. What keeps that honest is that the form
+    // has no route to it — no handler of its own — and that a locked row says
+    // "starts new chat" before it is clicked (CrewMenu.test.ts).
     const { container } = render(ChatForm, { props: { onSubmit: noop } });
     const buttons = [...container.querySelectorAll('button')];
-    expect(buttons.map((b) => b.getAttribute('data-testid'))).toEqual(['chat-submit']);
+    expect(buttons.map((b) => b.getAttribute('data-testid'))).toEqual([
+      'crew-menu-trigger',
+      'chat-submit',
+    ]);
     expect(container.querySelector('[data-testid="composer-new-chat"]')).toBeNull();
   });
 });

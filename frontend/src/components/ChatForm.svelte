@@ -2,27 +2,44 @@
   import { tick, untrack } from 'svelte';
   import { type Workload, type ChatPrefill } from '../lib/workloads';
   import { t } from '../lib/i18n';
+  import CrewMenu from './CrewMenu.svelte';
   import Icon from './Icon.svelte';
 
-  // The prompt composer: a growing prompt input + Send button. In historical
-  // mode the whole form is dimmed (.historical) and every control is disabled —
-  // the operator is reviewing a past trace, not starting a new one.
+  // The prompt composer: the crew this will go to, a growing prompt input, and
+  // Send. In historical mode the whole form is dimmed (.historical) and every
+  // control is disabled — the operator is reviewing a past trace, not starting a
+  // new one.
   //
-  // There is no crew picker. Choosing a crew up front asked the operator to
-  // already know which of four specialists owns their question, which is the
-  // system's own taxonomy leaking into the front door. A new thread goes to
-  // Explore, and any crew that finds the question belongs to a sibling offers
-  // the handoff itself for the operator to confirm. `workload` survives as a
-  // prop because the thread is still crew-LOCKED — the composer has to send
-  // whichever crew currently holds the conversation.
+  // The crew is NAMED here again (ds-uyo). It stopped being named in #255 along
+  // with the picker that set it, and the two are not the same thing: an Adopt
+  // click arms Provision, and with neither a picker nor a label the operator
+  // could send a question to a crew they were never told about. `CrewMenu` puts
+  // the name back and carries the control with it — but nothing forces a choice
+  // before typing, Explore is still the default a fresh thread gets for free,
+  // and the crew LOCK is untouched: a different crew opens a new thread rather
+  // than moving this one.
   let {
     disabled = false,
     onSubmit,
+    onSelectCrew,
     prefill = null,
+    threadOpen = false,
     workload = $bindable('explore'),
   }: {
     disabled?: boolean;
     onSubmit: (prompt: string, workload: Workload) => void;
+    /**
+     * The operator picked a crew from the menu. OPTIONAL, and the fallback is
+     * deliberately the dumb one: with no handler this just moves the composer's
+     * own crew, which is all a standalone ChatForm can honestly do. Starting a
+     * new thread is App's business — `newChat()` cancels an in-flight stream and
+     * drops the open conversation, and a child component that could do that on
+     * its own is a child component that will.
+     */
+    onSelectCrew?: (wl: Workload) => void;
+    /** A persisted thread is open, so another crew means a new one. Passed
+     *  straight through to the menu's pre-click hint. */
+    threadOpen?: boolean;
     /**
      * Adopt-button bridge (Phase 4): prefill the composer WITHOUT sending — the
      * operator stays in charge (design §6). `epoch` lets the same/another Adopt
@@ -82,6 +99,17 @@
     prompt = '';
   }
 
+  // A crew was chosen. The draft is deliberately NOT cleared: redirecting a
+  // half-typed question to the crew that can actually answer it is the whole
+  // point of the control, so the text survives and the caret goes back to it.
+  // Focus lands in the textarea rather than back on the trigger because the
+  // operator's next act is to keep typing or send, not to reopen the menu.
+  function selectCrew(wl: Workload): void {
+    if (onSelectCrew) onSelectCrew(wl);
+    else workload = wl;
+    inputEl?.focus();
+  }
+
   function handle(e: SubmitEvent) {
     e.preventDefault();
     submit();
@@ -126,10 +154,12 @@
 </script>
 
 <form id="chat-form" class="chat-form" class:historical={disabled} onsubmit={handle}>
-  <!-- Prompt + Send, and nothing else. The crew picker went first (a fresh
-       thread routes itself), the New chat button second (ds-jns PR 3 — it moved
-       to the conversations rail, where the threads it starts and reopens live).
-       What is left is the box you type in. -->
+  <!-- Crew, prompt, Send. The New chat button is still gone (ds-jns PR 3 — it
+       moved to the conversations rail, where the threads it starts and reopens
+       live). The crew is back, and back as one element rather than the two it
+       used to be: a card grid that made you choose before typing, plus nothing
+       at all reporting what you had chosen. -->
+  <CrewMenu value={workload} {disabled} {threadOpen} onSelect={selectCrew} />
   <textarea
     id="prompt-input"
     data-testid="chat-prompt"
@@ -199,10 +229,8 @@
     border-color: var(--ds-border);
   }
 
-  /* The crew picker + New chat button share the full-width row above the input:
-     picker grows, button hugs the trailing edge. */
   /* Visually-hidden helper for the aria-describedby keyboard hint (matches the
-     CrewPicker / ReplyPending sr-only pattern). */
+     ReplyPending sr-only pattern). */
   .chat-form__sr-only {
     position: absolute;
     width: 1px;

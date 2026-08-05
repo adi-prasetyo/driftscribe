@@ -1670,3 +1670,111 @@ describe('App — a past decision still shows its reasoning after a failed excha
     });
   });
 });
+
+// ── ds-uyo: the composer's crew menu, wired to a real thread ────────────────
+//
+// CrewMenu.test.ts covers the control. What can only be seen here is what a
+// selection COSTS, because the cost lives in App: `newChat()` cancels an
+// in-flight stream, drops the open conversation, and — the part that has to be
+// tested rather than commented — ends by resetting the composer to Explore.
+describe('App — choosing a crew from the composer (ds-uyo)', () => {
+  const PROVISION_THREAD = {
+    conversations: [
+      {
+        conversation_id: 'c1',
+        workload: 'provision',
+        title: 'adopt the bucket',
+        updated_at: new Date().toISOString(),
+        turn_count: 2,
+      },
+    ],
+  };
+  const PROVISION_DETAIL = {
+    conversation_id: 'c1',
+    workload: 'provision',
+    title: 'adopt the bucket',
+    turns: [
+      { seq: 0, role: 'user', text: 'adopt the bucket', workload: 'provision' },
+      { seq: 1, role: 'crew', text: 'opened PR #42', workload: 'provision', trace_id: 't1' },
+    ],
+  };
+
+  function stubThreadFetch() {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/conversations/')) return okJson(PROVISION_DETAIL);
+        if (url.includes('/conversations')) return okJson(PROVISION_THREAD);
+        if (url.includes('/decisions')) return okJson({ decisions: [] });
+        if (url.includes('/infra/graph')) return okJson(GRAPH);
+        return okJson({});
+      }),
+    );
+  }
+
+  /** Resume the Provision thread from the rail and wait for it to settle. */
+  async function openProvisionThread(findByTestId: (id: string) => Promise<HTMLElement>) {
+    await fireEvent.click(await findByTestId('conversation-open'));
+    await findByTestId('conversation-thread');
+    await waitFor(() =>
+      expect((document.getElementById('prompt-input') as HTMLTextAreaElement).disabled).toBe(false),
+    );
+  }
+
+  async function chooseCrew(crew: string) {
+    await fireEvent.click(document.querySelector('[data-testid="crew-menu-trigger"]')!);
+    await waitFor(() =>
+      expect(document.querySelector('[data-testid="crew-menu-popup"]')).not.toBeNull(),
+    );
+    await fireEvent.click(document.querySelector(`[data-testid="crew-menu-option-${crew}"]`)!);
+  }
+
+  it('names the resumed thread’s crew on the trigger', async () => {
+    // The defect, made visible. Before this control an Adopt click armed
+    // Provision and nothing on screen said so until the reply came back.
+    stubThreadFetch();
+    const { findByTestId, getByTestId } = render(App);
+    await openProvisionThread(findByTestId);
+    expect(getByTestId('crew-menu-trigger').textContent).toContain('Provision');
+  });
+
+  it('starts a clean thread on the chosen crew, keeping the draft', async () => {
+    // Anchor, not Explore, and that choice is the assertion. `newChat()` ends
+    // with `composerWorkload = 'explore'`, so applying the crew FIRST and
+    // clearing the thread second would silently land on Explore and still look
+    // like a working control. Only a non-Explore target can tell the two apart.
+    stubThreadFetch();
+    const { findByTestId, queryByTestId, container } = render(App);
+    await openProvisionThread(findByTestId);
+
+    const input = container.querySelector('#prompt-input') as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: 'why did PORT change?' } });
+
+    await chooseCrew('drift');
+
+    // The thread is gone from the screen — but not destroyed: its id is still
+    // in /conversations, which is what the row said before it was clicked.
+    await waitFor(() => expect(queryByTestId('conversation-thread')).toBeNull());
+    // The half-typed question survived the transition, which is the point of
+    // redirecting it rather than starting over.
+    expect(input.value).toBe('why did PORT change?');
+
+    await fireEvent.submit(document.getElementById('chat-form')!);
+    await waitFor(() => expect(lastChatPostWorkload()).toBe('drift'));
+  });
+
+  it('does nothing at all when the chosen crew is the one already open', async () => {
+    // Confirming what you are looking at must not cost you your thread.
+    stubThreadFetch();
+    const { findByTestId, getByTestId } = render(App);
+    await openProvisionThread(findByTestId);
+
+    await chooseCrew('provision');
+
+    // Still the same thread, with its turns: nothing was reset.
+    expect(getByTestId('conversation-thread')).toBeTruthy();
+    expect(getByTestId('crew-menu-trigger').textContent).toContain('Provision');
+    await waitFor(() => expect(document.querySelector('[data-testid="crew-menu-popup"]')).toBeNull());
+  });
+});
