@@ -193,9 +193,11 @@ for (const locale of ['en', 'ja'] as const) {
     // as a broken row.
     expect(Math.abs(t.y - input.y), 'crew trigger vs prompt field, top edge').toBeLessThanOrEqual(1);
 
-    // The reason the trigger is NOT simply stretched to the row: a prompt grown
-    // to several lines must not drag the pill along with it. Pinning this here
-    // keeps a later "just make it stretch" from silently undoing the fix above.
+    // The reason neither is simply stretched to the row: the FIELD is what grows
+    // with a multi-line prompt. Stretching its neighbours to match turned Send
+    // into a 126px navy slab sized by how much the operator happened to type.
+    // Pinning it here keeps a later "just let them stretch" from silently
+    // undoing the two rules above.
     await page.getByTestId('chat-prompt').click();
     await page.keyboard.type('one');
     for (let n = 0; n < 4; n++) {
@@ -205,6 +207,13 @@ for (const locale of ['en', 'ja'] as const) {
     const grownInput = await box('chat-prompt');
     expect(grownInput.height, 'the prompt field did not actually grow').toBeGreaterThan(input.height + 20);
     const grownTrigger = await box('crew-menu-trigger');
+    const grownSend = await box('chat-submit');
     expect(grownTrigger.height, 'the pill grew with the prompt').toBeCloseTo(t.height, 0);
+    expect(grownSend.height, 'Send grew with the prompt').toBeCloseTo(send.height, 0);
+    // Still one row: all three tops flush while the field grows downward out of
+    // it. A height that held while the control drifted down the row would look
+    // no better than the original defect.
+    expect(Math.abs(grownTrigger.y - grownInput.y), 'pill top vs grown field').toBeLessThanOrEqual(1);
+    expect(Math.abs(grownSend.y - grownInput.y), 'Send top vs grown field').toBeLessThanOrEqual(1);
   });
 }
