@@ -97,6 +97,12 @@ export const desk = {
     // have succeeded with the response lost. Saying "failed" here would be a
     // second false claim in the opposite direction (ds-2mc).
     'desk.ledger.unconfirmedTitle': 'Approved · outcome unconfirmed',
+    // ds-3em. The row's scope cue: a row reading "PR #164" under a hero reading
+    // "PR #168" cannot be that hero's history. Identical in both locales, and
+    // deliberately the same string as `desk.pending.prMeta` above — the hero and
+    // the ledger name a PR the same way, or the comparison the operator has to
+    // make costs them a translation step.
+    'desk.ledger.pr': 'PR #{pr}',
     // One-way: the strip opens to the whole snapshot and does not re-collapse.
     // `n` is every decision the snapshot holds, not the number still hidden —
     // "Show all 12" says what you will get; "Show 8 more" makes you do the sum.
@@ -359,6 +365,15 @@ export const desk = {
     // identity and must not keep its verdict.
     'desk.estate.prPendingUnrefreshed': 'PR #{pr} · status not refreshed',
     'desk.estate.driftMore': '…{n} more drift',
+    // ds-3em. The drift group shows its first three rows; these work the
+    // toggle. TWO-WAY, unlike the ledger's one-way show-more one card up — drift
+    // rows hold no open-record state, so re-capping can hide nothing.
+    // `n` is the TOTAL, matching desk.ledger.showMore's rule: "Show all 6" says
+    // what you get, "Show 3 more" makes you do the sum. It counts only rows this
+    // client HOLDS — the `driftMore` trailer above reports the backend's own
+    // truncation, and the two must never be added together.
+    'desk.estate.driftShowAll': 'Show all {n}',
+    'desk.estate.driftShowLess': 'Show fewer',
     'desk.estate.systemManagedFold': 'System-managed resources ({n}) · created by Google',
     // Pluralized on the TYPE count via i18n.ts's `.one`/`.other` convention —
     // a live estate very often has exactly one out-of-scope type, and the
@@ -412,6 +427,9 @@ export const desk = {
     'desk.ledger.mergingTitle': '承認済み → 未適用',
     'desk.ledger.failedTitle': '承認済み → 適用されず',
     'desk.ledger.unconfirmedTitle': '承認済み → 結果は未確認',
+    // ds-3em。EN と同一文字列。ヒーローの `desk.pending.prMeta` と同じ表記に
+    // 揃えることで、「#168」と「#164」が別物だと一目で分かる。
+    'desk.ledger.pr': 'PR #{pr}',
     'desk.ledger.showMore': '{n}件すべて表示',
     'desk.record.prose': '判断の内容',
     'desk.record.incomplete': 'このトレースには判断の記録が紐づいていません。',
@@ -521,6 +539,10 @@ export const desk = {
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
     'desk.estate.prPendingUnrefreshed': 'PR #{pr} ・ 状態は未更新',
     'desk.estate.driftMore': '…ほか {n} 件のドリフト',
+    // ds-3em。残りの件数ではなく総数を出す（desk.ledger.showMore と同じ規則）。
+    // 上の driftMore はサーバー側で打ち切られた分なので、足し合わせないこと。
+    'desk.estate.driftShowAll': '{n}件すべて表示',
+    'desk.estate.driftShowLess': '表示を畳む',
     'desk.estate.systemManagedFold': 'システム管理リソース（Google が自動作成） {n}件',
     // JA carries no grammatical plural, so .one/.other are identical text
     // (i18n.ts `plural()` convention) — both forms still get catalogued.

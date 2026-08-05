@@ -1358,6 +1358,54 @@ describe('App — desk decision records (ds-jns)', () => {
     created_at: '2026-07-28T09:00:00Z',
   });
 
+  // ds-3em. The strip is the ESTATE-WIDE decision ledger — rollbacks, no-action
+  // notes, adoptions applied across every resource. Mounted inside
+  // ApprovalDesk's bordered card it rendered directly under the Approve/Reject
+  // buttons, and the card border grouped it with the one pending proposal: an
+  // operator reading "PR #168" in the hero read the rows beneath it as that
+  // PR's history. Containment is what carried the misreading, so containment is
+  // what breaks — a clarifying heading was considered and rejected.
+  //
+  // ORDER is asserted, not just containment. "Outside the desk" is equally true
+  // of the below-the-estate variant (mockup tab B), which was rejected because
+  // it splits the approve → 判子 stamp → new-ledger-row beat across two
+  // scrolls. Sibling-between-them is the whole placement decision.
+  it('mounts the record as its own card between the desk and the estate', async () => {
+    stubDesk([rowDecision(TID)]);
+    history.replaceState(null, '', '/');
+    const { findByTestId, findAllByTestId } = render(App);
+
+    // Premise first: the strip renders nothing on an empty list, so wait for
+    // the row the fixture supplies before asserting where its card sits.
+    await findAllByTestId('ledger-strip-row');
+    const desk = await findByTestId('approval-desk');
+    const ledger = await findByTestId('ledger-strip');
+    const estate = await findByTestId('estate-view');
+
+    expect(desk.contains(ledger)).toBe(false);
+    expect(desk.compareDocumentPosition(ledger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(ledger.compareDocumentPosition(estate) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // The cap is a decision made AT THE MOUNT (LedgerStrip's own default is 4),
+  // so it is pinned here rather than in the component's suite. Three rows plus
+  // the one-way show-all is what keeps the card short enough that the estate
+  // below it is still on the same page.
+  it('caps the desk ledger at three rows, with the show-all still offered', async () => {
+    stubDesk(
+      Array.from({ length: 6 }, (_, i) => ({
+        decision_id: `dc-${i}`,
+        action: 'no_op',
+        created_at: `2026-07-28T0${i}:00:00Z`,
+      })),
+    );
+    history.replaceState(null, '', '/');
+    const { findByTestId, findAllByTestId } = render(App);
+
+    await findByTestId('ledger-show-more');
+    expect(await findAllByTestId('ledger-strip-row')).toHaveLength(3);
+  });
+
   it('pins the record above the desk when no decision in the snapshot carries it', async () => {
     stubDesk([]);
     history.replaceState(null, '', `/?reasoning=${TID}`);

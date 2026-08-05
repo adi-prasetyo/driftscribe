@@ -26,10 +26,8 @@
     supersededWaitingIds,
     type IacApprovalCtaState,
   } from '../lib/approval';
-  import type { TraceCache } from '../lib/traceCache';
   import type { Decision } from '../lib/types';
   import InstrumentBand, { type BandStat } from './InstrumentBand.svelte';
-  import LedgerStrip from './LedgerStrip.svelte';
   import SealStamp from './SealStamp.svelte';
   import DriftDiffCard from './DriftDiffCard.svelte';
 
@@ -43,8 +41,6 @@
     decisionsStale = false,
     lastError = null,
     onShowEstate,
-    recordTraceId = null,
-    cache = null,
     onRecordChange = null,
     refresh,
   }: {
@@ -81,16 +77,19 @@
      *  merge there is exactly one destination and it is a section of this same
      *  page, so App scrolls (and moves focus) rather than navigating. */
     onShowEstate: () => void;
-    /** The one open decision record, owned by App (ds-jns). Threaded through to
-     *  LedgerStrip, which App cannot reach — the desk mounts it. */
-    recordTraceId?: string | null;
-    cache?: TraceCache | null;
     /** Open (`traceId`) or close (`null`) a decision record. Replaces the
-     *  former `onOpenTrace`: a decision opens HERE now, on the page that lists
-     *  it, instead of bouncing the operator into the chat view's replay mode.
+     *  former `onOpenTrace`: a decision opens on THIS PAGE now, instead of
+     *  bouncing the operator into the chat view's replay mode.
      *  Optional for the same reason its predecessor was — when omitted the
      *  pending card's "view the reasoning" link is not rendered at all, rather
-     *  than rendered inert. */
+     *  than rendered inert.
+     *
+     *  This is the ONLY record prop the desk still carries (ds-3em). The row
+     *  that expands lives in LedgerStrip, which App now mounts as this card's
+     *  SIBLING rather than inside it, so `recordTraceId`/`cache` — both pure
+     *  pass-throughs to that strip — left with it. The hero asks; App owns the
+     *  open id; the ledger card answers. Nothing ARIA crosses the boundary:
+     *  the aria-controls/panel pairing lives wholly inside LedgerStrip. */
     onRecordChange?: ((traceId: string | null) => void) | null;
     /** overviewStore.refresh, threaded in so the return-ladder below (fast
      *  convergence after an approval) can ask the ALREADY-OWNED store to
@@ -171,6 +170,11 @@
   // hero's decision is a decision in the ledger below it, so the record it
   // opens is the ledger row's — one door, and the operator keeps the pending
   // card they were reading.
+  //
+  // ds-3em: "below it" is now the SIBLING CARD App mounts, not a strip inside
+  // this one. Nothing about this call changes — the desk only ever asked, and
+  // App has always owned the open id — which is why the move cost this file
+  // two pass-through props and no logic.
   function openReasoning(traceId: string): void {
     onRecordChange?.(traceId);
   }
@@ -782,8 +786,6 @@
       {/key}
     {/if}
   </div>
-
-  <LedgerStrip {decisions} {recordTraceId} {cache} {onRecordChange} />
 </section>
 
 <style>

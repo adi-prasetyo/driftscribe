@@ -179,20 +179,46 @@ test.describe('transparency UI (mock smoke)', () => {
   // estate's narrower content gave it 384px at left 448 against the desk's
   // 780px at left 250. Two mismatched centered cards stacked in one column is
   // precisely the "the frontend looks bolted on" reading the merge answers.
-  test('the desk card and the estate section share one column', async ({ page }) => {
+  //
+  // ds-3em adds the ledger card between them, and it is the one of the three
+  // most exposed to that failure: its rows are the narrowest content in the
+  // column, so shrink-to-fit would put it well under 780 while its two
+  // siblings stayed put. This is the browser-level pin of that triple.
+  test('the desk, the record and the estate share one column', async ({ page }) => {
     await seedToken(page);
     await mockData(page, freshState());
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto('/');
 
     const desk = await page.getByTestId('approval-desk').boundingBox();
+    const ledger = await page.getByTestId('ledger-strip').boundingBox();
     const estate = await page.getByTestId('estate-view').boundingBox();
     expect(desk, 'desk card must render').not.toBeNull();
+    expect(ledger, 'record card must render').not.toBeNull();
     expect(estate, 'estate section must render').not.toBeNull();
     // Exact, not approximate: they are the same column, so any difference is a
     // bug rather than a rounding artifact.
+    expect(Math.round(ledger!.x)).toBe(Math.round(desk!.x));
+    expect(Math.round(ledger!.width)).toBe(Math.round(desk!.width));
     expect(Math.round(estate!.x)).toBe(Math.round(desk!.x));
     expect(Math.round(estate!.width)).toBe(Math.round(desk!.width));
+
+    // Order, and equal seams — measured against the gap the column DECLARES,
+    // which is the only assertion that can fail for the right reason.
+    //
+    // `.layout` is `flex: 1` and its rows are auto-sized, so before ds-3em the
+    // initial `align-content: normal` (stretch) handed the leftover viewport
+    // height to the rows: the desk↔estate seam measured 236px here at 1280 wide
+    // and 196px at 700, moving with the window rather than with any rule.
+    // Equal-gap and non-zero checks both PASS against that behaviour — slack
+    // distributes evenly — so neither can tell a designed seam from an
+    // accidental one. Comparing to the computed row-gap can.
+    const rowGap = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.querySelector('main')!).rowGap),
+    );
+    expect(rowGap).toBeGreaterThan(0);
+    expect(Math.round(ledger!.y - (desk!.y + desk!.height))).toBe(Math.round(rowGap));
+    expect(Math.round(estate!.y - (ledger!.y + ledger!.height))).toBe(Math.round(rowGap));
   });
 
   // Phone width. The estate is on the FRONT DOOR since the merge, so a visitor

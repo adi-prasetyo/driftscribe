@@ -106,6 +106,30 @@
   // control that is no longer there.
   const adoptTarget = $derived(approvalsStale || !canAdopt ? null : firstAdoptableRow(model));
 
+  // ---- drift cap (ds-3em) ----
+  // The estate card is compacted so the whole desk page stays readable, but
+  // this group must NOT fold away like its non-actionable siblings below: drift
+  // is the product's main actionable signal, and a count alone does not let an
+  // operator act. First three rows, then a toggle.
+  //
+  // TWO-WAY here, deliberately, where the ledger strip one card up is one-way.
+  // That asymmetry is not an oversight: re-capping the ledger could hide a row
+  // whose decision record is open (LedgerStrip's own header comment). Drift rows
+  // carry no such state, so collapsing again costs nothing.
+  const DRIFT_VISIBLE = 3;
+  let driftExpanded = $state(false);
+  // The cap must never hide the tour's spotlight subject — `adoptTarget`, the
+  // row carrying data-tour="adopt-target". Same rule and reason as ledgerRows'
+  // `keepTraceId`: cap first, then append the row the cap would have dropped,
+  // rather than widening the cap. Without this, "Adopt your first resource"
+  // points at a row that is not on screen.
+  const driftShown = $derived.by(() => {
+    if (driftExpanded) return model.drift;
+    const head = model.drift.slice(0, DRIFT_VISIBLE);
+    if (adoptTarget !== null && !head.includes(adoptTarget)) head.push(adoptTarget);
+    return head;
+  });
+
   function clickAdopt(prefill: string): void {
     if (adoptDisabled) return;
     onAdopt?.(prefill);
@@ -185,7 +209,7 @@
         {$t('desk.estate.driftGroup', { n: model.drift.length })}
       </h2>
       <div class="estate-view__rows">
-        {#each model.drift as row (row.nodeId)}
+        {#each driftShown as row (row.nodeId)}
           <div
             class="estate-view__row estate-view__row--un"
             data-testid="estate-row"
@@ -264,6 +288,24 @@
           </div>
         {/each}
       </div>
+      {#if model.drift.length > DRIFT_VISIBLE}
+        <button
+          type="button"
+          class="estate-view__toggle"
+          data-testid="estate-drift-toggle"
+          aria-expanded={driftExpanded}
+          onclick={() => (driftExpanded = !driftExpanded)}
+        >
+          {driftExpanded
+            ? $t('desk.estate.driftShowLess')
+            : $t('desk.estate.driftShowAll', { n: model.drift.length })}
+        </button>
+      {/if}
+      <!-- Untouched by the toggle above, and the two counts must never be
+           merged. This one reports rows the BACKEND truncated (Σ card
+           hiddenUnmanaged) — their names never reached this client, so no
+           client-side control can reveal them. Expanded, the toggle shows the
+           rows it has and this still reports the ones it does not. -->
       {#if model.driftHidden > 0}
         <p class="estate-view__more" data-testid="estate-drift-more">
           {$t('desk.estate.driftMore', { n: model.driftHidden })}
@@ -319,19 +361,27 @@
       {/if}
     {/if}
 
+    <!-- Folded (ds-3em), joining the two folds below it. Nothing on a managed
+         row is actionable — these are resources already declared in IaC, doing
+         exactly what they should — so the COUNT is the information and the
+         names are detail-on-demand. Uncapped inside: unlike the drift group
+         above, there is no reason to ration rows nobody has to act on.
+         The `<h2>` this replaces is not moved into the summary. The sibling
+         folds use a bare `<summary>`, and the heading walk still runs h1 (brand)
+         → h2 (desk) → h2 (drift/unmatched) with no gap. -->
     {#if model.managed.length > 0}
-      <h2 class="estate-view__group" data-testid="estate-group-managed">
-        {$t('desk.estate.managedGroup', { n: model.managed.length })}
-      </h2>
-      <div class="estate-view__rows">
-        {#each model.managed as row (row.nodeId)}
-          <div class="estate-view__row" data-testid="estate-row">
-            <span class="estate-view__dot" aria-hidden="true"></span>
-            <span class="estate-view__name">{row.label}</span>
-            <span class="estate-view__type">{row.typeLabel}</span>
-          </div>
-        {/each}
-      </div>
+      <details class="estate-view__fold" data-testid="estate-managed-fold">
+        <summary>{$t('desk.estate.managedGroup', { n: model.managed.length })}</summary>
+        <div class="estate-view__rows">
+          {#each model.managed as row (row.nodeId)}
+            <div class="estate-view__row" data-testid="estate-row">
+              <span class="estate-view__dot" aria-hidden="true"></span>
+              <span class="estate-view__name">{row.label}</span>
+              <span class="estate-view__type">{row.typeLabel}</span>
+            </div>
+          {/each}
+        </div>
+      </details>
     {/if}
 
     <!-- Folded (2026-07-31 merge): nothing here is actionable — these are
@@ -586,6 +636,40 @@
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
     color: var(--ds-faint);
+  }
+
+  /* The drift cap's two-way toggle (ds-3em). Copied from `.ledger-strip__more`
+     rather than invented: the page now has two "there is more of this" controls
+     one card apart, and a second visual language for the same gesture is the
+     kind of thing that reads as a bolted-on frontend.
+     One difference is load-bearing, and it has to be spent on MARGIN, not
+     padding. The ledger's button inherits its 40px horizontal inset from its
+     padded parent (`.ledger-strip__rows`); this one's parent is the card
+     itself, so it must declare the inset — and padding would leave the BOX
+     spanning the card's full width. `.estate-view` is `overflow: hidden` and
+     `--ds-ring` is drawn 4px OUTSIDE the box, so that ring was clipped: caught
+     by the ds-2fp suite as "cuts left 4.0px", not by inspection. Margin insets
+     the box, so the ring has somewhere to land. */
+  .estate-view__toggle {
+    appearance: none;
+    display: block;
+    margin: 12px 40px 0;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11.5px;
+    color: var(--ds-fg-soft);
+    text-decoration: underline;
+  }
+  .estate-view__toggle:hover {
+    color: var(--ds-fg);
+  }
+  .estate-view__toggle:focus-visible {
+    outline: none;
+    box-shadow: var(--ds-ring);
+    border-radius: var(--ds-radius-sm);
   }
 
   .estate-view__fold {

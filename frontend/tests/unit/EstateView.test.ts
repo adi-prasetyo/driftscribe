@@ -136,11 +136,54 @@ describe('EstateView — rows', () => {
     });
     const { getByTestId, getAllByTestId } = render(EstateView, { props: baseProps({ graph: g }) });
     expect(getByTestId('estate-group-drift').textContent).toContain('1');
-    expect(getByTestId('estate-group-managed').textContent).toContain('1');
+    // ds-3em: the managed group's count moved from an <h2> to its fold's
+    // <summary>. Rows inside a closed <details> are still in the DOM, so the
+    // count assertion below is unaffected.
+    expect(getByTestId('estate-managed-fold').querySelector('summary')?.textContent).toContain('1');
     const rows = getAllByTestId('estate-row');
     expect(rows).toHaveLength(2);
     expect(rows.some((r) => r.textContent?.includes('storefront'))).toBe(true);
     expect(rows.some((r) => r.textContent?.includes('checkout'))).toBe(true);
+  });
+
+  // ds-3em. The managed group's 9 rows are pure inventory — nothing on them is
+  // actionable, so the COUNT is the information and the names are
+  // detail-on-demand, exactly like the untracked and system-managed folds it
+  // now sits beside. Asserted the same way those two are (structure, not
+  // visibility): jsdom implements no layout, so a closed <details> hides
+  // nothing it could measure.
+  it('collapses the managed group into a fold, count in the summary', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: RUN,
+          label: 'Cloud Run',
+          count: 2,
+          managed: 1,
+          drift: 1,
+          adoptable: true,
+          nodes: [
+            node({ id: 'r0', label: 'checkout', asset_type: RUN, managed: true }),
+            node({ id: 'r1', label: 'storefront', asset_type: RUN, managed: false }),
+          ],
+        }),
+      ],
+    });
+    const { getByTestId, getAllByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: g }),
+    });
+    const fold = getByTestId('estate-managed-fold');
+    expect(fold.tagName).toBe('DETAILS');
+    expect(fold.hasAttribute('open')).toBe(false);
+    expect(fold.querySelector('summary')?.textContent).toContain('1');
+    // The h2 it replaces is gone, not merely restyled.
+    expect(queryByTestId('estate-group-managed')).toBeNull();
+    // The names are still there, under the unchanged row testid.
+    const inFold = getAllByTestId('estate-row').filter((r) => fold.contains(r));
+    expect(inFold).toHaveLength(1);
+    expect(inFold[0].textContent).toContain('checkout');
+    // …and the drift row above it is NOT swept into the fold.
+    expect(getAllByTestId('estate-row').some((r) => !fold.contains(r))).toBe(true);
   });
 
   it('collapses the untracked group into a fold, count in the summary', () => {
@@ -419,6 +462,102 @@ describe('EstateView — other resources note', () => {
 
     const { queryByTestId } = render(EstateView, { props: baseProps() });
     expect(queryByTestId('estate-other')).toBeNull();
+  });
+});
+
+// ds-3em — the estate card is compacted so the desk page stays readable, and
+// the drift group is the one that must NOT simply fold: it is the product's
+// main actionable signal. First three rows plus a two-way toggle.
+//
+// Two-way is safe HERE and deliberately not in the ledger strip one card up.
+// The ledger's show-more is one-way because re-capping could hide a row whose
+// decision record is open; drift rows hold no such state, so collapsing again
+// costs nothing.
+describe('EstateView — the drift group caps at three (ds-3em)', () => {
+  /** N unmanaged rows of an adoptable type — all drift, nothing else, so
+   *  `estate-row` counts the drift group exactly. `drift` is set separately
+   *  from the node count so a fixture can also carry BACKEND-hidden drift. */
+  function driftGraph(nodes: number, driftTotal = nodes): InfraGraph {
+    return graph({
+      groups: [
+        group({
+          asset_type: BUCKET,
+          count: driftTotal,
+          managed: 0,
+          drift: driftTotal,
+          adoptable: true,
+          nodes: Array.from({ length: nodes }, (_, i) => node({ id: `d${i}`, label: `drift-${i}` })),
+        }),
+      ],
+    });
+  }
+
+  it('renders three of six drift rows, with a show-all naming the total', () => {
+    const { getAllByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: driftGraph(6) }),
+    });
+    expect(getAllByTestId('estate-row')).toHaveLength(3);
+    expect(getByTestId('estate-drift-toggle').textContent).toContain('Show all 6');
+  });
+
+  it('expands to every row and collapses back — the toggle is two-way', async () => {
+    const { getAllByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: driftGraph(6) }),
+    });
+    const toggle = getByTestId('estate-drift-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    await fireEvent.click(toggle);
+    expect(getAllByTestId('estate-row')).toHaveLength(6);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toContain('Show fewer');
+
+    await fireEvent.click(toggle);
+    expect(getAllByTestId('estate-row')).toHaveLength(3);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('offers no toggle when every drift row already fits', () => {
+    const { getAllByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: driftGraph(3) }),
+    });
+    expect(getAllByTestId('estate-row')).toHaveLength(3);
+    expect(queryByTestId('estate-drift-toggle')).toBeNull();
+  });
+
+  // The "…N more drift" trailer counts rows the BACKEND truncated — their
+  // names never reached this client, so no client-side toggle can reveal them.
+  // Two different absences that must not be merged into one number: expanded,
+  // the toggle shows the 6 rows it has and the trailer still reports the 2 it
+  // does not.
+  it('leaves the backend-truncated trailer alone in both states', async () => {
+    const { getAllByTestId, getByTestId } = render(EstateView, {
+      props: baseProps({ graph: driftGraph(6, 8) }),
+    });
+    expect(getByTestId('estate-drift-more').textContent).toContain('2');
+    await fireEvent.click(getByTestId('estate-drift-toggle'));
+    expect(getAllByTestId('estate-row')).toHaveLength(6);
+    expect(getByTestId('estate-drift-more').textContent).toContain('2');
+  });
+
+  // The cap must never hide the guided tour's spotlight subject. Same rule and
+  // reason as ledgerRows' keepTraceId: cap first, then append the row the cap
+  // would have dropped. Without it, "Adopt your first resource" points at a row
+  // that is not on screen.
+  it('keeps the tour adopt-target visible even when the cap would drop it', () => {
+    // The first three rows all have an open adoption PR, so the first ADOPTABLE
+    // row — the one firstAdoptableRow picks — sits at index 3, past the cap.
+    const approvals = [0, 1, 2].map((i) =>
+      pending({ asset_type: BUCKET, resource_name: `drift-${i}`, pr_number: 300 + i }),
+    );
+    const { container, getAllByTestId } = render(EstateView, {
+      props: baseProps({ graph: driftGraph(6), pendingApprovals: approvals }),
+    });
+    const marked = container.querySelector('[data-tour="adopt-target"]');
+    expect(marked).not.toBeNull();
+    expect(marked!.textContent).toContain('drift-3');
+    // Three capped rows plus the rescued one.
+    expect(getAllByTestId('estate-row')).toHaveLength(4);
   });
 });
 
