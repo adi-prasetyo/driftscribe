@@ -124,7 +124,10 @@
     - default: autoplays once after fonts are ready, holds the final frame.
     - ?hold=N : freeze at end-state of beat N (0..10) for screenshot review
       (hold=1 is ZOOMED — the tail zoom lands on the beat-2 cut).
-    - ?dev : scrubbable review transport (see DEV TRANSPORT at the bottom).
+    - (no params) : the scrubbable review transport, PLAYING — the DEFAULT view
+      (see DEV TRANSPORT at the bottom). ?t=ms to enter elsewhere; h hides the bar.
+    - ?dev : the same transport, parked at t=0 instead of playing.
+    - ?rec : the BARE piece, autoplay, no bar — the URL to record from.
     - ?hold=N : freeze at end-state of beat N (0..8) for screenshot review.
     - ?manual : suppress autoplay so a recorder can call window.play().
     - ?managed=9&grown=10 : override the counter with live counts (see above).
@@ -1678,10 +1681,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
      Offset computed explicitly rather than leaning on any centring layout: see
      the .stage rule for the grid-centring bug this replaced. */
   var stageEl=document.querySelector('.stage');
-  /* Height reserved BELOW the stage. Always 0 except under ?dev, which parks its
-     transport bar there rather than over the frame — a review tool that covers
-     the bottom of the thing being reviewed is worse than no tool. At 0 this is
-     the original expression exactly, so recording is untouched. */
+  /* Height reserved BELOW the stage. Always 0 except when the transport bar is
+     up (the default view, and ?dev), which parks there rather than over the
+     frame — a review tool that covers the bottom of the thing being reviewed is
+     worse than no tool. At 0 (?rec / ?hold / ?manual, or the bar hidden with h)
+     this is the original expression exactly, so recording is untouched. */
   var fitPad=0;
   function fit(){
     var vh=window.innerHeight-fitPad;
@@ -2182,9 +2186,16 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       body.classList.add('ring-landed');
     }
   } else if(qp.has('dev')){
-    /* review transport — see DEV TRANSPORT at the bottom of this script */
-    devTransport(+qp.get('t') || 0);
-  } else if(!qp.has('manual')){
+    /* review transport, PARKED at t (or 0) — see DEV TRANSPORT below */
+    devTransport(+qp.get('t') || 0, false);
+  } else if(qp.has('rec')){
+    /* ?rec: the BARE piece — autoplay, nothing over or under the frame. This is
+       the recording URL. It used to be the default, and the default view is now
+       the transport instead: this file's only audience until record day is a
+       reviewer, and a reviewer who has to remember a query param to get the
+       slider back loses it exactly when they need it (operator, 2026-08-05:
+       "the playback slider disappear... i need it so i dont have to refresh
+       each time"). */
     /* fonts.ready is the trigger; the 1400ms timer is only a fallback for when it
        never settles. Both used to fire — fonts.ready started the piece, then the
        timer RESTARTED it, so every normal viewing opened with ~1.6s of repeated,
@@ -2194,15 +2205,23 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     var go=function(){ if(started) return; started=true; window.play(); };
     if(document.fonts && document.fonts.ready){ document.fonts.ready.then(go); setTimeout(go, 1400); }
     else { go(); }
-  } else {
+  } else if(qp.has('manual')){
     drawBoundary(baseR); drawProposal(baseR);          /* manual: park at beat 0 */
+  } else {
+    /* DEFAULT: the transport, PLAYING from 0 (?t= to enter elsewhere). Same
+       machinery as ?dev — go(t,true) arms the same timers window.play() would,
+       so this IS a normal viewing, just with the slider parked under the frame
+       (press h to hide the bar and get the full-window geometry back). */
+    devTransport(+qp.get('t') || 0, true);
   }
 
 /* =========================================================================
-   DEV TRANSPORT (?dev) — A REVIEW TOOL, NOT PART OF THE PIECE
+   DEV TRANSPORT (the DEFAULT view; also ?dev parked) — A REVIEW TOOL, NOT
+   PART OF THE PIECE
    -------------------------------------------------------------------------
-   Delete this whole function and the `qp.has('dev')` branch above to remove it.
-   It is inert on every other URL: nothing below runs unless ?dev is present.
+   Delete this whole function and its two call sites above to remove it. It is
+   inert under ?rec / ?hold / ?manual: nothing below runs on those URLs, so
+   the recording path never touches it.
 
    WHY IT EXISTS: ?hold=N gives 9 frames — the END STATE of each beat. Everything
    this piece got wrong in the last two rounds was a TRANSITION, not an end state
@@ -2227,7 +2246,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
    piece, the C_* constants below are derived, but TYPE_MS assumes typeCode's
    4.5ms/char — change one, change the other, or the ring lands in the wrong place.
    ========================================================================= */
-  function devTransport(startAt){
+  function devTransport(startAt, autorun){
     /* A gesture driven by rAF does not end at its nominal duration — it ends at
        the first frame boundary AFTER it, so each one hands the next link of the
        serial chain a fraction of a frame late, and the error accumulates. The
@@ -2460,10 +2479,14 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       requestAnimationFrame(ui);
     })();
 
-    /* geometry inside beat 7 is measured from laid-out text — wait for fonts, or
-       the first render can size the ring against a fallback face */
-    var first=function(){ go(startAt, false); };
-    if(document.fonts && document.fonts.ready) document.fonts.ready.then(first);
+    /* geometry inside the chain is measured from laid-out text — wait for fonts,
+       or the first render can size the ring against a fallback face. The 1400ms
+       timer is only a fallback for a fonts.ready that never settles, latched so
+       both firing cannot start the run twice (the double-start lesson from the
+       old autoplay branch, which this default view replaced). */
+    var fired=false;
+    var first=function(){ if(fired) return; fired=true; go(startAt, !!autorun); };
+    if(document.fonts && document.fonts.ready){ document.fonts.ready.then(first); setTimeout(first, 1400); }
     else first();
   }
 })();
