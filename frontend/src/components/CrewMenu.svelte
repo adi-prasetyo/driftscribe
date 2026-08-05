@@ -390,7 +390,11 @@
        is the right answer for a menu with no row to line up with.
        crew-menu.smoke.ts measures the boxes against each other, because a
        derivation living in another file is the kind that goes stale in silence.
-       min-height, not height, so a crew name that wraps still gets its room. */
+       min-height and not height because this is a FLOOR: it raises the box to
+       the row without capping what the box may need. (Not, as a first draft of
+       this comment claimed, so the crew name can wrap — .crew-menu__name is
+       nowrap, so that particular rescue cannot happen. A justification that
+       names an impossible case reads as support the choice does not have.) */
     min-height: var(--composer-control-h);
     border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius-sm);
