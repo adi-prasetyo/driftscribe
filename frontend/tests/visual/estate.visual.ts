@@ -474,7 +474,10 @@ for (const locale of ['en', 'ja'] as Locale[]) {
         // Zero drift: the group header must be ABSENT, not rendered empty.
         await expect(page.getByTestId('estate-group-drift')).toHaveCount(0);
         await expect(page.getByTestId('estate-adopt-btn')).toHaveCount(0);
-        await expect(page.getByTestId('estate-group-managed')).toBeVisible();
+        // ds-3em: the managed group is a collapsed fold now, so its identity
+        // is the <summary>, not an <h2>. Still `toBeVisible` — a closed
+        // <details> hides its CONTENTS, never its summary.
+        await expect(page.getByTestId('estate-managed-fold')).toBeVisible();
         await expect(page.getByTestId('estate-group-unmatched')).toHaveCount(0);
       }
 

@@ -136,11 +136,54 @@ describe('EstateView — rows', () => {
     });
     const { getByTestId, getAllByTestId } = render(EstateView, { props: baseProps({ graph: g }) });
     expect(getByTestId('estate-group-drift').textContent).toContain('1');
-    expect(getByTestId('estate-group-managed').textContent).toContain('1');
+    // ds-3em: the managed group's count moved from an <h2> to its fold's
+    // <summary>. Rows inside a closed <details> are still in the DOM, so the
+    // count assertion below is unaffected.
+    expect(getByTestId('estate-managed-fold').querySelector('summary')?.textContent).toContain('1');
     const rows = getAllByTestId('estate-row');
     expect(rows).toHaveLength(2);
     expect(rows.some((r) => r.textContent?.includes('storefront'))).toBe(true);
     expect(rows.some((r) => r.textContent?.includes('checkout'))).toBe(true);
+  });
+
+  // ds-3em. The managed group's 9 rows are pure inventory — nothing on them is
+  // actionable, so the COUNT is the information and the names are
+  // detail-on-demand, exactly like the untracked and system-managed folds it
+  // now sits beside. Asserted the same way those two are (structure, not
+  // visibility): jsdom implements no layout, so a closed <details> hides
+  // nothing it could measure.
+  it('collapses the managed group into a fold, count in the summary', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: RUN,
+          label: 'Cloud Run',
+          count: 2,
+          managed: 1,
+          drift: 1,
+          adoptable: true,
+          nodes: [
+            node({ id: 'r0', label: 'checkout', asset_type: RUN, managed: true }),
+            node({ id: 'r1', label: 'storefront', asset_type: RUN, managed: false }),
+          ],
+        }),
+      ],
+    });
+    const { getByTestId, getAllByTestId, queryByTestId } = render(EstateView, {
+      props: baseProps({ graph: g }),
+    });
+    const fold = getByTestId('estate-managed-fold');
+    expect(fold.tagName).toBe('DETAILS');
+    expect(fold.hasAttribute('open')).toBe(false);
+    expect(fold.querySelector('summary')?.textContent).toContain('1');
+    // The h2 it replaces is gone, not merely restyled.
+    expect(queryByTestId('estate-group-managed')).toBeNull();
+    // The names are still there, under the unchanged row testid.
+    const inFold = getAllByTestId('estate-row').filter((r) => fold.contains(r));
+    expect(inFold).toHaveLength(1);
+    expect(inFold[0].textContent).toContain('checkout');
+    // …and the drift row above it is NOT swept into the fold.
+    expect(getAllByTestId('estate-row').some((r) => !fold.contains(r))).toBe(true);
   });
 
   it('collapses the untracked group into a fold, count in the summary', () => {

@@ -361,19 +361,27 @@
       {/if}
     {/if}
 
+    <!-- Folded (ds-3em), joining the two folds below it. Nothing on a managed
+         row is actionable — these are resources already declared in IaC, doing
+         exactly what they should — so the COUNT is the information and the
+         names are detail-on-demand. Uncapped inside: unlike the drift group
+         above, there is no reason to ration rows nobody has to act on.
+         The `<h2>` this replaces is not moved into the summary. The sibling
+         folds use a bare `<summary>`, and the heading walk still runs h1 (brand)
+         → h2 (desk) → h2 (drift/unmatched) with no gap. -->
     {#if model.managed.length > 0}
-      <h2 class="estate-view__group" data-testid="estate-group-managed">
-        {$t('desk.estate.managedGroup', { n: model.managed.length })}
-      </h2>
-      <div class="estate-view__rows">
-        {#each model.managed as row (row.nodeId)}
-          <div class="estate-view__row" data-testid="estate-row">
-            <span class="estate-view__dot" aria-hidden="true"></span>
-            <span class="estate-view__name">{row.label}</span>
-            <span class="estate-view__type">{row.typeLabel}</span>
-          </div>
-        {/each}
-      </div>
+      <details class="estate-view__fold" data-testid="estate-managed-fold">
+        <summary>{$t('desk.estate.managedGroup', { n: model.managed.length })}</summary>
+        <div class="estate-view__rows">
+          {#each model.managed as row (row.nodeId)}
+            <div class="estate-view__row" data-testid="estate-row">
+              <span class="estate-view__dot" aria-hidden="true"></span>
+              <span class="estate-view__name">{row.label}</span>
+              <span class="estate-view__type">{row.typeLabel}</span>
+            </div>
+          {/each}
+        </div>
+      </details>
     {/if}
 
     <!-- Folded (2026-07-31 merge): nothing here is actionable — these are
