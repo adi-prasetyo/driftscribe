@@ -677,11 +677,23 @@ body[data-beat="3"] .cn-subj{transition-delay:0ms, 0ms, 0ms, 3000ms, 3000ms}
 /* ...and heals with the fix, same instant as the square and the chip */
 body[data-beat="7"] .cn-subj{color:var(--green-ink); font-weight:700;
   transition-delay:0ms, 0ms, 0ms, 2500ms, 2500ms}
+/* the VALUE joins the census (operator, 2026-08-06): the chip appears under
+   the square, then a copy of its string peels off and flies into
+   payment-demo's line — the definition legibly CONTAINS the value before
+   anything drifts, so the beat-3 edit reads as square-vs-file DISAGREEMENT
+   rather than a stranger string materializing. The element carries .cn-subj
+   too, so the flare/heal rules above hit the whole line for free. Departs
+   4100, lands ~4800 (~100ms into beat 3, mid-glide across the cut — the
+   beat-3 .cn-lbl rule restates the same endpoint, so the transition finishes
+   untouched). Same specificity as the beat-2 .cn-lbl delay rule; this one
+   wins by SOURCE ORDER — keep it below that rule. */
+body[data-beat="2"] .cn-val{transition-delay:3750ms, 4100ms, 4100ms, 0ms, 0ms}
 
 /* the live value chip under the subject square — the thing the beat-3 edit
    will type over. Appears once the census has claimed payment-demo's name
-   (last flight lands ~3490), so the sequence reads: the file owns the name,
-   and THIS is the live value it defines. The spans are pre-staged for the
+   (last flight lands ~3490; chip 3550), so the sequence reads: the file owns
+   the name, and THIS is the live value it defines. Then a COPY of the string
+   peels off and flies into the census line (.cn-val) — see there. The spans are pre-staged for the
    beat-3/beat-7 steps() edits (Task 5/9): v-old carries the DEFINED value,
    v-drift the drifted one; base state (v-old 4ch, v-drift 0) IS the healed
    state, so beats 8+ need no restatement. */
@@ -706,7 +718,7 @@ body[data-beat="3"] .chip .chip-caret{animation:chipcaret 2000ms steps(1) 700ms 
   37%,48%{opacity:0} 49%,60%{opacity:1} 61%,72%{opacity:0} 73%,86%{opacity:1}
   87%,100%{opacity:0}
 }
-body[data-beat="2"] .chip{opacity:1; transition-delay:3700ms}
+body[data-beat="2"] .chip{opacity:1; transition-delay:3550ms}
 body[data-beat="3"] .chip,
 body[data-beat="4"] .chip,
 body[data-beat="5"] .chip,
@@ -1914,6 +1926,15 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     l.style.setProperty('--ci', i);
     worldEl.appendChild(l);
   });
+  /* the value's census copy (see .cn-val). Starts just under the chip
+     (532,610 + one line); lands at the tail of payment-demo's line:
+     x 986 + 12ch of 14px JetBrains Mono (12 x 8.4 = 100.8) + 10px gap. */
+  var val=document.createElement('div');
+  val.className='cn-lbl cn-subj cn-val';
+  val.textContent='PAYMENT_MODE = mock';
+  val.style.setProperty('--x0','532px'); val.style.setProperty('--y0','634px');
+  val.style.setProperty('--x1','1097px'); val.style.setProperty('--y1','402px');
+  worldEl.appendChild(val);
 
   /* the worker's reach to the lock is drawn AND retracted by a single
      stroke-dashoffset animation, so its dasharray must be the REAL path length:
