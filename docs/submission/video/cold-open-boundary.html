@@ -1090,10 +1090,15 @@ body[data-beat="7"] .gate .lock .shackle{transform:translateY(-2.3px) rotate(20d
 
 /* THE EXECUTION — the 実行側 badge keeps its job, it just is not the source
    of the authority. v4: it lives in the FIX beat, a whole beat after the
-   shackle opened, so approval visibly completes before anything moves. It
-   targets the subject square, and its arrival (~850ms) precedes the first
-   deleted character (900ms): the worker touches, the value reverts. Solid
-   navy: this is a fact being applied, not a proposal. */
+   shackle opened, so approval visibly completes before anything moves. A soft
+   arc toward the subject square that STOPS ~60px short of it (operator,
+   2026-08-06: no line ever touches a resource square — the same rule the
+   refusal already obeyed); the end tangent aims at the square's centre, so
+   the gap reads as address, not miss. Its arrival (~850ms) precedes the
+   first deleted character (900ms): the worker reaches, the value reverts.
+   Solid navy: this is a fact being applied, not a proposal. The curve clears
+   every neighbour by >=45px — re-check NEIGHBOURS, not just the endpoint, if
+   you reshape it (the 1.55x lesson). */
 /* ⚠ --al is MEASURED in JS. It used to be a hand-typed 330 against a path that
    is really 468 long, so the last 138px of the curve — the stretch that arrives
    at the square — was drawn through the whole `backwards` fill, i.e. a navy line
@@ -1105,9 +1110,9 @@ body[data-beat="7"] .gate .lock .shackle{transform:translateY(-2.3px) rotate(20d
   stroke-dasharray:var(--al,470px); stroke-dashoffset:var(--al,470px); opacity:0;
   transition:opacity 400ms ease;
 }
-/* v4: the execution path opens the FIX beat (7). The worker's touch arrives
-   at ~850, and the reversion starts typing at 900 — cause, then effect, with
-   the approved gate still green in frame. */
+/* v4: the execution path opens the FIX beat (7). The worker's reach arrives
+   at ~850 (stopping short of the square), and the reversion starts typing at
+   900 — cause, then effect, with the approved gate still green in frame. */
 body[data-beat="7"] .lnk-act{opacity:.85; stroke-dashoffset:0;
   animation:actdraw 650ms cubic-bezier(.4,0,.25,1) 200ms backwards}
 @keyframes actdraw{from{stroke-dashoffset:var(--al,470px)} to{stroke-dashoffset:0}}
@@ -1525,7 +1530,8 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
              sets the key down and then withdraws. It ends at the key's bow, not
              at the padlock body, because what the hand is holding is the key.
              Never draw this to another BADGE (see .lnk-key's invariants).
-           - lnk-act   the fix beat: the 実行側 worker -> the subject square.
+           - lnk-act   the fix beat: the 実行側 worker -> toward the subject
+             square, stopping short of it (no line touches a resource square).
              Routed left of the gate and it enters the boundary near the end,
              which is correct: the worker is outside the line, the resource is
              inside it. Both start at the relocated badge (620,240 w280). -->
@@ -1536,7 +1542,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
         <line class="stopx" x1="927.8" y1="505.3" x2="952.2" y2="484.7"></line>
         <line class="stopx" x1="929.7" y1="482.8" x2="950.3" y2="507.2"></line>
         <path class="lnk-key" d="M760 302 C 850 306, 940 415, 964 480"></path>
-        <path class="lnk-act" d="M700 302 C 660 400, 628 490, 606 566"></path>
+        <path class="lnk-act" d="M700 302 C 622 366, 639 497, 626 524"></path>
       </svg>
 
       <!-- what the x MEANS, beside it. Right-aligned so it ends at x=912, i.e.
