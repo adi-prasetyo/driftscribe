@@ -2048,6 +2048,12 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
   var tfEl=document.querySelector('.tf'), codeEl=document.querySelector('.tf .code');
   var CODE_HTML=codeEl.innerHTML;
   var CODE_TEXT=codeEl.textContent;
+  /* WIPE AT THE CUT, TYPE 500ms LATER. The .tf card fades in over 550ms at the
+     beat-9 mark with the full definition still in the markup (holds need it) —
+     so if the wipe waits for the chain anchor, the finished file rides the
+     fade-in and vanishes before the burst (operator-caught flash, 2026-08-06).
+     Every playback path must fire this AT the beat-9 mark (36100). */
+  function wipeCode(){ tfEl.classList.remove('done'); codeEl.textContent=''; }
   function typeCode(done, off){
     tfEl.classList.remove('done');
     codeEl.textContent='';
@@ -2199,8 +2205,10 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     /* the beat-1 tail zoom: the camera starts its 1500ms ride at 5900 so it
        LANDS on the 7400 cut (see body.prezoom) */
     timers.push(setTimeout(function(){ body.classList.add('prezoom'); }, 5900));
-    /* the only two clock anchors left in beats 9/10: the chain's start, and the
-       approval, which belongs to beat 10's mark and nothing else */
+    /* the only clock anchors left in beats 9/10: the wipe (on the beat-9 mark —
+       see wipeCode), the chain's start, and the approval, which belongs to
+       beat 10's mark and nothing else */
+    timers.push(setTimeout(wipeCode, 36100));         /* beat 9 cut: card fades in EMPTY */
     timers.push(setTimeout(beat7Chain, 36600));       /* beat 9 + 500ms */
     timers.push(setTimeout(commitBoundary, 41400));   /* beat 10 + 100ms */
   };
@@ -2312,7 +2320,8 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
        chain. */
     var RAF_TAIL  = 16;
     var TYPE_MS   = CODE_TEXT.length*4.5 + RAF_TAIL;   /* typeCode: 4.5ms/char */
-    var C_TYPE    = 36600,                        /* beat9Chain anchor */
+    var C_WIPE    = 36100,                        /* = beat-9 mark: card fades in EMPTY */
+        C_TYPE    = 36600,                        /* beat9Chain anchor */
         C_DONE    = C_TYPE + TYPE_MS,             /* burst ends, .tf.done */
         C_RING    = C_DONE + 260,                 /* chainType -> chainRing */
         C_LAND    = C_RING + 460 + 340,           /* ringClose 460 -> chainLand */
@@ -2362,7 +2371,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
         ev.push([m[0], function(){ body.setAttribute('data-beat', m[1]); }]);
       });
       ev.push([5900, function(){ body.classList.add('prezoom'); }]);   /* beat-1 tail zoom */
-      ev.push([C_TYPE,  function(){ tfEl.classList.remove('done'); codeEl.textContent=''; }]);
+      ev.push([C_WIPE,  wipeCode]);
       ev.push([C_DONE,  function(){ codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); }]);
       ev.push([C_RING,  function(){ ringDraw(); }]);
       ev.push([C_LAND,  function(){
@@ -2403,6 +2412,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
         if(m[0] > T) timers.push(setTimeout(function(){ body.setAttribute('data-beat', m[1]); }, m[0]-T));
       });
       if(T < 5900) timers.push(setTimeout(function(){ body.classList.add('prezoom'); }, 5900-T));
+      if(T < C_WIPE)       timers.push(setTimeout(wipeCode, C_WIPE-T));
       if(T < C_TYPE)       timers.push(setTimeout(beat7Chain, C_TYPE-T));
       else if(T < C_DONE)  typeCode(chainType, T-C_TYPE);
       else if(T < C_RING)  timers.push(setTimeout(chainRing, C_RING-T));
