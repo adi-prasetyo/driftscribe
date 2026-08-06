@@ -488,11 +488,30 @@ do_verify() {
   else bad "gh not authenticated"; fails=$((fails+1)); fi
 
   head_ "Guard"
-  if grep -q '^\s*sync:' "$root/.beads/config.yaml" 2>/dev/null; then
-    bad "a sync.remote appeared in .beads/config.yaml — this repo is PUBLIC, remove it"
-    fails=$((fails+1))
+  # The invariant is NOT "no remote" — it is "the remote is private and is not
+  # this repo". `bd dolt push` writes every issue title, body and note to
+  # refs/dolt/data, and driftscribe is public. Checked in that order, because a
+  # remote pointing at this repo is a leak even if `gh` is unavailable to
+  # confirm visibility.
+  local sync_url
+  sync_url="$(grep -E '^[[:space:]]*remote:[[:space:]]*"?https?://' "$root/.beads/config.yaml" 2>/dev/null \
+              | sed -E 's/.*remote:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/' | head -1)"
+  if [[ -z "$sync_url" ]]; then
+    ok "beads: no sync.remote (local-only — valid)"
   else
-    ok "no beads sync.remote (correct — repo is public)"
+    local sync_slug origin_slug
+    sync_slug="$(printf '%s' "$sync_url"   | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
+    origin_slug="$(git -C "$root" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
+    if [[ -n "$origin_slug" && "$sync_slug" == "$origin_slug" ]]; then
+      bad "beads sync.remote points at THIS repo ($sync_slug) — it is PUBLIC. bd dolt push would publish every issue."
+      fails=$((fails+1))
+    elif gh repo view "$sync_slug" --json isPrivate --jq '.isPrivate' 2>/dev/null | grep -q '^true$'; then
+      ok "beads sync.remote: $sync_slug (private, not this repo)"
+    else
+      # Cannot confirm private => do not call it fine. Unmeasured is not a pass.
+      bad "beads sync.remote: $sync_slug — could NOT confirm it is private (gh unavailable or repo public)"
+      fails=$((fails+1))
+    fi
   fi
 
   head_ "Result"
