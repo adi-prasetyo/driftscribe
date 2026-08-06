@@ -2889,7 +2889,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
 
       var ev=[[0, function(){ body.classList.add('playing'); }]];
       MARKS.forEach(function(m){
-        ev.push([m[0], function(){ body.setAttribute('data-beat', m[1]); }]);
+        ev.push([m[0], function(){ body.setAttribute('data-beat', m[1]); reapUnowned(); }]);
       });
       ev.push([5900, function(){ body.classList.add('prezoom'); }]);   /* beat-1 tail zoom */
       ev.push([C_WIPE,  wipeCode]);
