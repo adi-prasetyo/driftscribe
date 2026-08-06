@@ -67,6 +67,40 @@
     from beat 2 to the last frame — definition, drift, fix and adoption all
     land on it.
 
+  WHAT V5 CHANGED (ds-22b.4), and why each one is not a preference:
+  - THE REVIEWER'S PEN (beat 3): two hand-drawn ellipse loops circle the
+    census card's "mock" and the chip's live, joined by a connector; a
+    mono != (font-variant-ligatures:none — JetBrains Mono's calt table
+    would fuse a bare "!=" back into a ≠ glyph) pops at the midpoint with
+    a paper halo. First-time viewers were not connecting the two values
+    that disagree before the story moved on; caption D (定義があるから、
+    ズレが見える) is now literal, not implied.
+  - DISPATCH + MINT (beat 4): a solid arc in Anchor's blue draws 提案
+    card -> 実行側 badge, and the badge itself now arrives WITH the line
+    instead of popping in at the fix beat (v4's uncaused pop-in,
+    operator-flagged) — nobody just shows up. The worker then traces
+    the gate's own outline before the real gate fades in beneath it —
+    the sketch becomes the thing — and the card is born LOCKED: TTL
+    15分, the HMAC imprint, a live -> "mock" change preview, and THE
+    KEY already resting muted beside 承認. The custody story now starts
+    at the mint, not at the seal.
+  - THE CUSTODY REGRAMMAR (beat 6): v4's worker hand-line/placed-unturned
+    staging is retired. The 判子 lands ON the 承認 button — press and
+    seal, one gesture — the gate turns green with it, and only THEN
+    does the key, resting in the human's panel since the mint, brighten,
+    fly to the keyhole, turn, open and crumble; a solid release cue
+    draws gate -> worker. New invariant: THE MINTER IS NEVER SEEN
+    HOLDING THE KEY — the withdrawal gesture's statement is now made
+    CONTINUOUSLY, by custody, instead of once, by a gesture (see WHO
+    OPENS THE LOCK, above .key).
+  - Runtime 44.7s -> ~50.1s (beats 3/4/6 all extended to hold the new
+    business; retimed marks are in the Beats table below, and in
+    MARKS). Plus a transport hardening: render()'s replay loop now
+    reaps at every beat cut, not just armFrom()'s live cuts and the
+    .done flip — ds-aah's missed fourth site, surfaced by .neq-glyph's
+    non-returning terminal keyframe staying a visible stray past its
+    beat.
+
   THE ARGUMENT (why this replaces v1): v1 spent its 20s on detect -> propose ->
   approve -> revert, which is the shape every DevOps agent in the field has. What
   no one else does is AUTHOR the infrastructure definition. So the opening now
@@ -98,6 +132,31 @@
     admin API. The token is minted by the worker that will ACT, bound to that one
     revision, single-use, TTL 15m (workers/rollback/main.py:718,
     driftscribe_lib/approvals.py:221). Hence three roles on screen, not two.
+  - THE GATE AND THE KEY ARE MINTED TOGETHER, by one worker call:
+    ApprovalStore.create (driftscribe_lib/approvals.py:273-317) generates
+    the raw token (line 295) and writes ONLY its HMAC to Firestore
+    (token_hmac, lines 298-316) in the same call, invoked at
+    workers/rollback/main.py:687. No code path here can produce a gate
+    without a key, or the reverse.
+  - THE RAW TOKEN SHIPS TO THE HUMAN INSIDE THE APPROVAL URL, as the
+    ?t= query param (workers/rollback/main.py:718-720) — that IS the key
+    resting in the human's panel from the mint. The worker's own record
+    never holds the credential, only its imprint: HMAC 署名付き (.gsig)
+    dramatizes "only the HMAC lives in Firestore" (approvals.py:288).
+  - PRESSING 承認 SUBMITS THE TOKEN BACK — the key's flight to the lock
+    IS that POST to /execute. Verification consumes the single-use
+    approval before anything else happens: the constant-time HMAC
+    compare (workers/rollback/main.py:769,775) is followed by the
+    transactional pending -> used flip (store.claim_pending, line 790)
+    — that flip IS the turn, and it burns the credential whether or not
+    the rollback that follows succeeds. The worker only touches Cloud
+    Run traffic after the claim wins, which is why the release cue
+    (gate -> worker) precedes the fix by a full beat.
+  - The seal-beat card's live -> "mock" (.gdiff) mirrors the real
+    approval page's change preview — env_snapshot, built by
+    _env_change_snapshot (workers/rollback/main.py:304, called at
+    propose() line 679), the same mechanism ds-uwc already covers. Not
+    an invented detail.
   - The .tf shown at beat 7 is a DEPICTED PROPOSAL, not a file in the repo. Its
     shape is the real adopt recipe's — iac/adopt_bucket_driftscribe_hack_2026_adopt_probe.tf,
     resource + a RETAINED `import` block — and the import block IS the boundary
@@ -152,7 +211,7 @@
       (see DEV TRANSPORT at the bottom). ?t=ms to enter elsewhere; h hides the bar.
     - ?dev : the same transport, parked at t=0 instead of playing.
     - ?rec : the BARE piece, autoplay, no bar — the URL to record from.
-    - ?hold=N : freeze at end-state of beat N (0..8) for screenshot review.
+    - ?hold=N : freeze at end-state of beat N (0..10) for screenshot review.
     - ?manual : suppress autoplay so a recorder can call window.play().
     - ?managed=9&grown=10 : override the counter with live counts (see above).
     - window.play() restarts. window.RUNTIME_MS is the full length.
@@ -163,7 +222,8 @@
     2  7400   census    ten names fly into iac/; the file dictates
                         the value, delivered down to the square       cap C
     3  12100  drift     the silent edit; live/"mock" flare + sweep    cap D  <- the hinge
-    4  17800  propose   the ripple reaches the watcher; it proposes   cap E
+    4  17800  propose   the ripple reaches the watcher; it proposes
+                        — the summoned worker mints the gate, key included  cap E
     5  23700  refuse    Anchor walks to the gate; 鍵は出せない        cap F
     6  28200  seal      判子 on 承認; the key flies, turns, opens    cap G
     7  34300  fix       the edit reversed; the values flip green      cap H
