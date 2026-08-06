@@ -1073,7 +1073,8 @@ body[data-beat="4"] .b-watch .ping{animation:ping 1.8s cubic-bezier(.25,.6,.35,1
    3700, transform 700ms by 3800, both comfortably inside the 5900ms beat.
    Beats 5-7 are now plain persistence, no entry-specific delay left to carry. */
 body[data-beat="4"] .b-act{opacity:1; transform:none; transition-delay:3100ms}
-body[data-beat="5"] .b-act, body[data-beat="6"] .b-act,
+body[data-beat="5"] .b-act,
+body[data-beat="6"] .b-act,
 body[data-beat="7"] .b-act{opacity:1; transform:none}
 
 /* 書く側 — Provision. Lifted from top:455 with the .tf card (see there). */
@@ -1178,6 +1179,30 @@ body[data-beat="4"] .lnk-dispatch{opacity:.85;
 /* exit: base opacity:0 owns it, same shape as .ripple/.zure/.neq-glyph — the
    arc's statement is complete once the worker is on screen, so no beat-5+
    restatement. Beat 5 is the busiest frame in the piece; nothing extra to draw. */
+
+/* THE MINT (v5, ds-22b.4) — see the markup comment above .gmint for the path's
+   shape and clearance. Timing: starts 3700ms, the moment .b-act's opacity
+   transition settles (transform settles 3800) — the worker has visibly
+   arrived before it starts drawing. Draws 3700-4600, fades 4900-5300 as the
+   real gate fades in beneath it (4400-5100): the sketch becomes the thing.
+   ⚠ TWO animations on ONE element, but DIFFERENT properties — dashoffset
+   (the draw) vs opacity (the fade) — same shape as the chip's own two-
+   animation rule ("different properties, no collision"); stacking two
+   animations on the SAME property is the forbidden shape (silently outranks
+   per fill-mode, the .key/keylife lesson). --gm is MEASURED in JS
+   (getTotalLength(), alongside --dl) — a hand-typed dasharray leaves dead
+   draw time, same lesson as every other stroke in this file. */
+.gmint-path{fill:none; stroke:var(--navy); stroke-width:2;
+  stroke-dasharray:var(--gm,1600px); stroke-dashoffset:var(--gm,1600px); opacity:0}
+body[data-beat="4"] .gmint-path{opacity:.7;
+  animation:gmintdraw 900ms cubic-bezier(.4,0,.2,1) 3700ms both,
+            gmintfade 400ms ease 4900ms both}
+@keyframes gmintdraw{to{stroke-dashoffset:0}}
+@keyframes gmintfade{to{opacity:0}}
+/* exit: no beat-5+ restatement needed — gmintfade already owns the settled
+   (invisible) end state, base opacity:0 carries it past the cut. hold-4 must
+   restate it explicitly since no-anim kills the fade transition (see the
+   hold-frame block). */
 
 /* THE APPROACH (v4, ds-22b.3 — operator decision 2026-08-04). The dashed
    reach that used to pop in and shake is retired: an abstract relation drawn
@@ -1299,30 +1324,50 @@ body[data-beat="6"] .lnk-key{opacity:.85;
    outranks the earlier ones on the same property. So the life of the key is a
    single timeline and the percentages below are that timeline in ms/4000. */
 .key{
-  position:absolute; left:0; top:0; width:44px; height:44px; opacity:0;
-  color:var(--navy); z-index:6;
-  /* the key RIDES the worker's line (operator, 2026-08-06: it used to
-     materialize at the lock — now it fades in AT the worker and travels, so
-     the provenance the file only asserted in a comment is on camera: the
-     ACTING worker mints the token, workers/rollback/main.py:718). offset-path
-     is the same arc as .lnk-key, extended to the keyhole; the box sits at
-     0,0 so path coordinates read as world coordinates either way Chromium
-     resolves the origin. offset-anchor pins the key's TIP to the path, so
-     distance 100% seats the tip at the keyhole (985.8,507.8) exactly where
-     left:950/top:472 used to put it. offset-rotate 0: the glyph keeps its
-     own angle, the keylife transform still owns rotation. */
-  offset-path:path('M760 302 C 850 306, 944 420, 985.8 507.8');
-  offset-rotate:0deg; offset-anchor:35.8px 35.8px; offset-distance:100%;
-  /* 44px, not 30 — the fix-forward round already taught that an icon sized to
-     be recognised is not sized to be watched, and this beat turns on watching
-     the key. Pivot on the key's TIP (19.5/24 of the box = 35.8px), matching
-     offset-anchor: the turn rotates it IN the lock instead of orbiting the
-     glyph around its middle, and the ride lands tip-first at the keyhole. */
-  transform-origin:35.8px 35.8px;
+  /* v5 (ds-22b.4): born in the human's panel — at rest beside the 承認
+     button from the mint (beat 4) until the 判子 (beat 6). World-positioned
+     SIBLING of .gate (the card clips its children; the stamp learned this
+     2026-08-04), z-index above the card so it reads as sitting IN the gfoot
+     row. Muted and small at rest: during the refusal it must be a quiet
+     object in the human's territory, not a prize.
+     Position derived from the measured, POST-.gdiff gate geometry (see the
+     net-zero card-fit note above .gdiff): gfoot row is (976,695)-(1324,737), .gbtn
+     is (1248,695,76x42). Key sits left of the button, vertically centred in
+     the row (701 = 695 + (42-30)/2), right edge 12px clear of the button
+     (1206+30=1236, 1248-1236=12), left edge 151px clear of .gsig's right
+     edge (1055) — comfortably past the >=10px floor, and >=48px clear of
+     the stamp's future footprint (1284-1376 x 626-718) in both axes.
+     offset-path/-rotate/-anchor/-distance are DELETED from this base rule —
+     they belonged to the RIDE (beat 6's flight to the keyhole), which is
+     retired staging until the custody regrammar lands. The beat-6 rule
+     re-declares offset-path itself, scoped to that beat only, so the rest
+     frame here stays plain left/top. Until that lands, beat 6's keylife
+     animation has no path to move along and will look wrong — expected,
+     observed, not fixed here. */
+  position:absolute; left:1206px; top:701px; width:30px; height:30px; opacity:0;
+  color:var(--muted); z-index:6;
+  /* tip pivot at 24.4px = 30 * (35.8/44), the same fractional tip position
+     the 44px ride box used — preserves the reference point Task 6's flight/
+     turn math depends on when it re-declares offset-anchor at this size. */
+  transform-origin:24.4px 24.4px;
   /* paper halo so it reads as an object landing ON the header, not a stray icon */
   filter:drop-shadow(0 0 5px rgba(251,250,248,.95)) drop-shadow(0 0 2px rgba(251,250,248,1));
 }
 .key svg{width:100%; height:100%; display:block}
+/* the key rests from the mint through the refusal. Its 500ms opacity
+   transition starts 4600 and settles 5100 — DELIBERATELY overlapping
+   .gmint-path's fade (starts 4900, settles 5300) by ~200ms: the sketch is
+   still visibly yielding to the real card while the key is still
+   brightening into place, not a clean hand-off at a single instant. Beat 5
+   is plain persistence: nothing entry-specific left to carry once the mint
+   has already placed it. */
+body[data-beat="4"] .key{opacity:.55; transition:opacity 500ms ease 4600ms}
+body[data-beat="5"] .key{opacity:.55}
+/* v5 interim: offset-path is no longer declared on .key's base rule (see
+   the base comment above) — this keylife staging is knowingly broken
+   (rides nowhere, just rotates in place at the rest position) until the
+   custody regrammar lands (ds-22b.4, next commit after this one). Not
+   rewritten here; that block is Task 6's. */
 body[data-beat="6"] .key{animation:keylife 4000ms linear 800ms both}
 @keyframes keylife{
   /* fades in AT the worker while the hand-line draws (line 0-440ms of its
@@ -1413,6 +1458,14 @@ body[data-beat="7"] .lnk-act{opacity:.85; stroke-dashoffset:0;
   transition:opacity 600ms ease, transform 750ms cubic-bezier(.16,1,.3,1), border-color var(--move);
   overflow:hidden;
 }
+/* v5: the gate now enters at the MINT (beat 4), not the beat-5 cut — see
+   .gmint-path. transition-delay 4400ms lands after the mint trace fades
+   (4900-5300 overlaps the arrival, same "sketch becomes the thing" beat),
+   with content settling by 5100 and the beat itself running to 5900. A
+   single delay value covers all three transitioned properties (opacity,
+   transform, border-color) — the .b-act precedent above. Beats 5-7 are now
+   plain persistence: the gate is already on screen by the time they open. */
+body[data-beat="4"] .gate{opacity:1; transform:none; transition-delay:4400ms}
 body[data-beat="5"] .gate,
 body[data-beat="6"] .gate,
 body[data-beat="7"] .gate{opacity:1; transform:none}
@@ -1437,8 +1490,8 @@ body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:2920ms}
 .gate .gt svg{width:2.6em; height:2.6em; flex:none; overflow:visible}
 .gate .gbadge{font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--amber-ink);
   border:1px solid var(--amber-border); border-radius:999px; padding:3px 9px; white-space:nowrap}
-.gate .gbody{padding:14px 15px 15px; position:relative}
-.gate .gsvc{font-family:var(--mono); font-size:13px; color:var(--muted); margin-bottom:9px}
+.gate .gbody{padding:12px 15px 15px; position:relative}
+.gate .gsvc{font-family:var(--mono); font-size:13px; color:var(--muted); margin-bottom:6px}
 /* DE-TEXTED 2026-08-04 (fix-forward plan §3, operator complaint 2 of 4). This
    line used to read `live -> mock` in 21px mono. With the beat-2 実際 card
    deleted, that made the gate the last surviving string diff in the piece — and
@@ -1451,13 +1504,29 @@ body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:2920ms}
    above in small mono, the same demotion `HMAC 署名付き` already gets.
    ⚠ var(--ui), not var(--mono): JetBrains Mono has no kana, so Japanese set in
    it silently falls back mid-line. To restore the diff, put the three spans
-   back in the markup and give this rule mono + a flex row again. */
+   back in the markup and give this rule mono + a flex row again.
+   REVERSED 2026-08-06 (v5, ds-22b.4) — NET-ZERO CARD-FIT NOTE: the diff is
+   back, but not by restoring this rule — `.gchange` keeps var(--ui) and
+   stays the big headline ("定義値に戻す"). The specifics live in a NEW
+   dedicated `.gdiff` line below, small mono like `.gsig`, so the
+   kana/JetBrains-Mono trap above never recurs. Card-fit for the extra line
+   is absorbed net-zero from `.gbody` (padding-top 14->12), `.gsvc`
+   (margin-bottom 9->6), `.gchange` (margin-bottom 12->5), and `.gprops`
+   (margin-bottom 13->2) — not from this rule. Measured result: gate height
+   and .gbtn's world y are unchanged (283.19px / y~695). */
 .gate .gchange{font-family:var(--ui); font-size:22px; font-weight:700;
-  color:var(--ink); margin-bottom:12px}
+  color:var(--ink); margin-bottom:5px}
+/* the change preview — mirrors the real approval page's diff line (ds-uwc).
+   Quotes asymmetry is deliberate: `live` bare = the observed runtime value,
+   `"mock"` quoted = the HCL string in the file. Small mono like `.gsig`
+   (not `.gchange`'s var(--ui)) so it reads as a specific, not a headline. */
+.gate .gdiff{font-family:var(--mono); font-size:13px; letter-spacing:.02em;
+  color:var(--amber-ink); padding:1px 0 0; margin-bottom:5px}
+body[data-beat="7"] .gate .gdiff{color:var(--green-ink)}  /* flips with the fix */
 /* The three properties of the credential, stated without cryptographic
    vocabulary. max-width reserves the right gutter for the 判子 — without it the
    stamp lands on top of the third pill. */
-.gate .gprops{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:13px; max-width:250px}
+.gate .gprops{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:2px; max-width:250px}
 .gate .gprops span{font-family:var(--ui); font-size:12px; font-weight:600; color:var(--ink-soft);
   background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:4px 10px}
 .gate .gfoot{display:flex; align-items:center; justify-content:space-between; gap:12px}
@@ -1767,12 +1836,26 @@ body.no-anim[data-beat="6"] .gate .lock .shackle{transform:translateY(-2.3px) ro
    greens applied by their (killed) transitions, gate carried by the plain
    beat-7 rules above */
 body.no-anim[data-beat="7"] .lnk-act{opacity:.85; stroke-dashoffset:0}
-/* beat 4 no longer has a key at all — the worker brings it at beat 5 (see the
-   BEAT 5 block), and its absence during the refusal is the point. Beat 5's own
-   settled state is crumbled, i.e. gone, and the base .key opacity:0 already IS
-   that state (same shape as the ring, the ripple and the withdrawn reach: a
-   one-shot gesture's end state is absence). Neither needs a rule.
-   .lnk-key likewise settles fully retracted, which the base dashoffset owns. */
+/* v5: beat 4 DOES have a key now — it rests at the mint (see .key's base
+   rule) — so the old claim here ("beat 4 no longer has a key at all") is
+   wrong twice over: wrong about beat 4, and wrong that beat 5 is where it
+   arrives (beat 5 is refusal-only now; nothing enters there). .gate and
+   .key's own beat-4/5 rules are plain TRANSITIONS, not animations, so they
+   already apply their settled values instantly under no-anim without
+   restatement (verified: killing the transition doesn't lose the target
+   value, only the interpolation) — but they're restated below anyway to
+   keep every beat-4/5 entrance rule in this cluster following the same
+   pattern as .b-act/.b-watch/.prop above. .gmint-path is different: it is
+   an ANIMATION (gmintdraw/gmintfade), so no-anim's animation:none strips
+   its fill-mode end state and leaves the pre-animation base (undrawn,
+   opacity .7) unless restated — same trap as every other stroke in this
+   file. hold-4 must show it past its fade (invisible), matching playback. */
+body.no-anim[data-beat="4"] .gate{opacity:1; transform:none}
+body.no-anim[data-beat="4"] .gmint-path{opacity:0}
+body.no-anim[data-beat="4"] .key,
+body.no-anim[data-beat="5"] .key{opacity:.55}
+/* .lnk-key (Task 6's to retire) still settles fully retracted, which the
+   base dashoffset owns — unaffected by any of the above. */
 body.no-anim[data-beat="6"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
 /* the beat-5 re-seat (.mk.subj transform, .sock.subj opacity/border) is
    transition-delayed to 1800ms; no-anim kills the transition so the end state
@@ -1854,6 +1937,17 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
            svg — beat 4, sibling of .links (beat 5/6/7's annotations). -->
       <svg class="lnkd" viewBox="0 0 1920 1080" aria-hidden="true">
         <path class="lnk-dispatch" d="M413 407 C 505 410, 580 345, 604 288"></path>
+      </svg>
+
+      <!-- THE MINT (v5, ds-22b.4) — the worker draws the gate. One path: a
+           short approach from the badge's lower edge, then the gate's own
+           rounded-rect outline (radius 13, matching .gate's border-radius),
+           traced on the measured FINAL box (960,470 -> 1340,753.19 — see the
+           net-zero card-fit note above .gdiff). The sketch becomes the thing: this
+           trace fades (4900-5300) as the real card fades in beneath it
+           (4400-5100). See .gmint-path for the two-animation note. -->
+      <svg class="gmint" viewBox="0 0 1920 1080" aria-hidden="true">
+        <path class="gmint-path" d="M772 312 C 860 317, 954 355, 960 460 L 960 483 A 13 13 0 0 1 973 470 L 1327 470 A 13 13 0 0 1 1340 483 L 1340 740.19 A 13 13 0 0 1 1327 753.19 L 973 753.19 A 13 13 0 0 1 960 740.19 L 960 483"></path>
       </svg>
 
       <!-- what the x MEANS, beside it. Right-aligned so it ends at x=912, i.e.
@@ -1946,6 +2040,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
         <div class="gbody">
           <div class="gsvc">payment-demo · PAYMENT_MODE</div>
           <div class="gchange">定義値に戻す</div>
+          <div class="gdiff">live → "mock"</div>
           <div class="gprops">
             <span>この操作にだけ有効</span><span>他には使えない</span><span>一度きり</span>
           </div>
@@ -2336,6 +2431,9 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
      for the clearance sweep this path was checked against. */
   var dspLink=document.querySelector('.lnk-dispatch');
   dspLink.style.setProperty('--dl', dspLink.getTotalLength()+'px');
+  /* same treatment for the mint trace (v5, ds-22b.4) — see .gmint-path. */
+  var gmLink=document.querySelector('.gmint-path');
+  gmLink.style.setProperty('--gm', gmLink.getTotalLength()+'px');
   /* same treatment for the reviewer's-pen strokes — two circles, one
      connector, each its own measured length (see .neq-c1/.neq-c2/.neq-line). */
   var neqC1=document.querySelector('.neq-c1');
@@ -2362,7 +2460,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
                       3000 (live) / 3200 ("mock") · ズレ 3150-3850
                       · pen: mock circle 3950 / live 4100 / joins 4400 / != 4850
        beat 4  5900   ripple 100-1000; badge, ping, proposal card
-                      · dispatch 2600 / worker 3100
+                      · dispatch 2600 / worker 3100 · mint 3700 / gate+key 4400
        beat 5  4500   approach 250-3650; contact 1750; label 2050
        beat 6  6100   still 0-800 (cap G reads first) · place 800-1900 · 判子
                       2300-2920 · turn 3400 · open 3750-4050 · crumble 4200-4800
