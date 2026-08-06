@@ -5,8 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>DriftScribe — cold open (boundary rework)</title>
 <!--
-  DriftScribe demo cold-open v4 — "the census" (segment 0, 44.7s, silent, JA captions).
+  DriftScribe demo cold-open v4 — "the census" (segment 0, ~50.1s, silent, JA captions).
   v4 (2026-08-05, bead ds-22b.3): docs/plans/2026-08-05-cold-open-v4-census-build-plan.md.
+  v5 (2026-08-06, bead ds-22b.4): docs/plans/2026-08-06-cold-open-v5-approval-custody-build-plan.md.
   Lineage: boundary rework design docs/plans/2026-08-01-cold-open-boundary-rework-design.md
   (its §4 solid-vs-dashed rule and §"Depicted scale" still bind) -> round-2 punch
   list 2026-08-02 -> socket build 2026-08-03 -> fix-forward 2026-08-04
@@ -16,7 +17,7 @@
   Supersedes cold-open.html (the drift-gap story). That file stays renderable and is
   the shippable fallback.
 
-  RUNTIME: 44.7s. The 35s cap is WAIVED for the v4 round (operator, 2026-08-04:
+  RUNTIME: ~50.1s. The 35s cap is WAIVED for the v4 round (operator, 2026-08-04:
   "need the idea and story to be right before the optimization"). v4 adds the
   census (+4.7s), a dedicated drift-edit beat (+3.9s), a longer approach-refusal
   (+600ms), a slower/larger seal (+500ms and slower inside; +800ms more on
@@ -157,15 +158,15 @@
     2  7400   census    ten names fly into iac/; the file dictates
                         the value, delivered down to the square       cap C
     3  12100  drift     the silent edit; live/"mock" flare + sweep    cap D  <- the hinge
-    4  16000  propose   the ripple reaches the watcher; it proposes   cap E
-    5  19100  refuse    Anchor walks to the gate; 鍵は出せない        cap F
-    6  23600  seal      key placed · 判子 alone · turn · open         cap G
-    7  28900  fix       the edit reversed; the values flip green      cap H
-    8  32100  sweep     census docks; the sweep flags the bucket RED  cap I
-    9  36100  write     the file bursts out; a ring closes and lands  cap J
-    10 41300  commit    line snaps SOLID; the name joins the census;
+    4  17800  propose   the ripple reaches the watcher; it proposes   cap E
+    5  23700  refuse    Anchor walks to the gate; 鍵は出せない        cap F
+    6  28200  seal      key placed · 判子 alone · turn · open         cap G
+    7  34300  fix       the edit reversed; the values flip green      cap H
+    8  37500  sweep     census docks; the sweep flags the bucket RED  cap I
+    9  41500  write     the file bursts out; a ring closes and lands  cap J
+    10 46700  commit    line snaps SOLID; the name joins the census;
                         管理下 rolls only after the ledger records    cap K
-       44700  end
+       50100  end
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -2195,7 +2196,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
   /* =====================================================================
      TIMELINE
      ===================================================================== */
-  /* 44.7s (was 34.9s; the 35s cap is waived for the v4 round — see the header).
+  /* ~50.1s (was 34.9s; the 35s cap is waived for the v4 round — see the header).
      Every beat is sized to its CAPTION's reading time AND to what the viewer has
      to watch — the captions are the only narration in a silent piece nobody can
      pause. Caption budget: chars / (duration - 0.5s stagger) <= ~5.2 per second;
@@ -2205,11 +2206,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
        beat 1  4200   line draws; the tail zoom starts at 5900, lands on the cut
        beat 2  4700   census: 260ms stagger x 10 names + 700ms flight; value
                       line types 3550-4250 · .cn-drop flies 4350 · chip 4650
-       beat 3  3900   summon 0-500 · edit 800-2600 · value flare+sweep
+       beat 3  5700   summon 0-500 · edit 800-2600 · value flare+sweep
                       3000 (live) / 3200 ("mock") · ズレ 3150-3850
-       beat 4  3100   ripple 100-1000; badge, ping, proposal card
+       beat 4  5900   ripple 100-1000; badge, ping, proposal card
        beat 5  4500   approach 250-3650; contact 1750; label 2050
-       beat 6  5300   still 0-800 (cap G reads first) · place 800-1900 · 判子
+       beat 6  6100   still 0-800 (cap G reads first) · place 800-1900 · 判子
                       2300-2920 · turn 3400 · open 3750-4050 · crumble 4200-4800
                       (the THE KEY block is the source of truth)
        beat 7  3200   lnk-act 200-850 · reverse edit 900-2300 · green value
@@ -2220,12 +2221,12 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
                       beat no rival's demo can show. Never trim it first.
        beat 10 3400   commit 100-720 · name materializes 800, flies
                       1250-1950, card grows 1150 · counter rolls 2050-2830
-     Only the beat-9 chain's ANCHOR (36600) is coupled to these numbers; the rest
+     Only the beat-9 chain's ANCHOR (42000) is coupled to these numbers; the rest
      of that beat is serial, so a burst-speed change cannot open a hole in it. */
-  var MARKS=[[0,'0'],[3200,'1'],[7400,'2'],[12100,'3'],[16000,'4'],
-             [19100,'5'],[23600,'6'],[28900,'7'],[32100,'8'],
-             [36100,'9'],[41300,'10']];
-  var TOTAL=44700;
+  var MARKS=[[0,'0'],[3200,'1'],[7400,'2'],[12100,'3'],[17800,'4'],
+             [23700,'5'],[28200,'6'],[34300,'7'],[37500,'8'],
+             [41500,'9'],[46700,'10']];
+  var TOTAL=50100;
   /* rAF handles are KEYED, not a single slot. Beat 7 runs two rAF loops at once
      — the ring landing on the resource and the dashed lobe growing out to meet
      it — and with one shared `raf` variable the second loop's handle overwrote
@@ -2276,7 +2277,7 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
      beat-9 mark with the full definition still in the markup (holds need it) —
      so if the wipe waits for the chain anchor, the finished file rides the
      fade-in and vanishes before the burst (operator-caught flash, 2026-08-06).
-     Every playback path must fire this AT the beat-9 mark (36100). */
+     Every playback path must fire this AT the beat-9 mark (41500). */
   function wipeCode(){ tfEl.classList.remove('done'); codeEl.textContent=''; }
   function typeCode(done, off){
     tfEl.classList.remove('done');
@@ -2432,9 +2433,9 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     /* the only clock anchors left in beats 9/10: the wipe (on the beat-9 mark —
        see wipeCode), the chain's start, and the approval, which belongs to
        beat 10's mark and nothing else */
-    timers.push(setTimeout(wipeCode, 36100));         /* beat 9 cut: card fades in EMPTY */
-    timers.push(setTimeout(beat7Chain, 36600));       /* beat 9 + 500ms */
-    timers.push(setTimeout(commitBoundary, 41400));   /* beat 10 + 100ms */
+    timers.push(setTimeout(wipeCode, 41500));         /* beat 9 cut: card fades in EMPTY */
+    timers.push(setTimeout(beat7Chain, 42000));       /* beat 9 + 500ms */
+    timers.push(setTimeout(commitBoundary, 46800));   /* beat 10 + 100ms */
   };
   window.RUNTIME_MS=TOTAL;
 
@@ -2540,18 +2541,23 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
        the v4 clock (2026-08-06, 271 chars, after the caption-first +800):
        ring-draw 38098, ring-land 38899, ring-landed 39912, committed 41400
        — within 5ms of the arithmetic below.
+       v5 clock: +5400 on each — the chain is timer-anchored at C_WIPE and
+       rigid, so ring-draw ~43498, ring-land ~44299, ring-landed ~45312,
+       committed 46800 (exact, = C_COMMIT). Spot-verified live at the retime
+       (ds-22b.4), within the polling grain used to check it — not a fresh
+       frame-accurate measurement.
        Re-measure with a MutationObserver on body.class if you retime the
        chain. */
     var RAF_TAIL  = 16;
     var TYPE_MS   = CODE_TEXT.length*4.5 + RAF_TAIL;   /* typeCode: 4.5ms/char */
-    var C_WIPE    = 36100,                        /* = beat-9 mark: card fades in EMPTY */
-        C_TYPE    = 36600,                        /* beat9Chain anchor */
+    var C_WIPE    = 41500,                        /* = beat-9 mark: card fades in EMPTY */
+        C_TYPE    = 42000,                        /* beat9Chain anchor */
         C_DONE    = C_TYPE + TYPE_MS,             /* burst ends, .tf.done */
         C_RING    = C_DONE + 260,                 /* chainType -> chainRing */
         C_LAND    = C_RING + 460 + 340,           /* ringClose 460 -> chainLand */
         C_LANDED  = C_LAND + 1000 + RAF_TAIL,     /* ringLand MS */
         C_PROPEND = C_LAND + 1300,                /* proposeBoundary ms */
-        C_COMMIT  = 41400,                        /* commitBoundary timer */
+        C_COMMIT  = 46800,                        /* commitBoundary timer */
         C_CMTEND  = C_COMMIT + 620;
 
     function beatAt(t){ var b=0; for(var i=0;i<MARKS.length;i++) if(t>=MARKS[i][0]) b=i; return b; }
