@@ -65,9 +65,18 @@
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
 
-# Deliberately LOCAL-ONLY: no sync.remote.
-# bd init auto-populated this from git origin; it was removed because
-# adi-prasetyo/driftscribe is a PUBLIC repo — pushing to refs/dolt/data would
-# publish every issue title, body, and note. Do not re-add without asking.
+# sync.remote points at a SEPARATE PRIVATE repo (adi-prasetyo/driftscribe-beads),
+# never at this repo's origin.
+#
+# bd init originally auto-populated sync.remote from git origin. That was removed,
+# because adi-prasetyo/driftscribe is a PUBLIC repo and `bd dolt push` writes the
+# whole issue database to refs/dolt/data — every title, body and note. The remote
+# below was added deliberately on 2026-08-06 to sync beads between two machines.
+#
+# The invariant is not "no remote" — it is "the remote is private and is not this
+# repo". Before changing it, confirm with `gh repo view <target> --json isPrivate`.
+# `bd dolt push` sends the FULL database, so a public target leaks everything at once.
 agents:
     file: CLAUDE.md
+sync:
+    remote: "https://github.com/adi-prasetyo/driftscribe-beads.git"

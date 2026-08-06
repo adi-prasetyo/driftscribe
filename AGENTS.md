@@ -3,6 +3,16 @@
 See [`CLAUDE.md`](CLAUDE.md) for project context and `docs/OVERVIEW.md` for the
 architecture.
 
+## ⚠ `bd` commits your git index — stage nothing before running it
+
+Mutating `bd` commands (`bd create`, `bd close`, `bd update`, `bd dolt remote …`) commit
+**everything currently staged**, not just beads files. Before any `bd` command, `git status`
+must show an empty index — commit or stash first. Read-only commands (`bd ready`, `bd list`,
+`bd show`, `bd prime`) are safe.
+
+Multiple agents share the `/home/adi/driftscribe` main worktree, so a sweep can capture work
+that isn't yours.
+
 ## Local conventions that override the managed block below
 
 - Persistent cross-project knowledge lives in the user's own memory store, **not**

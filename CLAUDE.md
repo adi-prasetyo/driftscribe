@@ -13,13 +13,31 @@ invoke them when the work touches their area:
 | `driftscribe-demo-ops` | The public demo / judging window, Cloudflare Worker proxy, `DEMO_MODE` |
 | `driftscribe-live-probe` | Reproducing or verifying behavior on PROD (the `/chat` SSE stream, deployed SPA) |
 
+## ⚠ `bd` commits your git index — stage nothing before running it
+
+Mutating `bd` commands (`bd create`, `bd close`, `bd update`, `bd dolt remote …`) commit
+**everything currently staged**, not just beads files, under a message of bd's choosing
+(e.g. `bd: clear sync.remote`). Observed twice on 2026-07-28 during setup.
+
+**Before any `bd` command, `git status` must show an empty index.** Commit or stash first.
+Read-only commands — `bd ready`, `bd list`, `bd show`, `bd prime` — are safe.
+
+This matters more here than elsewhere: **multiple agents share the `/home/adi/driftscribe`
+main worktree**, so a sweep can capture work that isn't yours. Side worktrees live under
+`.worktrees/` and `.claude/worktrees/` and have their own indexes.
+
 ## Local conventions that override the managed block below
 
 - **`~/.claude/projects/-home-adi/memory/` remains authoritative** for persistent
   cross-project and user-level knowledge. Do **not** replace it with `bd remember`,
   regardless of what a regenerated Beads block says.
-- **Beads here is local-only.** No `sync.remote` is configured and this repo is
-  public — do not run `bd dolt push` or add a Dolt remote without asking first.
+- **Beads syncs to a SEPARATE PRIVATE repo**, never to this one. Since 2026-08-06,
+  `sync.remote` = `adi-prasetyo/driftscribe-beads` (private), so `bd dolt push` /
+  `bd dolt pull` are safe and are how the second machine stays in sync.
+  `driftscribe` itself is **public**, and `bd dolt push` writes the entire issue
+  database — every title, body and note — to `refs/dolt/data`. So: never point
+  `sync.remote` at this repo's origin, and verify any new target is private
+  (`gh repo view <target> --json isPrivate`) before changing it.
 - The Beads block below is managed by `bd` and is regenerated on upgrade. If a
   `bd remember` / "do NOT use MEMORY.md" line reappears inside it, it is stock
   boilerplate — this section wins.
