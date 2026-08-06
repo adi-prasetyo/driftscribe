@@ -15,11 +15,18 @@
 #   target. It does NOT move credentials you can simply re-issue (gcloud ADC,
 #   gh, claude login) — `import` prints those as a checklist instead.
 #
-# Why beads is here at all:
-#   .beads/config.yaml deliberately has no sync.remote, because
-#   adi-prasetyo/driftscribe is a PUBLIC repo and `bd dolt push` would publish
-#   every issue title, body and note to refs/dolt/data. So beads travels in
-#   this archive or not at all. Do not "fix" that by adding a remote.
+# Beads is the exception — it syncs, it does not travel:
+#   Since 2026-08-06 sync.remote points at adi-prasetyo/driftscribe-beads, a
+#   SEPARATE PRIVATE repo, so the second machine gets issues with
+#   `bd bootstrap --yes` and stays current with `bd dolt push` / `bd dolt pull`.
+#   `import` therefore SKIPS beads whenever sync.remote is set: importing the
+#   JSONL would build a database with a different Dolt commit lineage than the
+#   remote, and the two would fight on the first push.
+#
+#   The export still carries a JSONL copy as a cold backup, and `import` will
+#   use it only if no remote is configured. Never point sync.remote at this
+#   repo's own origin: driftscribe is PUBLIC and `bd dolt push` writes every
+#   issue title, body and note to refs/dolt/data.
 #
 # Two archives, split by sensitivity:
 #   <stamp>-payload.tar.zst        plain — skills, memory, global CLAUDE.md.
@@ -341,8 +348,18 @@ do_import() {
     fi
   fi
 
-  # 6. beads
-  if [[ -d "$stage/secrets/embeddeddolt" ]]; then
+  # 6. beads — but ONLY when there is no Dolt remote to sync from.
+  #
+  # Since 2026-08-06 sync.remote points at a private repo, and `bd bootstrap`
+  # clones the database from it. Importing the JSONL instead would build a
+  # local database with a DIFFERENT Dolt commit lineage than the remote, which
+  # then fights on the first push/pull. The remote wins; the archive defers.
+  if grep -qE '^[[:space:]]*remote:[[:space:]]*"?https?://' "$root/.beads/config.yaml" 2>/dev/null; then
+    log "beads: sync.remote is configured — skipping archive import."
+    log "       run this instead (clones the DB, shared history):"
+    log "         bd bootstrap --yes"
+    log "         git config beads.role maintainer"
+  elif [[ -d "$stage/secrets/embeddeddolt" ]]; then
     restore "$stage/secrets/embeddeddolt" "$root/.beads/embeddeddolt" "$force" "beads dolt dir"
     chmod 700 "$root/.beads" 2>/dev/null || true
   elif [[ -f "$stage/secrets/beads-all.jsonl" ]]; then
