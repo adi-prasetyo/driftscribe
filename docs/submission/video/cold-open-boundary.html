@@ -2560,6 +2560,29 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       var t=a.effect && a.effect.target;
       return !!(t && t.closest && t.closest('#devbar'));
     }
+    /* Cancel every CSS animation the current computed style no longer
+       declares — exactly the set the browser would have canceled at a style
+       change had script never touched it. Once render()'s freeze pauses or
+       resume() plays one, it is script-owned in the browser's eyes and
+       survives its rule's death as a paused/finished stray whose fill
+       shadows base style and fights later markup animations. Transitions
+       (no animationName) are never reaped: the cn-drop delivery and the
+       chip fade legitimately ride ACROSS beat cuts by restating endpoints.
+       Base-state loops (caretb, march) keep their rule, so they pass the
+       match test and keep spinning. getAnimations() flushes style, so at a
+       cut the untouched markup animations of the old beat are already gone
+       before this runs — reaping only ever removes what style has already
+       disowned, which is why it is safe at every call site. */
+    function reapUnowned(){
+      document.getAnimations().forEach(function(a){
+        if(isDev(a) || !a.animationName) return;
+        var el=a.effect && a.effect.target;
+        if(!el || !el.closest){ a.cancel(); return; }
+        var names=getComputedStyle(el, a.effect.pseudoElement||null)
+                    .animationName.split(', ');
+        if(names.indexOf(a.animationName)===-1) a.cancel();
+      });
+    }
     /* run a gesture for exactly one frame at `off`, then cut its rAF */
     function once(k, fn){ fn(); if(rafs[k]!=null){ cancelAnimationFrame(rafs[k]); delete rafs[k]; } }
 
@@ -2571,6 +2594,22 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       ringEl.removeAttribute('d'); ringPts=null;
       ringEl.style.strokeDasharray=''; ringEl.style.strokeDashoffset='';
       drawBoundary(baseR); drawProposal(baseR);
+      /* CANCEL the strays the freeze machinery creates, don't abandon them.
+         A CSS animation that script has paused/seeked/resumed OUTLIVES its
+         animation-name rule — the beat cut no longer cancels it — so every
+         scrub left one more copy behind, and a natural play after render()+
+         resume() sheds two more at each cut it crosses. Those strays mask
+         or shadow the markup animations of any LATER play on the same
+         properties (probe-caught 2026-08-06: five chipdel/chiptype2 copies
+         pinned the chip's widths through a played beat 7; the beat-3
+         backspace stuck at `m`; and the healed chip flipped back to the
+         DRIFTED values at beat 8, where no restatement rule covers the
+         fills). This is exactly why played frames disagreed with scrubbed
+         ones: render() re-freezes strays coherently, play() fights them.
+         reapUnowned() is the one predicate for both sites — here at the
+         reset (the replay re-creates whatever T needs), and at each armed
+         beat cut in armFrom(). */
+      reapUnowned();
       void body.offsetWidth;
 
       var seen=new WeakSet();
@@ -2596,7 +2635,18 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
       });
       ev.push([5900, function(){ body.classList.add('prezoom'); }]);   /* beat-1 tail zoom */
       ev.push([C_WIPE,  wipeCode]);
-      ev.push([C_DONE,  function(){ codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done'); }]);
+      ev.push([C_DONE,  function(){
+        codeEl.innerHTML=CODE_HTML; tfEl.classList.add('done');
+        /* .done flips the caret's animation-name to none — reap NOW, while
+           every caretb copy is unowned, or the frozen one rides over
+           .done's opacity:0 (a parked frame past the burst showed a
+           phantom caret at half of all T; and each render crossing this
+           boundary zombied one more copy, since the reset's .done removal
+           re-matches the name before the reset-time reap runs). The
+           PLAYED path needs no twin: resume() hands caretb back to style,
+           and the natural .done cancels it natively (probe-verified). */
+        reapUnowned();
+      }]);
       ev.push([C_RING,  function(){ ringDraw(); }]);
       ev.push([C_LAND,  function(){
         /* clamped below MS so ringLand cannot self-complete here — the landed
@@ -2633,12 +2683,25 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     /* arm only what is still ahead of T */
     function armFrom(T){
       MARKS.forEach(function(m){
-        if(m[0] > T) timers.push(setTimeout(function(){ body.setAttribute('data-beat', m[1]); }, m[0]-T));
+        /* the cut is also where a script-touched animation sheds: reap after
+           the flip so a play that crossed several beats cannot re-expose a
+           dead gesture's fill where the new beat has no restatement (the
+           beat-8 chip, probe-caught 2026-08-06) */
+        if(m[0] > T) timers.push(setTimeout(function(){
+          body.setAttribute('data-beat', m[1]); reapUnowned();
+        }, m[0]-T));
       });
       if(T < 5900) timers.push(setTimeout(function(){ body.classList.add('prezoom'); }, 5900-T));
       if(T < C_WIPE)       timers.push(setTimeout(wipeCode, C_WIPE-T));
-      if(T < C_TYPE)       timers.push(setTimeout(beat7Chain, C_TYPE-T));
-      else if(T < C_DONE)  typeCode(chainType, T-C_TYPE);
+      /* the transport types through a reaping link: typeCode sets .done
+         (animation-name -> none) just before its callback, and a caretb
+         with scrub history can survive that flip natively-uncanceled and
+         blink over the finished file (probe: clean pages cancel, scrubbed
+         pages leak). Same chain shape as beat7Chain; ?rec keeps the bare
+         one — it never scrubs, so its caretb is never script-touched. */
+      var typeDone=function(){ reapUnowned(); chainType(); };
+      if(T < C_TYPE)       timers.push(setTimeout(function(){ typeCode(typeDone); }, C_TYPE-T));
+      else if(T < C_DONE)  typeCode(typeDone, T-C_TYPE);
       else if(T < C_RING)  timers.push(setTimeout(chainRing, C_RING-T));
       else if(T < C_LAND)  timers.push(setTimeout(chainLand, C_LAND-T));   /* ring-draw is CSS */
       else {
