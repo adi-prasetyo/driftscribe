@@ -47,11 +47,16 @@
     plus both VALUES flip green with the same marker sweep. 定義値に戻す made
     literal.
   - ANCHOR WALKS TO THE GATE (beat 5) instead of a dashed reach popping in and
-    shaking; the rebuff lands ON the badge (鍵は出せない). The key invariants
-    are unchanged: worker -> lock only, placed unturned, turned by the 判子.
+    shaking; the rebuff lands ON the badge (鍵は出せない). The key invariant
+    at the time was: worker -> lock only, placed unturned, turned by the 判子
+    — SUPERSEDED by v5 (ds-22b.4): see WHO OPENS THE LOCK, above .key. The
+    key now does not move AT ALL until the 判子, and never travels via the
+    worker; it rests in the human's panel from the mint.
   - THE SEAL IS SLOWER AND LARGER (beat 6): 2.6em lock, 44px key, and real air
-    between place · withdraw · 判子 · turn · open — the operator could not
-    follow the old tempo without replays.
+    between the gestures (v4: place · withdraw · 判子 · turn · open; v5
+    regrammared the gestures themselves — see WHO OPENS THE LOCK, above .key
+    — but kept this beat's basic size and pacing philosophy) — the operator
+    could not follow the old tempo without replays.
   - The beat-1 tail carries the zoom (body.prezoom, from 5900), so beat 2
     opens already magnified and settled, and beat 1 has no dead air.
   - MOVEMENT B CLOSES THROUGH THE CENSUS (round 3, 2026-08-06): the card
@@ -160,7 +165,7 @@
     3  12100  drift     the silent edit; live/"mock" flare + sweep    cap D  <- the hinge
     4  17800  propose   the ripple reaches the watcher; it proposes   cap E
     5  23700  refuse    Anchor walks to the gate; 鍵は出せない        cap F
-    6  28200  seal      key placed · 判子 alone · turn · open         cap G
+    6  28200  seal      判子 on 承認; the key flies, turns, opens    cap G
     7  34300  fix       the edit reversed; the values flip green      cap H
     8  37500  sweep     census docks; the sweep flags the bucket RED  cap I
     9  41500  write     the file bursts out; a ring closes and lands  cap J
@@ -926,7 +931,7 @@ body[data-beat="3"] .zure{animation:zurelife 700ms ease 3150ms both}
    beat (3950-4800, glyph 4850) so the flare/ズレ read first and the pairing
    lands as the payoff, holding ≥700ms before the beat-4 cut (5700) — base
    opacity 0 owns the exit, same shape as .zure and the ripple. --nqa/--nqb/
-   --nqc are MEASURED in JS with getTotalLength() (see .lnk-key/.lnk-act for
+   --nqc are MEASURED in JS with getTotalLength() (see .lnk-act/.lnk-go for
    why a hand-typed dasharray leaves dead draw time). Connector holds the
    full ≥45px floor from the subject square throughout; zure and the two
    nearby resource squares sit inside a dense corridor where 45px isn't
@@ -1104,21 +1109,26 @@ body[data-beat="7"] .prop{opacity:1; transform:none; transition-delay:700ms}
    (beat 6). v4 retimed the whole seal +500ms wider AND slower inside: the
    operator could not follow place->stamp->turn->open at the old tempo
    without replays. Then CAPTION-FIRST (+800ms, 2026-08-05): the caption and
-   the gesture competed for the eye, so the beat now opens with genuine
+   the gesture competed for the eye, so the beat opens with genuine
    stillness while cap G is read, and only then does anything move.
+   v5 (2026-08-06, ds-22b.4) retired the worker's hand-line entirely — the
+   key now rests beside 承認 from the mint onward, and the 判子 is what
+   wakes it, not a hand reaching into frame. See WHO OPENS THE LOCK, above
+   .key below, for the full invariants this timeline serves.
    Beat-6 order (ms, beat-relative):
-     0-800     STILLNESS. Cap G lands and is read; nothing moves.
-     800-1900  the hand-line arcs out; the key fades in AT the worker and
-               rides it to the lock (arrives ~1400), the line withdraws.
-               Key sits unturned.
-     1900-2300 stillness.
-     2300-2920 the 判子 lands, ALONE — nothing else moves.
-     2920-3400 stillness — the gate turns green under the stamp.
-     3400-3800 the key turns.
-     3750-4050 the shackle swings open.
-     4200-4800 the credential crumbles; single-use, spent.
-     4800-5300 settle. The FIX is the next beat's business (lnk-act moved
-               to beat 7): approval completes before anything is repaired.
+     0-1600    STILLNESS. Cap G lands and is read; nothing moves. The key
+               already rests beside 承認, unmoved since the mint.
+     1600-2220 the 判子 lands ON 承認 — press and seal, one gesture.
+     2220      the gate turns green WITH the stamp.
+     2500-2780 the key brightens. Still resting.
+     2900-3500 THE FLIGHT — human's panel -> lock, and only now.
+     3500-3900 stillness — seated, unturned.
+     3900-4200 the key turns.
+     4250-4550 the shackle swings open.
+     4800-5300 the credential crumbles; single-use, spent.
+     5400-5900 a solid line draws gate -> worker: approved, go. The FIX is
+               still the next beat's business (lnk-act stays at beat 7):
+               approval completes, and is RELAYED, before anything repairs.
    ======================================================================= */
 .links{position:absolute; inset:0; overflow:visible; pointer-events:none}
 
@@ -1158,7 +1168,7 @@ body[data-beat="4"] .ripple{
    for an applied fact vs the refusal's dashed x. Stops short of the badge
    (604,288 vs its settled lower-left corner at 620,298 — ~19px away) so the
    gap reads as the address the line is aimed at, not a miss.
-   ⚠ --dl is MEASURED in JS (see .lnk-key/.lnk-act for why a hand-typed
+   ⚠ --dl is MEASURED in JS (see .lnk-act/.lnk-go for why a hand-typed
    dasharray leaves dead draw time at either end of the gesture — same
    lesson, fresh instance). Curve swept with a getPointAtLength sample
    against every .mk square's live (getScreenCTM-derived) world box at
@@ -1167,8 +1177,10 @@ body[data-beat="4"] .ripple{
    square clears by more. Also kept clear of the .b-watch card (~39px) and
    never crosses the boundary blob, since both endpoints sit above it.
    Own svg wrapper (.lnkd) rather than folding into .links: dispatch is a
-   beat-4 stroke, .links is beat 5/6/7's stopx/lnk-key/lnk-act — keeping it
-   separate avoids re-scoping that block's own three-item invariant list. */
+   beat-4 stroke, .links is beat 5/7's stopx/lnk-act (v5: lnk-key retired,
+   its replacement — .lnk-go, the release cue — got its own wrapper, .lnkg,
+   rather than growing this one back to three) — keeping it separate avoids
+   re-scoping that block's own invariant list. */
 .lnkd{position:absolute; inset:0; overflow:visible; pointer-events:none}
 .lnk-dispatch{fill:none; stroke:var(--crew-anchor); stroke-width:2.5;
   stroke-linecap:round; stroke-dasharray:var(--dl,300px);
@@ -1235,7 +1247,7 @@ body[data-beat="5"] .gate .lock{animation:lockshake 240ms ease-in-out 1750ms 1 b
   74%{transform:translateX(-1.5px)}
 }
 /* the refusal itself. Two strokes, hand-drawn correction mark.
-   Ink, deliberately: --seal is the one 判子 and is spent at beat 5, and --red
+   Ink, deliberately: --seal is the one 判子 and is spent at beat 6, and --red
    already means "the subject is wrong" at beats 3-4 — but a refusal here is the
    system WORKING, not an error. The old single grey bar was never registered by
    the operator across several viewings. */
@@ -1267,62 +1279,63 @@ body[data-beat="6"] .stopx,
 body[data-beat="6"] .xlbl{opacity:0; transition-delay:0ms}
 
 /* =======================================================================
-   BEAT 5 — WHO OPENS THE LOCK. Three parties, in this order, and the ORDER
-   is the argument:
-     0-900     実行側 extends to the lock, PLACES the key, and WITHDRAWS.
-               The key sits there unturned.
-     900-1520  the 判子 lands, ALONE — nothing else on screen moves.
-     1520-1800 the key turns.
-     1750-1980 the shackle lifts. The lock is open.
-     2000-2650 the credential crumbles; single-use, spent.
-     2000-2650 実行側 extends again, this time to the square.
-     2650-3350 the square re-seats.
+   BEAT 6 — WHO OPENS THE LOCK. v5 (ds-22b.4): the staging changed; the two
+   v4 invariants did not — they got STRONGER — and a third joined them.
+   Beat-relative timeline, in the order that is the argument:
+     0-1600    stillness (cap G reads first; the key already rests beside
+               承認, unmoved, since the mint back at beat 4).
+     1600-2220 the 判子 lands ON the 承認 button — press and seal, one
+               gesture — and the button is gone under it.
+     2220      the gate turns green WITH the 判子, not a beat later.
+     2500-2780 the key brightens. Still resting. Nothing has moved yet.
+     2900-3500 THE FLIGHT — human's panel -> lock, and only now.
+     3500-3900 seated, unturned. The stillness IS the beat.
+     3900-4200 the turn.
+     4250-4550 the shackle lifts. The lock is open.
+     4800-5300 the credential crumbles; single-use, spent.
+     5400-5900 a solid line draws gate -> worker: approved, go.
    Proposer cannot, minter will not, human does.
 
-   THE WITHDRAWAL AT ~900ms IS THE MOST VALUABLE GESTURE IN THE PIECE. It is
-   the only moment that says the party who minted the credential does not get
-   to spend it, and until 2026-08-04 nothing on screen said it: the key simply
-   materialized on the lock (glossed in-source as "VISUAL STAGING, not a
-   provenance claim"), never turned, and the padlock never opened at all. Three
-   gestures were paid for and none of them fired.
+   THE WITHDRAWAL GESTURE IS RETIRED. v4 called it the most valuable gesture
+   in the piece: the only moment that said the party who minted the
+   credential does not get to spend it. Retiring it does not weaken that
+   claim — the claim is now made CONTINUOUSLY, by custody, instead of once,
+   at ~900ms, by a gesture. The key is born in the human's panel at the mint
+   (beat 4, resting beside 承認) and never leaves it until the stamp. There
+   is nothing to withdraw FROM, because the worker was never holding it.
 
-   Two invariants bound this staging; neither may be traded away.
-     - THE KEY NEVER TRAVELS AGENT -> AGENT. Worker -> LOCK only. The retired
-       "key flies from the 実行側 badge to the gate, link drawn between them"
-       read as the worker handing the agent a credential, i.e.
-       machine-to-machine authorization, the exact inverse of the claim.
-       Worker -> lock is also the TRUE provenance (the acting worker mints the
-       token, workers/rollback/main.py:718), which is why it is safe to draw.
-     - WHATEVER OPENS THE LOCK IS THE AUTHORITY THE AUDIENCE REMEMBERS. So the
-       key is placed UNTURNED and turns only after the stamp. A key that opens
-       the lock by itself makes the human decoration.
+   Three invariants bound this staging; none may be traded away.
+     - THE KEY NEVER TRAVELS AGENT -> AGENT. It now travels human's-panel
+       -> lock, and that path IS the claim, not a staging choice around one.
+       The credential is only ever in two places: the minting worker's hand
+       (off-screen, at the mint) and the lock's own. The retired v4 grammar
+       — "key flies from the 実行側 badge to the gate, link drawn between
+       them" — read as the worker handing the agent a credential, i.e.
+       machine-to-machine authorization, the exact inverse of the claim;
+       this generalizes that rule rather than replacing it.
+     - WHATEVER OPENS THE LOCK IS THE AUTHORITY — STRENGTHENED. v4 placed
+       the key at the lock unturned, turned only after the stamp; a key
+       already AT the lock still risked reading as pre-authorized. v5: the
+       key does not move at all — not one pixel — until the 判子 lands.
+       Nothing about opening this lock happens before a human acts.
+     - THE MINTER IS NEVER SEEN HOLDING THE KEY. The acting worker mints
+       the token (workers/rollback/main.py:718 — the HMAC-bound approval
+       URL, driftscribe_lib/approvals.py) but is never shown holding it: it
+       is already resting in the human's panel when the beat opens, and all
+       the worker keeps on screen is the credential's IMPRINT, not the
+       credential itself (the HMAC line on the card, .gsig). Custody, not
+       possession.
+
+   THE PRESS IS THE SEAL. The 判子 lands ON the 承認 button, not beside it
+   — pressing and sealing are one gesture, not two (see .stamp). --seal is
+   still spent exactly once.
    ======================================================================= */
-/* the worker's hand: extend, hold while the key is set down, retract. ONE
-   animation on stroke-dashoffset does all three — with dasharray = the path
-   length, offset L->0 draws from the badge end forward and 0->L retracts from
-   the TIP back, which is a withdrawal rather than a fade. --kl is measured in
-   JS with getTotalLength(), same as the ring: a hand-typed length that is
-   longer than the path leaves dead time at both ends of the gesture. */
-.lnk-key{
-  fill:none; stroke:var(--navy); stroke-width:2.5; stroke-linecap:round;
-  stroke-dasharray:var(--kl,132px); stroke-dashoffset:var(--kl,132px); opacity:0;
-}
-/* the 800ms delay is beat 6's CAPTION-FIRST stillness (operator, 2026-08-05:
-   the caption and the gesture competed for the eye). Nothing in the beat moves
-   until cap G has landed; every gesture below sits +800 from the v4 numbers. */
-body[data-beat="6"] .lnk-key{opacity:.85;
-  animation:keyreach 1100ms cubic-bezier(.4,0,.25,1) 800ms both}
-@keyframes keyreach{
-  0%{stroke-dashoffset:var(--kl,132px)}
-  40%,62%{stroke-dashoffset:0}
-  100%{stroke-dashoffset:var(--kl,132px)}
-}
 
 /* The key. ONE animation for the whole beat, not three — `keyset` + `keyturn` +
    `keycrumble` as separate declarations cannot work, because a later animation
    with fill-mode both/backwards applies its 0% keyframe from t=0 and silently
    outranks the earlier ones on the same property. So the life of the key is a
-   single timeline and the percentages below are that timeline in ms/4000. */
+   single timeline and the percentages below are that timeline in ms/4400. */
 .key{
   /* v5 (ds-22b.4): born in the human's panel — at rest beside the 承認
      button from the mint (beat 4) until the 判子 (beat 6). World-positioned
@@ -1337,13 +1350,12 @@ body[data-beat="6"] .lnk-key{opacity:.85;
      (1206+30=1236, 1248-1236=12), left edge 151px clear of .gsig's right
      edge (1055) — comfortably past the >=10px floor, and >=48px clear of
      the stamp's future footprint (1284-1376 x 626-718) in both axes.
-     offset-path/-rotate/-anchor/-distance are DELETED from this base rule —
-     they belonged to the RIDE (beat 6's flight to the keyhole), which is
-     retired staging until the custody regrammar lands. The beat-6 rule
-     re-declares offset-path itself, scoped to that beat only, so the rest
-     frame here stays plain left/top. Until that lands, beat 6's keylife
-     animation has no path to move along and will look wrong — expected,
-     observed, not fixed here. */
+     offset-path/-rotate/-anchor/-distance are NOT declared on this base
+     rule — they belong to THE FLIGHT (beat 6, human's panel -> lock) and
+     are scoped there only, so the rest frame here stays plain left/top.
+     The beat-6 rule ALSO zeroes left/top — see the double-offset note on
+     that rule for why: this rest position is still what offset-distance:0%
+     reproduces, just via the path's own M instead of the box's layout. */
   position:absolute; left:1206px; top:701px; width:30px; height:30px; opacity:0;
   color:var(--muted); z-index:6;
   /* tip pivot at 24.4px = 30 * (35.8/44), the same fractional tip position
@@ -1363,35 +1375,70 @@ body[data-beat="6"] .lnk-key{opacity:.85;
    has already placed it. */
 body[data-beat="4"] .key{opacity:.55; transition:opacity 500ms ease 4600ms}
 body[data-beat="5"] .key{opacity:.55}
-/* v5 interim: offset-path is no longer declared on .key's base rule (see
-   the base comment above) — this keylife staging is knowingly broken
-   (rides nowhere, just rotates in place at the rest position) until the
-   custody regrammar lands (ds-22b.4, next commit after this one). Not
-   rewritten here; that block is Task 6's. */
-body[data-beat="6"] .key{animation:keylife 4000ms linear 800ms both}
+/* THE FLIGHT (v5, ds-22b.4). The key rests beside 承認 (opacity .55, plain
+   left/top) from the mint through the refusal; this rule is where it wakes.
+
+   DOUBLE-OFFSET PROBED (isolated harness — a bare positioned div with
+   left/top plus offset-path, not this file): Chromium does NOT replace the
+   layout position with the path, it ADDS the offset-path translation on
+   TOP of it, using the box's own layout position as the path's local
+   origin (at offset-distance:0%, the rendered box position = layout
+   left/top + path-point-at-0% - offset-anchor). A path written in this
+   file's world coordinates, with the base rule's left:1206px/top:701px
+   still in effect, rendered the key at exactly DOUBLE its rest offset —
+   confirmed empirically, not assumed. Remedy: left/top are ZEROED here, so
+   the path below is the sole source of position, and its own coordinates
+   can stay in the SAME world space as every other stroke in this file.
+   M1230.4 725.4 reproduces the base rule's rest tip (1206+24.4, 701+24.4)
+   exactly at offset-distance:0%, so there is no jump at the cut into this
+   beat.
+
+   Sweep up-left over the card to the keyhole — the lock body's measured
+   centre (getBoundingClientRect on .gate .lock rect at ?dev&t=28300,
+   inverse-CTM'd through svg.links into world space: 998.1,510.5; the
+   icon's own 2.6em resize since this constant was first floated moved it
+   ~12px from the old estimate, so this is the live-measured value, not the
+   guess). Swept via getPointAtLength sampling against every nearby .mk
+   square's live world box and the census card's bottom edge (455, only
+   15px above the gate's own top edge — there is no room to arc OUTSIDE
+   both cards, so the sweep stays low and inside/over the gate instead):
+   clears every .mk square by >=48px (tightest: the mark at 1211,783,
+   45.9-54px depending on curve — the shape below holds 48.4) and the
+   census card by >=50px. */
+body[data-beat="6"] .key{
+  left:0; top:0;
+  offset-path:path('M1230.4 725.4 C 1180 580, 1040 480, 998.1 510.5');
+  offset-anchor:24.4px 24.4px; offset-rotate:0deg;
+  animation:keylife 4400ms linear 1700ms both;
+}
+/* colour is NOT animation-owned — plain rule, same shape as the gate's own
+   border-color transition. Rest colour (var(--muted), base rule) stays
+   muted; it only turns navy once it is live in this beat. */
+body[data-beat="6"] .key{color:var(--navy)}
 @keyframes keylife{
-  /* fades in AT the worker while the hand-line draws (line 0-440ms of its
-     own clock), then RIDES the arc: glide 4-15% (960-1400 beat-relative),
-     arriving tip-first while the line is at full extension (1240-1480); the
-     line's retraction after arrival is the withdrawal. offset-distance is
-     pinned by the BASE value (100%) after 15%, so no later frame needs to
-     restate it. (percentages are ms/4000) */
-  0%{opacity:0; offset-distance:0%; transform:rotate(-14deg) scale(1.05)}
-  3%,4%{opacity:1; offset-distance:0%; transform:rotate(-14deg) scale(1.05);
-    animation-timing-function:cubic-bezier(.45,0,.2,1)}
-  15%{opacity:1; offset-distance:100%; transform:rotate(-14deg) scale(.94);
-    animation-timing-function:cubic-bezier(.3,1.35,.45,1)}
-  /* UNTURNED, and held that way across the whole 判子 AND the stillness after
-     it — this stillness is the point of the beat, not dead air in it */
-  18%,65%{opacity:1; transform:rotate(-14deg) scale(1);
-    animation-timing-function:cubic-bezier(.35,1.4,.5,1)}
-  /* the turn, AFTER the stamp, with air on both sides */
-  72.5%,76%{opacity:1; transform:rotate(20deg) scale(1);
-    animation-timing-function:cubic-bezier(.4,0,.7,1)}
-  /* spent once: a single-use, 15-minute credential does not linger once it has
-     turned the lock (design §5 made literal) */
-  85%{opacity:1; transform:rotate(38deg) scale(1.05)}
-  100%{opacity:0; transform:rotate(58deg) scale(.5) translateY(12px)}
+  /* ONE animation, one timeline (see the comment above .key for why three
+     separates cannot work) — LINEAR overall: the arc itself comes from
+     offset-path, not from easing, unlike the badge's own `approach`
+     animation. Percentages are this timeline in ms/4400, offset by the
+     1700ms delay (beat-relative ms = 1700 + 44 * pct):
+       0-18.2%    (1700-2500) rest, unbrightened, still beside the button
+       18.2-24.5% (2500-2780) brightens — the 判子 has just landed
+       24.5-27.3% (2780-2900) brightened, still resting — gate already green
+       27.3-40.9% (2900-3500) THE FLIGHT — button to keyhole
+       40.9-50%   (3500-3900) seated, unturned — the stillness IS the beat
+       50-56.8%   (3900-4200) THE TURN (-14deg -> 20deg — 20deg is v4's own
+                  turn target, the shackle-side geometry is unchanged)
+       56.8-70.5% (4200-4800) turned, held — the shackle lifts inside this
+                  hold (4250), off the key's own timeline
+       70.5-81.8% (4800-5300) THE CRUMBLE — spent, single-use (end state
+                  kept verbatim from v4's own crumble target)
+       81.8-100%  (5300-6100) gone; base opacity:0 would own this past the
+                  cut anyway — restated so the timeline reads complete. */
+  0%,18.2%{opacity:.55; offset-distance:0%; transform:rotate(0deg) scale(1)}
+  24.5%,27.3%{opacity:1; offset-distance:0%; transform:rotate(0deg) scale(1.25)}
+  40.9%,50%{opacity:1; offset-distance:100%; transform:rotate(-14deg) scale(1.47)}
+  56.8%,70.5%{opacity:1; offset-distance:100%; transform:rotate(20deg) scale(1.47)}
+  81.8%,100%{opacity:0; offset-distance:100%; transform:rotate(58deg) scale(.5) translateY(12px)}
 }
 
 /* the shackle LIFTS — the one thing this icon has never done. Rotated about its
@@ -1402,17 +1449,50 @@ body[data-beat="6"] .key{animation:keylife 4000ms linear 800ms both}
    above the 0 0 24 24 viewBox mid-swing and an SVG root clips by default. */
 .gate .lock .shackle{transform-box:fill-box; transform-origin:100% 100%}
 body[data-beat="6"] .gate .lock .shackle{
-  animation:unshackle 300ms cubic-bezier(.3,1.3,.5,1) 3750ms both}
+  animation:unshackle 300ms cubic-bezier(.3,1.3,.5,1) 4250ms both}
 @keyframes unshackle{
   0%{transform:translateY(0) rotate(0deg)}
   100%{transform:translateY(-2.3px) rotate(20deg)}
 }
+
+/* THE RELEASE (v5, ds-22b.4) — approved, go. Fires after the crumble
+   (5400), once the credential is fully spent: cause (the turn, the
+   crumble) before effect (this line, then beat 7's fix). SOLID, not
+   dashed: this is a fact (the approval WAS granted), same grammar as
+   .lnk-dispatch/.lnk-act being solid vs the refusal's dashed x. Navy: the
+   worker's colour family, the same one .lnk-act already uses for the fact
+   it applies a beat later — one continuous claim in one colour, split
+   across two beats by what has to happen between them.
+   Gate's left edge (world 960,500, level with the lock) -> the worker
+   badge's underside (862,312), stopping ~14px short of its measured
+   bottom edge (297.8) — same "address, not a miss" gap every other
+   stopped-short line in this file uses. Swept via getPointAtLength against
+   every nearby .mk square's live world box (?hold=6): clears the estate
+   mark at (900,470) — the tightest neighbour, sitting almost directly on
+   the gate's left edge — by 50.4px, and the other two candidates checked
+   by >130px. ⚠ --gl is MEASURED in JS beside --gm (getTotalLength()) — same
+   lesson as every other drawn stroke in this file: a hand-typed dasharray
+   leaves dead draw time. */
+.lnk-go{fill:none; stroke:var(--navy); stroke-width:2.5; stroke-linecap:round;
+  stroke-dasharray:var(--gl,220px); stroke-dashoffset:var(--gl,220px); opacity:0}
+body[data-beat="6"] .lnk-go{opacity:.85;
+  animation:godraw 500ms cubic-bezier(.4,0,.25,1) 5400ms both}
+@keyframes godraw{to{stroke-dashoffset:0}}
+/* exit: .lnk-act takes over the claim at the beat-7 cut (the worker's own
+   reach toward the subject square) — one cause at a time, so this fades
+   rather than persisting alongside it. */
+body[data-beat="7"] .lnk-go{opacity:0; transition:opacity 400ms ease}
+
 /* beat 7 inherits the SETTLED approval: every beat-6 end state that lived in
    a delayed transition or an animation fill must be restated as plain values,
    or the gate snaps back to amber, the shackle shuts, the stamp vanishes and
    the button returns the instant the beat changes — the exact
-   new-render-surface trap this file keeps re-learning. The key and lnk-key
-   need nothing: their settled state is absence, which base rules own. */
+   new-render-surface trap this file keeps re-learning. The key needs
+   nothing: its settled state is absence, which the base rule's opacity:0
+   owns once no beat-6 rule applies. .lnk-go is the one thing in this beat
+   that DOES need an explicit statement (see its own rule) — it fades out
+   on a transition, not an animation fill, so it is not "absence" here, it
+   is still opacity:.85 until told otherwise. */
 body[data-beat="7"] .gate{border-color:var(--green-border)}
 body[data-beat="7"] .gate .ghead{background:var(--green-surface);
   border-bottom-color:var(--green-border)}
@@ -1469,20 +1549,24 @@ body[data-beat="4"] .gate{opacity:1; transform:none; transition-delay:4400ms}
 body[data-beat="5"] .gate,
 body[data-beat="6"] .gate,
 body[data-beat="7"] .gate{opacity:1; transform:none}
-/* the gate turns over WITH the 判子 (which lands at 2300+620=2920ms), not the
-   instant the beat opens. Retimed with the rest of beat 6 — see .lnk-key. */
-body[data-beat="6"] .gate{border-color:var(--green-border); transition-delay:2920ms}
+/* the gate turns over WITH the 判子 (which lands at 1600+620=2220ms, the
+   stamp's own settle point), not the instant the beat opens. v5: retimed
+   with the rest of beat 6 — the stamp moved from 2300 to 1600 (it now
+   opens the beat instead of following the withdrawn hand-line), so this
+   delay moves with it, 2920 -> 2220, preserving the same "WITH the 判子"
+   relationship the comment states. */
+body[data-beat="6"] .gate{border-color:var(--green-border); transition-delay:2220ms}
 .gate .ghead{
   display:flex; align-items:center; justify-content:space-between; gap:12px;
   padding:11px 15px; background:var(--amber-surface); border-bottom:1px solid var(--amber-border);
   transition:background var(--move), border-color var(--move);
 }
 body[data-beat="6"] .gate .ghead{background:var(--green-surface);
-  border-bottom-color:var(--green-border); transition-delay:2920ms}
+  border-bottom-color:var(--green-border); transition-delay:2220ms}
 .gate .gt{display:flex; align-items:center; gap:9px;
   font-family:var(--ui); font-weight:700; font-size:17px; color:var(--amber-ink);
   transition:color var(--move)}
-body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:2920ms}
+body[data-beat="6"] .gate .gt{color:var(--green-ink); transition-delay:2220ms}
 /* 2.6em (v4; was 1.9, before that 1). At 1em the padlock was ~25 screen px —
    an icon, not a thing that visibly OPENS. The beat turns on watching it
    open, and the operator still could not follow it at 1.9em; ~44px world is
@@ -1537,7 +1621,7 @@ body[data-beat="7"] .gate .gdiff{color:var(--green-ink)}  /* flips with the fix 
   border-radius:9px; padding:9px 22px; transition:opacity 300ms ease;
 }
 /* the button goes as the stamp lands on it, not 500ms before */
-body[data-beat="6"] .gate .gbtn{opacity:0; transition-delay:2700ms}
+body[data-beat="6"] .gate .gbtn{opacity:0; transition-delay:2000ms}
 /* 判子 — the only vermilion in the piece.
    MOVED OUT OF THE CARD (2026-08-04). It used to be `right:12px; bottom:16px`
    inside .gbody — tucked into the corner of a card that carries overflow:hidden,
@@ -1564,12 +1648,14 @@ body[data-beat="6"] .gate .gbtn{opacity:0; transition-delay:2700ms}
   opacity:0; transform:rotate(-9deg) scale(2.1);
   mix-blend-mode:multiply; z-index:7;
 }
-/* lands ALONE at 2300ms: the worker's line has withdrawn at 1900, the key
-   sits unturned, and 400ms of genuine stillness separates the two — then
-   another 480ms separates the stamp from the turn. That stillness IS the
-   beat — it makes the stamp the cause of everything after it rather than one
-   more event in a queue. */
-body[data-beat="6"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 2300ms both}
+/* lands ALONE at 1600ms — v5: the worker's hand-line is retired (see the
+   invariant block above .key), so nothing precedes the stamp but the
+   caption-first stillness itself (cap G, 0-1600). The stamp is now the
+   FIRST thing that moves in the beat, full stop, which makes it
+   unambiguously the cause of everything after it: it settles at 2220 (the
+   gate turns green in the same instant), and the key does not begin
+   brightening until 2500 — another 280ms clear of the settle. */
+body[data-beat="6"] .stamp{animation:stampin 620ms cubic-bezier(.3,1.5,.4,1) 1600ms both}
 @keyframes stampin{
   0%{opacity:0; transform:rotate(-9deg) scale(2.1); filter:blur(2.5px)}
   55%{opacity:1; transform:rotate(-9deg) scale(.94); filter:blur(0)}
@@ -1854,8 +1940,19 @@ body.no-anim[data-beat="4"] .gate{opacity:1; transform:none}
 body.no-anim[data-beat="4"] .gmint-path{opacity:0}
 body.no-anim[data-beat="4"] .key,
 body.no-anim[data-beat="5"] .key{opacity:.55}
-/* .lnk-key (Task 6's to retire) still settles fully retracted, which the
-   base dashoffset owns — unaffected by any of the above. */
+/* v5: .lnk-key is retired, nothing here needs it any more. Its
+   replacement — .lnk-go, the release cue — is animation-only (drawn by
+   `godraw`, same shape as .lnk-dispatch/.lnk-act above), so no-anim strips
+   it back to its pre-animation base (undrawn, opacity 0) unless restated;
+   hold-6 must show it drawn, matching playback. The key ALSO needs a
+   restatement it did not need before: beat 6 sets its opacity entirely
+   inside keylife's keyframes, so with the animation stripped the cascade
+   falls back to whichever plain rule matches — verified live, that is the
+   base .key{opacity:0}, which happens to be correct (spent) here, but only
+   by coincidence of the base value; state it explicitly so it stays
+   correct if the base rule's own default ever changes. */
+body.no-anim[data-beat="6"] .key{opacity:0}
+body.no-anim[data-beat="6"] .lnk-go{opacity:.85; stroke-dashoffset:0}
 body.no-anim[data-beat="6"] .stamp{opacity:1; transform:rotate(-9deg) scale(1)}
 /* the beat-5 re-seat (.mk.subj transform, .sock.subj opacity/border) is
    transition-delayed to 1800ms; no-anim kills the transition so the end state
@@ -1913,22 +2010,21 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
            - stopx: the two arms of the refusal x, centred where the badge's
              approach is stopped, just short of the header lock (the refusal
              itself is the .b-watch `approach` animation — see there).
-           - lnk-key   the seal beat: the 実行側 worker -> the LOCK, where it
-             sets the key down and then withdraws. It ends at the key's bow, not
-             at the padlock body, because what the hand is holding is the key.
-             Never draw this to another BADGE (see .lnk-key's invariants).
            - lnk-act   the fix beat: the 実行側 worker -> toward the subject
              square, stopping short of it (no line touches a resource square).
              Routed left of the gate and it enters the boundary near the end,
              which is correct: the worker is outside the line, the resource is
-             inside it. Both start at the relocated badge (620,240 w280). -->
+             inside it. It starts at the relocated badge (620,240 w280).
+           (v5, ds-22b.4: lnk-key retired — the worker no longer reaches the
+           lock at all, see WHO OPENS THE LOCK above .key. Its replacement,
+           the release cue, is a different beat and a different cause; see
+           .lnkg below, not this wrapper.) -->
       <svg class="links" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
         <!-- centred (940,495): between the badge's jab edge (~920) and the
              header lock (~991,497), and clear of the .tgt mark at (900,470) —
              an x that lands beside the adopt target reads as marking IT -->
         <line class="stopx" x1="927.8" y1="505.3" x2="952.2" y2="484.7"></line>
         <line class="stopx" x1="929.7" y1="482.8" x2="950.3" y2="507.2"></line>
-        <path class="lnk-key" d="M760 302 C 850 306, 940 415, 964 480"></path>
         <path class="lnk-act" d="M700 302 C 622 366, 639 497, 626 524"></path>
       </svg>
 
@@ -1937,6 +2033,21 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
            svg — beat 4, sibling of .links (beat 5/6/7's annotations). -->
       <svg class="lnkd" viewBox="0 0 1920 1080" aria-hidden="true">
         <path class="lnk-dispatch" d="M413 407 C 505 410, 580 345, 604 288"></path>
+      </svg>
+
+      <!-- the release cue (v5, ds-22b.4) — gate -> worker, drawn once the
+           credential has been spent (beat 6, after the crumble). Own svg,
+           sibling of .lnkd rather than a member of .links: this is beat 6's
+           own stroke with its own cause, not part of the refusal/fix pair.
+           d= swept with getPointAtLength against every nearby .mk square's
+           live world box at ?hold=6 (world coords): clears the estate mark
+           at (900,470) by 50.4px and the two others checked by >130px; the
+           badge endpoint is deliberately close (~14px, see .lnk-go) — it is
+           supposed to stop short of .b-act, not clear it. -->
+      <svg class="lnkg" viewBox="0 0 1920 1080" aria-hidden="true">
+        <!-- approved — go. The verified approval releases the execution path.
+             SOLID (post-stamp = fact); navy (the worker's color family). -->
+        <path class="lnk-go" d="M960 500 C 990 395, 825 350, 862 312"></path>
       </svg>
 
       <!-- THE MINT (v5, ds-22b.4) — the worker draws the gate. One path: a
@@ -2055,9 +2166,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
            card's edge (the card clips its own children). See .stamp. -->
       <div class="stamp">承認<br>済</div>
 
-      <!-- the key — after the gate in the DOM so it sits ON the lock. It is
-           PLACED there by the worker (.lnk-key) and turned only after the
-           判子; see the .key rule for the two invariants that fix that order. -->
+      <!-- the key — after the gate in the DOM (and z-index:6, see .key) so it
+           sits above the card whether resting beside 承認 or landed on the
+           lock. It is BORN in the human's panel at the mint (beat 4) and
+           does not move at all until the 判子; see WHO OPENS THE LOCK,
+           above .key, for the invariants that fix that order. -->
       <div class="key">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <circle cx="8" cy="8" r="4.6" stroke="currentColor" stroke-width="2.2"/>
@@ -2415,16 +2528,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
   neo.textContent='driftscribe-hack-2026-receipts';
   worldEl.appendChild(neo);
 
-  /* the worker's reach to the lock is drawn AND retracted by a single
-     stroke-dashoffset animation, so its dasharray must be the REAL path length:
-     a hand-typed value that overshoots leaves dead frames at both ends of the
-     gesture, and the withdrawal is the gesture. Same treatment as the ring.
-     Measured once at load — the path is static. */
-  var keyLink=document.querySelector('.lnk-key');
-  keyLink.style.setProperty('--kl', keyLink.getTotalLength()+'px');
-  /* same for the execution path — see .lnk-act for the 330-vs-468 bug this
-     replaces. Any stroke here that DRAWS (rather than marches a dot pattern)
-     belongs on this list. */
+  /* the execution path is drawn by a single stroke-dashoffset animation, so
+     its dasharray must be the REAL path length — see .lnk-act for the
+     330-vs-468 bug a hand-typed value caused. Any stroke here that DRAWS
+     (rather than marches a dot pattern) belongs on this list. Measured once
+     at load — every path below is static. */
   var actLink=document.querySelector('.lnk-act');
   actLink.style.setProperty('--al', actLink.getTotalLength()+'px');
   /* same treatment for the dispatch arc (v5, ds-22b.4) — see .lnk-dispatch
@@ -2434,6 +2542,10 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
   /* same treatment for the mint trace (v5, ds-22b.4) — see .gmint-path. */
   var gmLink=document.querySelector('.gmint-path');
   gmLink.style.setProperty('--gm', gmLink.getTotalLength()+'px');
+  /* same treatment for the release cue (v5, ds-22b.4) — see .lnk-go for the
+     clearance sweep this path was checked against. */
+  var goLink=document.querySelector('.lnk-go');
+  goLink.style.setProperty('--gl', goLink.getTotalLength()+'px');
   /* same treatment for the reviewer's-pen strokes — two circles, one
      connector, each its own measured length (see .neq-c1/.neq-c2/.neq-line). */
   var neqC1=document.querySelector('.neq-c1');
@@ -2462,9 +2574,11 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
        beat 4  5900   ripple 100-1000; badge, ping, proposal card
                       · dispatch 2600 / worker 3100 · mint 3700 / gate+key 4400
        beat 5  4500   approach 250-3650; contact 1750; label 2050
-       beat 6  6100   still 0-800 (cap G reads first) · place 800-1900 · 判子
-                      2300-2920 · turn 3400 · open 3750-4050 · crumble 4200-4800
-                      (the THE KEY block is the source of truth)
+       beat 6  6100   still 0-1600 (cap G) · 判子 1600-2220 (button gone under
+                      it, gate green 2220) · key brightens 2500 / flies 2900
+                      / turns 3900 / shackle 4250 / crumbles 4800 · release
+                      cue 5400 (WHO OPENS THE LOCK, above .key, is the
+                      source of truth)
        beat 7  3200   lnk-act 200-850 · reverse edit 900-2300 · green value
                       flip+sweep 2500/2600
        beat 8  4000   pullback + sweep; census docks 0-700; discovery
