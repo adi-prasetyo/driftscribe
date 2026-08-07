@@ -177,6 +177,11 @@
     shipping-events topic (all live, none in iac/ = outside the line).
     ⚠ gcf-sources-* was proposed for this and DOES NOT EXIST in this project —
     Cloud Functions gen1 was never used here. Re-verify before changing any label.
+    The cloudbuild label alone carries a サービス管理 qualifier (2026-08-07): the
+    <project>_cloudbuild bucket is auto-created and lifecycle-owned by Cloud
+    Build, i.e. genuinely service-managed — the class the app's system-managed
+    collapse excludes from actionable drift. The other two outside labels stay
+    bare BECAUSE they are user-created; do not "complete the set".
   - The word HMAC appears only in small mono on the gate, never in a caption.
   - SOLID vs DASHED is load-bearing, not decoration. Solid = under management.
     Dashed = proposed. Provision only opens a PR (docs/OVERVIEW.md:101), so the
@@ -629,6 +634,17 @@ body[data-beat="8"] .tgt-halo{border-color:var(--red-ink);
   transition:opacity 520ms ease, color 700ms ease;
 }
 .mklbl.lft{transform:translateX(-100%)}   /* label ends AT the mark, not after it */
+/* THE ONE MANAGEMENT-STATE QUALIFIER (operator decision 2026-08-07): the
+   cloudbuild staging bucket is created and lifecycle-owned by the SERVICE, so
+   its label carries a small サービス管理 line — planted at beat 1 so the sweep's
+   pass-over at beat 8 already has its reason on camera: not everything outside
+   the line is a backlog. ONE qualifier on ONE label, same sample-not-a-legend
+   rule as the labels themselves (a field-wide wash was proposed and REJECTED —
+   the outside is a MIX, and the adoption subject is user-created). A child of
+   its .mklbl, so it inherits the whole beat cascade for free: no rules of its
+   own, no animation claims, nothing for holds to restate. */
+.mklbl .mkq{font-family:var(--ui); font-size:11px; letter-spacing:.06em;
+  color:var(--faint); margin-top:1px}
 /* THE SUBJECT'S LABEL ARRIVES WITH ITS SQUARE (operator decision 2026-08-04,
    fix-forward plan §A). It used to wait for beat 1 with the other three, on the
    argument that "at beat 0 a label only says 'this is a resource'; at beat 1 it
@@ -2516,7 +2532,13 @@ body.no-anim[data-beat="10"] .tf .impblock{background:rgba(14,27,95,.08)}
     }
   }
   NAMED_OUT.forEach(function(p){ addMark(p.x, p.y, null); });
-  addLabel(1376, 692, 'driftscribe-hack-2026_cloudbuild · Cloud Storage', 'out', 190);
+  /* the qualifier rides INSIDE the label pill (see .mkq) — cloudbuild is the
+     service-created one; receipts and shipping-events are user-created and
+     stay bare, which is exactly the mix the beat-8 sweep adjudicates */
+  var cbl=addLabel(1376, 692, 'driftscribe-hack-2026_cloudbuild · Cloud Storage', 'out', 190);
+  var cbq=document.createElement('div');
+  cbq.className='mkq'; cbq.textContent='サービス管理';
+  cbl.appendChild(cbq);
   addLabel(284, 322, 'shipping-events · Pub/Sub', 'out lft', 560);
 
   /* the one that will be enclosed. Its label is the returning character: the same
