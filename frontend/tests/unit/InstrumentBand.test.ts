@@ -271,3 +271,99 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
     expect(onStat).toHaveBeenCalledWith('managed');
   });
 });
+
+// ── ds-wd2.13: the numeral tick ───────────────────────────────────────────
+// The mockup's `pop` keyframe fires when a band numeral changes — the demo's
+// spine (drift 6→7, awaiting 0→1 as drift lands; both falling back on approve).
+// What is asserted here is the CHANGE DETECTION, not the animation: the pop is
+// scoped CSS, and jsdom neither lays out nor animates. `data-pop` is the count
+// of qualifying changes that numeral has seen, and it is also what keys the
+// {#key} block that restarts the animation — so a correct counter IS a correct
+// number of animation restarts.
+//
+// `null` means NOT YET KNOWN (ds-eh6), which is why two of these cases exist:
+// the first real reading landing after mount is the page loading, not news, and
+// a value regressing to unknown must not pop an em dash.
+
+function numeral(el: HTMLElement): HTMLElement {
+  const n = el.querySelector('.instrument-band__num');
+  if (!n) throw new Error('numeral span not found');
+  return n as HTMLElement;
+}
+
+function popCount(getByTestId: (id: string) => HTMLElement, stat: string): string | null {
+  return numeral(getByTestId(`instrument-band-${stat}`)).getAttribute('data-pop');
+}
+
+describe('InstrumentBand — numeral pop (ds-wd2.13)', () => {
+  it('does not pop on first mount', () => {
+    const { getByTestId } = render(InstrumentBand, { props: props() });
+    expect(popCount(getByTestId, 'managed')).toBe('0');
+    expect(popCount(getByTestId, 'drift')).toBe('0');
+    expect(popCount(getByTestId, 'awaiting')).toBe('0');
+  });
+
+  it('does not pop when the first KNOWN value arrives after unknown', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: null, drift: null, awaiting: null }),
+    });
+    await rerender(props({ managed: 9, drift: 6, awaiting: 0 }));
+    expect(popCount(getByTestId, 'managed')).toBe('0');
+    expect(popCount(getByTestId, 'drift')).toBe('0');
+    expect(popCount(getByTestId, 'awaiting')).toBe('0');
+  });
+
+  it('pops the numeral whose known value changed', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: 9, drift: 6, awaiting: 0 }),
+    });
+    await rerender(props({ managed: 9, drift: 7, awaiting: 1 }));
+    expect(popCount(getByTestId, 'drift')).toBe('1');
+    expect(popCount(getByTestId, 'awaiting')).toBe('1');
+  });
+
+  it('leaves an UNCHANGED numeral alone (only the news pops)', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: 9, drift: 6, awaiting: 0 }),
+    });
+    await rerender(props({ managed: 9, drift: 7, awaiting: 1 }));
+    expect(popCount(getByTestId, 'managed')).toBe('0');
+  });
+
+  it('pops on the way back down too (the approve beat)', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: 9, drift: 6, awaiting: 0 }),
+    });
+    await rerender(props({ managed: 9, drift: 7, awaiting: 1 }));
+    await rerender(props({ managed: 9, drift: 6, awaiting: 0 }));
+    expect(popCount(getByTestId, 'drift')).toBe('2');
+    expect(popCount(getByTestId, 'awaiting')).toBe('2');
+  });
+
+  it('a repeated poll delivering identical numbers does not pop', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: 9, drift: 6, awaiting: 0 }),
+    });
+    await rerender(props({ managed: 9, drift: 6, awaiting: 0 }));
+    await rerender(props({ managed: 9, drift: 6, awaiting: 0 }));
+    expect(popCount(getByTestId, 'drift')).toBe('0');
+  });
+
+  it('does not pop when a known value regresses to unknown', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: 9, drift: 7, awaiting: 1 }),
+    });
+    await rerender(props({ managed: null, drift: null, awaiting: null }));
+    expect(popCount(getByTestId, 'drift')).toBe('0');
+    expect(numeral(getByTestId('instrument-band-drift')).textContent).toBe('—');
+  });
+
+  it('carries the pop class only once it has actually popped', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: 9, drift: 6, awaiting: 0 }),
+    });
+    expect(numeral(getByTestId('instrument-band-drift')).className).not.toContain('--pop');
+    await rerender(props({ managed: 9, drift: 7, awaiting: 0 }));
+    expect(numeral(getByTestId('instrument-band-drift')).className).toContain('--pop');
+  });
+});
