@@ -412,6 +412,38 @@
     color: var(--ds-stream);
   }
 
+  /* The tick (ds-wd2.13) — the mockup's `pop`, ported verbatim. `.3s ease` and
+     the 1.14 overshoot are the numbers the demo beat was designed against; like
+     SealStamp's stampIn curve, don't "clean up" them into the --ds-dur-* /
+     --ds-ease tokens.
+     The end frame is scale(1) — the element's own base state — so a finished
+     animation leaves no residue, a reduced-motion user lands on the correct
+     resting picture, and Playwright's `animations: 'disabled'` (which
+     fast-forwards to the end frame) leaves every existing visual baseline
+     unmoved.
+     Restart comes from the {#key} block in the markup rebuilding this span, not
+     from re-adding the class — see the pop-counter comment in the script. */
+  .instrument-band__num--pop {
+    animation: instrument-band-pop 0.3s ease;
+  }
+  @keyframes instrument-band-pop {
+    from {
+      transform: scale(1.14);
+    }
+    to {
+      transform: scale(1);
+    }
+  }
+  /* base.css's global prefers-reduced-motion reset already collapses this to
+     0.001ms; this local `none` is the belt-and-suspenders convention SealStamp,
+     CrewGlyph and ReasoningDisclosure all follow, and it is what the mockup
+     itself wrote. */
+  @media (prefers-reduced-motion: reduce) {
+    .instrument-band__num--pop {
+      animation: none;
+    }
+  }
+
   /* Positioned box shared by the label and its hover hint (see the markup). */
   .instrument-band__meta {
     position: relative;

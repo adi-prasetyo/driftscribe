@@ -941,8 +941,71 @@ describe('instrument band numerals', () => {
     // can perceive, so there is no useful value between "none" and "broken".
     // It is reachable on BOTH interactive stats: ApprovalDesk passes null for
     // managed and drift whenever the graph is unavailable.
+    //
+    // `animation` is the one exception to "absence, not a safe value": the pop
+    // keyframe (ds-wd2.13) is a legitimate numeral animation, so this test
+    // resolves an `animation` / `animation-name` value against the component's
+    // own `@keyframes` and judges it by what it actually declares, not by the
+    // property's mere presence. `animation: fade-out 1s` and `animation: pop
+    // .3s` are no longer indistinguishable — only a keyframe that declares
+    // nothing but transform/translate/rotate/scale (geometry, which provably
+    // cannot change contrast) passes. An allowlist rather than a denylist,
+    // because the point of this guard is that it cannot enumerate every way a
+    // numeral can be dimmed — background, visibility, color, a filter,
+    // something CSS adds next year. A name this test cannot resolve to a known
+    // `@keyframes` block still fails closed: an unresolvable name is exactly as
+    // dangerous as an unexamined one, so it gets no benefit of the doubt.
+    // `animation: none` is a suppression, not an attenuation, and passes
+    // without resolution. Every other `animation-*` longhand (duration,
+    // timing-function, iteration-count, …) keeps flagging unconditionally, same
+    // as today — none of them can introduce attenuation without a name, but
+    // staying fail-closed costs nothing.
     const style = /<style[^>]*>([\s\S]*)<\/style>/.exec(band)?.[1] ?? '';
     expect(style, 'premise: found the component style block').not.toBe('');
+
+    /**
+     * Brace-aware `@keyframes` extraction: bodies nest (`from { … } to { … }`),
+     * so the flat `([^{}]*)\{([^{}]*)\}` regex used elsewhere in this test
+     * cannot capture them. Walks braces to depth 0 instead.
+     */
+    function keyframeBodies(source: string): Map<string, string> {
+      const frames = new Map<string, string>();
+      const re = /@keyframes\s+([\w-]+)\s*\{/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(source))) {
+        const name = m[1];
+        let depth = 1;
+        let i = re.lastIndex;
+        const start = i;
+        while (i < source.length && depth > 0) {
+          if (source[i] === '{') depth++;
+          else if (source[i] === '}') depth--;
+          i++;
+        }
+        frames.set(name, source.slice(start, i - 1));
+        re.lastIndex = i;
+      }
+      return frames;
+    }
+
+    // Every property a keyframe body declares, across all of its selectors
+    // (`from`, `to`, `50%`, …). A flat property:value scan is safe here — `from`
+    // and `to` are followed by `{`, never `:`, so they never match as a prop.
+    function keyframeProps(body: string): string[] {
+      const props = new Set<string>();
+      for (const d of body.matchAll(/(?:^|[;{\s])(-[a-z]+-)?([a-z-]+)\s*:\s*[^;}]+/gi)) {
+        props.add(`${d[1] ?? ''}${d[2]}`);
+      }
+      return [...props];
+    }
+
+    const frames = keyframeBodies(style);
+    // A parser that silently found nothing would make every animation
+    // "unresolvable" — which fails CLOSED, so it cannot hide a defect — but a
+    // parser returning an EMPTY body would make every animation look safe.
+    // Pin both: the block is found, and it has content.
+    expect([...frames.keys()], 'premise: parsed the component @keyframes').toContain('instrument-band-pop');
+    expect(frames.get('instrument-band-pop'), 'premise: keyframe body is not empty').toMatch(/transform/);
 
     /**
      * Does this selector's SUBJECT receive the declaration?
@@ -988,8 +1051,53 @@ describe('instrument band numerals', () => {
       // ancestor's opacity.
       for (const d of body.matchAll(/(?:^|[;{\s])(-[a-z]+-)?(opacity|filter|animation[\w-]*)\s*:\s*([^;]+)/gi)) {
         const prop = `${d[1] ?? ''}${d[2]}`;
+        const bareProp = d[2].toLowerCase();
         const value = d[3].trim();
-        if (!(/^opacity$/i.test(prop) && Number(value) === 1)) flag(`${prop}: ${value}`);
+
+        if (/^opacity$/i.test(bareProp)) {
+          // Prefix stripped before this check: an opacity of exactly 1 cannot
+          // attenuate anything, prefixed or not, so -webkit-opacity: 1 is as
+          // safe as opacity: 1.
+          if (Number(value) !== 1) flag(`${prop}: ${value}`);
+          continue;
+        }
+        if (/^filter$/i.test(bareProp)) {
+          flag(`${prop}: ${value}`);
+          continue;
+        }
+        if (/^animation(-name)?$/i.test(bareProp)) {
+          if (/^none$/i.test(value)) continue; // suppression, not attenuation
+
+          // The shorthand accepts a comma-separated list of independent
+          // animations (`animation: pop .3s, sneaky-fade 1s`), each with its
+          // own keyframe name. Splitting on whitespace across the WHOLE value
+          // first would let one resolvable name anywhere in the list mask an
+          // unresolvable (or unsafe) name in another segment — `resolved`
+          // would be non-empty even though a real second animation was never
+          // examined. Comma-split first, then resolve each segment on its
+          // own; this also keeps a name from picking up a neighboring
+          // segment's leading/trailing punctuation.
+          for (const segment of value.split(',')) {
+            const tokens = segment.trim().split(/\s+/).filter(Boolean);
+            const resolved = tokens.filter((t) => frames.has(t));
+            if (resolved.length === 0) {
+              flag(`${prop}: ${segment.trim()} (names no keyframes this test can resolve)`);
+              continue;
+            }
+            for (const name of resolved) {
+              for (const fp of keyframeProps(frames.get(name) ?? '')) {
+                const bareFp = fp.replace(/^-[a-z]+-/i, '').toLowerCase();
+                if (!/^(transform|translate|rotate|scale)$/.test(bareFp)) {
+                  flag(`@keyframes ${name} declares ${fp} (only transform/translate/rotate/scale are allowed)`);
+                }
+              }
+            }
+          }
+          continue;
+        }
+        // Every other animation-* longhand (duration, timing-function, …):
+        // cannot introduce attenuation without a name, but stays fail-closed.
+        flag(`${prop}: ${value}`);
       }
       // The other half of the indirection: a custom property set under :hover
       // feeds any base rule that reads it, and neither rule reads as a fade.
