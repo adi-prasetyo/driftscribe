@@ -24,6 +24,18 @@ function decision(overrides: Partial<Decision> & { decision_id: string }): Decis
   } as Decision;
 }
 
+// ds-wd2.18 fixtures. `sameDay` answers in the READER's timezone (see its note
+// in lib/format.ts), and nothing pins TZ for this suite — so a `...Z` literal
+// would put these instants on one calendar day or two depending on where CI
+// runs, and the day-boundary assertions would flip with it. Built from local
+// wall-clock components instead, which is the frame the rule is stated in.
+function localIso(y: number, m: number, d: number, h: number, min: number): string {
+  return new Date(y, m - 1, d, h, min).toISOString();
+}
+const SAME_DAY_LATER = localIso(2026, 7, 28, 14, 0);
+const SAME_DAY_EARLIER = localIso(2026, 7, 28, 9, 15);
+const PREV_DAY = localIso(2026, 7, 27, 23, 30);
+
 describe('LedgerStrip', () => {
   // Svelte 5 leaves a `<!---->` block anchor comment for a false {#if} even
   // when it renders no element — an implementation detail of the block, not
@@ -446,21 +458,147 @@ describe('LedgerStrip', () => {
     // difference by design). A call-site spy is the only way to actually
     // observe which locale argument the component passed, so that's what
     // this asserts, instead of DOM-diffing the two locales against each other.
-    it('calls fmtClock with the active app locale ($locale), for both EN and JA', () => {
-      const spy = vi.spyOn(format, 'fmtClock');
-      const d = decision({ decision_id: 't1', action: 'no_op', created_at: '2026-07-28T09:15:00Z' });
+    // TWO rows one hour apart, not one row: since ds-wd2.18 the FIRST row of
+    // each day's run renders fmtStamp and only the rest render fmtClock, so a
+    // lone row never reaches fmtClock at all and this spy would observe
+    // nothing. Both formatters are asserted, because both take the locale and
+    // either could drop it.
+    it('calls both time formatters with the active app locale ($locale), for EN and JA', () => {
+      const clockSpy = vi.spyOn(format, 'fmtClock');
+      const stampSpy = vi.spyOn(format, 'fmtStamp');
+      const older = decision({ decision_id: 't0', action: 'no_op', created_at: SAME_DAY_EARLIER });
+      const newer = decision({ decision_id: 't1', action: 'no_op', created_at: SAME_DAY_LATER });
 
       setLocale('en');
-      const { unmount } = render(LedgerStrip, { props: { decisions: [d] } });
-      expect(spy).toHaveBeenCalledWith('2026-07-28T09:15:00Z', 'en');
+      const { unmount } = render(LedgerStrip, { props: { decisions: [older, newer] } });
+      expect(stampSpy).toHaveBeenCalledWith(SAME_DAY_LATER, 'en');
+      expect(clockSpy).toHaveBeenCalledWith(SAME_DAY_EARLIER, 'en');
       unmount();
-      spy.mockClear();
+      clockSpy.mockClear();
+      stampSpy.mockClear();
 
       setLocale('ja');
-      render(LedgerStrip, { props: { decisions: [d] } });
-      expect(spy).toHaveBeenCalledWith('2026-07-28T09:15:00Z', 'ja');
+      render(LedgerStrip, { props: { decisions: [older, newer] } });
+      expect(stampSpy).toHaveBeenCalledWith(SAME_DAY_LATER, 'ja');
+      expect(clockSpy).toHaveBeenCalledWith(SAME_DAY_EARLIER, 'ja');
 
-      spy.mockRestore();
+      clockSpy.mockRestore();
+      stampSpy.mockRestore();
+    });
+  });
+
+  // ── ds-wd2.18: the day boundary ──────────────────────────────────────────
+  // The strip is newest-first and routinely spans days (ledger.ts documents one
+  // event_key carrying records 27 days apart). With a bare HH:mm on every row a
+  // correctly ordered list read as a shuffled one.
+  //
+  // Asserted through fmtStamp/fmtClock CALL SITES rather than rendered digits:
+  // with hourCycle h23 pinned, a dated row and a bare row differ only by a date
+  // prefix whose exact text is Intl's to choose and the runner's zone to shift.
+  // Which formatter a row was given is the actual claim.
+  describe('the first row of each calendar-day run carries the date', () => {
+    function timeCells(container: HTMLElement): string[] {
+      return Array.from(container.querySelectorAll('.ledger-strip__time')).map(
+        (n) => n.textContent ?? '',
+      );
+    }
+
+    it('a lone row carries the date — there is no previous row to share a day with', () => {
+      const stampSpy = vi.spyOn(format, 'fmtStamp');
+      const clockSpy = vi.spyOn(format, 'fmtClock');
+      render(LedgerStrip, {
+        props: { decisions: [decision({ decision_id: 'a', created_at: SAME_DAY_LATER })] },
+      });
+      expect(stampSpy).toHaveBeenCalledWith(SAME_DAY_LATER, expect.anything());
+      expect(clockSpy).not.toHaveBeenCalled();
+      stampSpy.mockRestore();
+      clockSpy.mockRestore();
+    });
+
+    it('a second row on the SAME day gets the bare clock', () => {
+      const clockSpy = vi.spyOn(format, 'fmtClock');
+      render(LedgerStrip, {
+        props: {
+          decisions: [
+            decision({ decision_id: 'a', created_at: SAME_DAY_LATER }),
+            decision({ decision_id: 'b', created_at: SAME_DAY_EARLIER }),
+          ],
+        },
+      });
+      expect(clockSpy).toHaveBeenCalledWith(SAME_DAY_EARLIER, expect.anything());
+      clockSpy.mockRestore();
+    });
+
+    // The defect itself: rows either side of a midnight used to be
+    // indistinguishable.
+    it('a row that opens a NEW day gets the date, not the clock', () => {
+      const stampSpy = vi.spyOn(format, 'fmtStamp');
+      render(LedgerStrip, {
+        props: {
+          decisions: [
+            decision({ decision_id: 'a', created_at: SAME_DAY_LATER }),
+            decision({ decision_id: 'b', created_at: SAME_DAY_EARLIER }),
+            decision({ decision_id: 'c', created_at: PREV_DAY }),
+          ],
+        },
+      });
+      expect(stampSpy).toHaveBeenCalledWith(PREV_DAY, expect.anything());
+      stampSpy.mockRestore();
+    });
+
+    // The rule is relative to the previous RENDERED row, so capping must not be
+    // able to leave a run headless: whatever row lands first must carry a date.
+    // Rendered text, not a spy, because this is a claim about the visible strip.
+    it('holds under the cap — the first VISIBLE row is dated even when it is mid-list', () => {
+      const { container } = render(LedgerStrip, {
+        props: {
+          decisions: [
+            decision({ decision_id: 'a', created_at: SAME_DAY_LATER }),
+            decision({ decision_id: 'b', created_at: SAME_DAY_EARLIER }),
+            decision({ decision_id: 'c', created_at: PREV_DAY }),
+          ],
+          max: 2,
+        },
+      });
+      const cells = timeCells(container);
+      expect(cells).toHaveLength(2);
+      // Row 0 dated (longer than a bare HH:mm), row 1 same-day and bare.
+      expect(cells[0]).not.toMatch(/^\d{2}:\d{2}$/);
+      expect(cells[1]).toMatch(/^\d{2}:\d{2}$/);
+    });
+
+    it('and after "show all" reveals the rest', async () => {
+      const { container, getByTestId } = render(LedgerStrip, {
+        props: {
+          decisions: [
+            decision({ decision_id: 'a', created_at: SAME_DAY_LATER }),
+            decision({ decision_id: 'b', created_at: SAME_DAY_EARLIER }),
+            decision({ decision_id: 'c', created_at: PREV_DAY }),
+          ],
+          max: 2,
+        },
+      });
+      await fireEvent.click(getByTestId('ledger-show-more'));
+      const cells = timeCells(container);
+      expect(cells).toHaveLength(3);
+      expect(cells[0]).not.toMatch(/^\d{2}:\d{2}$/); // dated: opens the run
+      expect(cells[1]).toMatch(/^\d{2}:\d{2}$/); // bare: same day
+      expect(cells[2]).not.toMatch(/^\d{2}:\d{2}$/); // dated: opens a new day
+    });
+
+    // A missing timestamp must not become a fabricated date. It renders empty,
+    // exactly as it did when this cell was fmtClock alone.
+    it('a row with no created_at still renders an empty time cell', () => {
+      const { container } = render(LedgerStrip, {
+        props: {
+          decisions: [
+            decision({ decision_id: 'a', created_at: SAME_DAY_LATER }),
+            decision({ decision_id: 'b', created_at: undefined }),
+          ],
+        },
+      });
+      // Undated rows sort LAST in ledgerRows, so it is the second cell.
+      expect(timeCells(container)[1]).toBe('');
     });
   });
 });

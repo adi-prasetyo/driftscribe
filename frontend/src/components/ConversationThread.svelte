@@ -11,7 +11,7 @@
   import { crewName } from '../lib/workloads';
   import { turnOwnsReasoning } from '../lib/conversations';
   import { iacApprovalHref } from '../lib/approval';
-  import { fmtClock, fmtStamp } from '../lib/format';
+  import { fmtClock, fmtStamp, sameDay } from '../lib/format';
   import { t, locale } from '../lib/i18n';
   import type { TraceCache } from '../lib/traceCache';
   import type { ConversationTurn } from '../lib/types';
@@ -39,22 +39,6 @@
   // Same-origin /iac-approvals/<n> link for a turn that opened an infra PR.
   function prHref(turn: ConversationTurn): string | null {
     return turn.iac_pr ? iacApprovalHref(turn.iac_pr.pr_number, $locale) : null;
-  }
-
-  // Two turns fall on the same calendar day, in the reader's own timezone.
-  // Either missing or unparseable => false, which downgrades to showing the
-  // fuller stamp: over-labelling a time is recoverable, silently implying two
-  // turns share a day is not.
-  function sameDay(a: string | undefined, b: string | undefined): boolean {
-    if (!a || !b) return false;
-    const x = new Date(a);
-    const y = new Date(b);
-    if (Number.isNaN(x.getTime()) || Number.isNaN(y.getTime())) return false;
-    return (
-      x.getFullYear() === y.getFullYear() &&
-      x.getMonth() === y.getMonth() &&
-      x.getDate() === y.getDate()
-    );
   }
 
   /**

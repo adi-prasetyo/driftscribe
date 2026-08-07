@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import EstateView from '../../src/components/EstateView.svelte';
 import type { InfraGraph, InfraGroup, InfraNode, PendingApproval } from '../../src/lib/infra_graph';
 import { investigateUnmatchedPrefill } from '../../src/lib/infra_graph';
+import { setLocale } from '../../src/lib/i18n';
 import type { Decision } from '../../src/lib/types';
 
 afterEach(cleanup);
@@ -268,6 +269,90 @@ describe('EstateView — adopt chip vs. PR-open chip', () => {
     });
     expect(queryByTestId('estate-adopt-btn')).toBeNull();
     expect(getByTestId('estate-pr-chip').textContent).toContain('268');
+  });
+
+  // ── ds-wd2.17: the chip is the only pixel naming a second open proposal ───
+  // The desk queue surfaces ONE pending item while the band counts them all,
+  // and an adopt PR has no ledger row to fall back on — propose_adoption_tool
+  // writes no decision doc, so a row appears only once the PR is APPROVED. An
+  // inert chip therefore made the second proposal unreachable without typing a
+  // URL.
+  describe('the pending-PR chip links to its approval page', () => {
+    function chipWithPr(over: Partial<PendingApproval> = {}, props: Record<string, unknown> = {}) {
+      const g = graph({ groups: [group({ nodes: [node({ id: 'b0', label: 'receipts' })] })] });
+      return render(EstateView, {
+        props: baseProps({
+          graph: g,
+          pendingApprovals: [
+            pending({ asset_type: BUCKET, resource_name: 'receipts', pr_number: 297, ...over }),
+          ],
+          ...props,
+        }),
+      });
+    }
+
+    it('renders an anchor to the PR approval page', () => {
+      const { getByTestId } = chipWithPr();
+      const chip = getByTestId('estate-pr-chip');
+      expect(chip.tagName).toBe('A');
+      expect(chip.getAttribute('href')).toBe('/iac-approvals/297');
+    });
+
+    // Matches the desk's own Review anchor and the infra band's PR links; the
+    // operator keeps the estate they were reading.
+    it('opens in a new tab, with rel=noopener', () => {
+      const chip = chipWithPr().getByTestId('estate-pr-chip');
+      expect(chip.getAttribute('target')).toBe('_blank');
+      expect(chip.getAttribute('rel')).toBe('noopener');
+    });
+
+    // The freshness rule is about WORDING and is untouched. It must not have
+    // quietly become a reason to withdraw the link: navigation is not a
+    // mutation, and the approval page re-reads live state on GET, so the worst
+    // case is a click onto a page that says the PR is already resolved.
+    it('still links when the approvals lane is unrefreshed, with the hedged wording', () => {
+      const { getByTestId } = chipWithPr({}, { settled: true, approvalsStale: true });
+      const chip = getByTestId('estate-pr-chip');
+      expect(chip.tagName).toBe('A');
+      expect(chip.getAttribute('href')).toBe('/iac-approvals/297');
+      expect(chip.textContent).toContain('not refreshed');
+      expect(chip.textContent).not.toContain('awaiting review');
+    });
+
+    // findPendingPr returns `a.pr_number` without validating it, so this is a
+    // live gate rather than a formality. A dead or javascript: href must never
+    // be rendered — fall back to the inert chip the operator had before.
+    it.each([0, -1, 1.5, Number.NaN])(
+      'falls back to an inert chip when pr_number is malformed (%s)',
+      (bad) => {
+        const { getByTestId } = chipWithPr({ pr_number: bad as number });
+        const chip = getByTestId('estate-pr-chip');
+        expect(chip.tagName).toBe('SPAN');
+        expect(chip.hasAttribute('href')).toBe(false);
+      },
+    );
+
+    it('carries the ?lang=ja suffix when the app is in Japanese', () => {
+      setLocale('ja');
+      try {
+        const chip = chipWithPr().getByTestId('estate-pr-chip');
+        expect(chip.getAttribute('href')).toBe('/iac-approvals/297?lang=ja');
+      } finally {
+        setLocale('en');
+      }
+    });
+
+    // Guards the whole affordance rather than one attribute: exactly one
+    // control renders for a pending PR, and it is the link. A second control
+    // could only be a second destination for one subject — the shape #307
+    // removed from the desk one surface over.
+    it('is exactly one control, and the adopt button is not among them', () => {
+      const { getByTestId, queryByTestId, container } = chipWithPr();
+      expect(queryByTestId('estate-adopt-btn')).toBeNull();
+      const row = getByTestId('estate-pr-chip').closest('.estate-view__row') as HTMLElement;
+      expect(row.querySelectorAll('a, button')).toHaveLength(1);
+      expect(container.querySelectorAll('a[href^="/iac-approvals/"]')).toHaveLength(1);
+    });
   });
 
   it('respects adoptDisabled — the adopt button is disabled and the click is a no-op', async () => {

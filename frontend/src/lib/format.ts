@@ -359,9 +359,12 @@ export function decisionActionHelp(action: string | null | undefined, t: Transla
  *
  * `hourCycle: 'h23'` is pinned regardless of locale: `localeTag('en')` is
  * `'en-US'`, whose default hour cycle is 12-hour with an AM/PM suffix
- * ("09:15 AM") — eight characters into the ledger row's `58px` monospace
- * time column, sized for a 24-hour reading (the mockup's own times are all
- * `14:05` / `09:15` / `08:40` / `06:00`). This is purely a same-instant
+ * ("09:15 AM") — eight characters into the ledger row's monospace time column,
+ * sized for a 24-hour reading (the mockup's own times are all `14:05` /
+ * `09:15` / `08:40` / `06:00`). That column is 104px since ds-wd2.18, which
+ * widened it for `fmtStamp`'s dated first-row-of-the-day form; the pin still
+ * matters, because an AM/PM suffix would land on top of THAT budget too. This
+ * is purely a same-instant
  * formatting choice, not a second timezone pin: it does not change what
  * moment is displayed, only how many characters it takes.
  */
@@ -422,6 +425,37 @@ export function fmtStamp(iso: string | undefined, l?: Locale): string {
 }
 
 /**
+ * Do two ISO timestamps fall on the same calendar day, in the READER's own
+ * timezone? The pairing predicate for `fmtStamp`/`fmtClock`: a surface that
+ * lists rows newest-first shows the fuller stamp on the first row of each day's
+ * run and the bare clock for the rest of it, so a multi-day list does not read
+ * as a shuffled one.
+ *
+ * Either side missing or unparseable => `false`, which downgrades to the fuller
+ * stamp. The asymmetry is deliberate: over-labelling one row's time is
+ * recoverable, silently implying two rows share a day is not.
+ *
+ * Reader-timezone rather than a pinned zone, matching every formatter in this
+ * module — a day boundary computed in JST while the clock beside it renders in
+ * the host zone would put the date change on the wrong row.
+ *
+ * Lifted here from ConversationThread (ds-wd2.18), which had it as a private
+ * helper, when LedgerStrip needed the same rule. See `fmtStamp` above for what
+ * four uncoordinated copies of a timestamp helper cost the last time.
+ */
+export function sameDay(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const x = new Date(a);
+  const y = new Date(b);
+  if (Number.isNaN(x.getTime()) || Number.isNaN(y.getTime())) return false;
+  return (
+    x.getFullYear() === y.getFullYear() &&
+    x.getMonth() === y.getMonth() &&
+    x.getDate() === y.getDate()
+  );
+}
+
+/**
  * Render an ISO timestamp as a readable absolute wall-clock string with the
  * year (used by the DecisionSummary card — a historical decision can be from
  * any date, so unlike the rail's compact no-year form we include the year).
@@ -435,7 +469,8 @@ export function fmtStamp(iso: string | undefined, l?: Locale): string {
  * directly above the ledger's "15:06" row FOR THE SAME DECISION — one event,
  * two clock conventions, ~90px apart (caught by the Task 3.6 visual gate; JA
  * was always 24h and unaffected). Pinning here rather than un-pinning
- * `fmtClock` keeps the ledger's 58px time column narrow. This also settles the
+ * `fmtClock` keeps the ledger's time column narrow (58px at the time; 104px
+ * since ds-wd2.18, still sized for h23). This also settles the
  * hour cycle for locale-less callers, who previously followed the host.
  */
 export function fmtWhen(iso: string, l?: Locale): string {

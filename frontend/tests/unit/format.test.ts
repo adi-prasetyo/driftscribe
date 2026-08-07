@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, fmtStamp, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, contractStatusLabel, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
+import { fmtTokens, shortTrace, fmtPreview, fmtWhen, fmtClock, fmtStamp, sameDay, shortSha, iacStatusLabel, iacStatusHelp, decisionActionLabel, decisionActionHelp, contractStatusLabel, iacApplyMeta, appliedAtDiffersMaterially, normalizeForSearch } from '../../src/lib/format';
 import { translate, type TranslateFn } from '../../src/lib/i18n';
 
 // The whole suite asserts English (the shared.en catalog is byte-for-byte the
@@ -248,6 +248,51 @@ describe('fmtStamp', () => {
       const hour = fmtClock(PM, l).slice(0, 2);
       expect(fmtStamp(PM, l)).toContain(`${hour}:32`);
     }
+  });
+});
+
+// ds-wd2.18 — lifted out of ConversationThread when LedgerStrip needed the same
+// day-boundary rule. Every case is expressed in the READER's zone rather than a
+// pinned one (see the function's own note), so the fixtures below are built from
+// local-time components instead of literal `Z` strings wherever the assertion
+// turns on which calendar day an instant lands in. A `Z` literal would make
+// these pass or fail depending on the CI runner's timezone.
+describe('sameDay', () => {
+  /** An ISO string for a given local wall-clock moment, so the assertion is
+   *  about the calendar day the READER sees — which is what the function
+   *  claims to answer. */
+  function localIso(y: number, m: number, d: number, h = 12, min = 0): string {
+    return new Date(y, m - 1, d, h, min).toISOString();
+  }
+
+  it('true for two instants on the same local calendar day', () => {
+    expect(sameDay(localIso(2026, 8, 5, 1, 15), localIso(2026, 8, 5, 23, 45))).toBe(true);
+  });
+
+  it('false across a local midnight, even minutes apart', () => {
+    expect(sameDay(localIso(2026, 8, 5, 23, 59), localIso(2026, 8, 6, 0, 1))).toBe(false);
+  });
+
+  it('false across a month boundary and across a year boundary', () => {
+    expect(sameDay(localIso(2026, 7, 31), localIso(2026, 8, 1))).toBe(false);
+    expect(sameDay(localIso(2026, 12, 31), localIso(2027, 1, 1))).toBe(false);
+  });
+
+  // The one that a naive month/day comparison passes and must not: same day
+  // number, same month, a year apart.
+  it('false for the same month and day in different years', () => {
+    expect(sameDay(localIso(2026, 8, 5), localIso(2027, 8, 5))).toBe(false);
+  });
+
+  // Fails toward the FULLER stamp, never toward a silent "these share a day".
+  it('false when either side is missing or unparseable', () => {
+    const good = localIso(2026, 8, 5);
+    expect(sameDay(undefined, good)).toBe(false);
+    expect(sameDay(good, undefined)).toBe(false);
+    expect(sameDay('', good)).toBe(false);
+    expect(sameDay('not-a-date', good)).toBe(false);
+    expect(sameDay(good, 'not-a-date')).toBe(false);
+    expect(sameDay(undefined, undefined)).toBe(false);
   });
 });
 

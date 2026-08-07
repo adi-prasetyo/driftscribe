@@ -6,8 +6,8 @@
    * and flattened across resource TYPES — the inverse of InfraDiagram's
    * per-type card grid — via the pure lib/estate.ts model. Filled dots are
    * IaC-managed, hollow amber rings are drift; every drift row carries ONE
-   * action: an adopt chip, or (when an adoption PR is already open for it) a
-   * non-interactive "PR #N reviewing" chip instead.
+   * control: an adopt chip, or (when an adoption PR is already open for it) a
+   * "PR #N awaiting review" chip linking to that PR's approval page.
    *
    * Dumb: performs NO fetches of its own — `graph`/`decisions`/
    * `pendingApprovals` are the overview store's current snapshot, same as
@@ -25,7 +25,8 @@
    * truth, deliberately NOT coupled to the hero's state machine (ds-eh6: a
    * pending approval can coexist with a failed graph fetch).
    */
-  import { t } from '../lib/i18n';
+  import { t, locale } from '../lib/i18n';
+  import { iacApprovalHref } from '../lib/approval';
   import Icon from './Icon.svelte';
   import type { InfraGraph, PendingApproval, UnmatchedDeclaration } from '../lib/infra_graph';
   import {
@@ -219,22 +220,57 @@
             <span class="estate-view__name">{row.label}</span>
             <span class="estate-view__type">{row.typeLabel}</span>
             {#if row.pendingPr !== null}
+              {@const prHref = iacApprovalHref(row.pendingPr, $locale)}
+              {@const prLabel = approvalsStale
+                ? $t('desk.estate.prPendingUnrefreshed', { pr: row.pendingPr })
+                : $t('desk.estate.prPending', { pr: row.pendingPr })}
               <!-- The PR chip stays FIRST and stays on a stale/unverified
                    snapshot: unlike everything below it, this is a positively
                    observed fact from the GitHub listing rather than an absence
-                   read off the iac/ tree, and it drives no action.
+                   read off the iac/ tree.
                    But its WORDING follows the approvals lane (ds-1vn r5). On a
                    pending-approvals failure the store retains the previous
                    list, so "awaiting review" — present tense — outlives the
                    fetch that established it, and a PR closed or merged
                    elsewhere would sit here labelled awaiting review forever.
                    Identity survives a retained value; a verdict does not. Same
-                   split already made for the graph's freshness assurance. -->
-              <span class="estate-view__chip estate-view__chip--q" data-testid="estate-pr-chip">
-                {approvalsStale
-                  ? $t('desk.estate.prPendingUnrefreshed', { pr: row.pendingPr })
-                  : $t('desk.estate.prPending', { pr: row.pendingPr })}
-              </span>
+                   split already made for the graph's freshness assurance.
+
+                   ds-wd2.17 — it LINKS, in both freshness states, and the
+                   sentence that used to end the paragraph above ("and it drives
+                   no action") had to go with the change rather than be left
+                   standing over code that no longer honours it.
+                   The desk queue shows ONE pending item at a time while the band
+                   counts them all, and an adopt PR gets no ledger row to click:
+                   propose_adoption_tool never writes a decision doc, so the row
+                   only exists once the PR has been APPROVED. That made this chip
+                   the only pixel in the app naming the second open proposal, and
+                   it was inert. Linking it is not the action the old comment
+                   refused: navigation is not a mutation, and /iac-approvals/{pr}
+                   re-reads live state on GET — it will serve a spent-token,
+                   paused or autonomy-blocked form if that is the truth by the
+                   time the operator arrives. Same reasoning #307 used to collapse
+                   the desk's Approve+Reject pair into one Review anchor. So a
+                   retained-list PR that closed elsewhere costs a wasted click on
+                   a page that says so, not a wrong write.
+
+                   Null href keeps the inert span: findPendingPr returns
+                   `a.pr_number` without validating it, so a malformed backend
+                   row genuinely reaches here — this is a live gate, not a
+                   formality. InfraDiagram's per-row link is gated the same way. -->
+              {#if prHref}
+                <a
+                  class="estate-view__chip estate-view__chip--pr"
+                  data-testid="estate-pr-chip"
+                  href={prHref}
+                  target="_blank"
+                  rel="noopener">{prLabel}</a
+                >
+              {:else}
+                <span class="estate-view__chip estate-view__chip--q" data-testid="estate-pr-chip">
+                  {prLabel}
+                </span>
+              {/if}
             {:else if row.adoptable && !canAdopt}
               <!-- ds-1vn. The SECOND absence claim on this row, and the one
                    that caused the incident: "not declared in IaC" is read off
@@ -624,10 +660,39 @@
     border-style: dashed;
     cursor: default;
   }
+  /* The inert PR chip — kept for the malformed-pr_number fallback only, where
+     there is no page to send the operator to. Muted and cursorless, because it
+     genuinely promises nothing. */
   .estate-view__chip--q {
     border-color: var(--ds-border);
     color: var(--ds-faint);
     cursor: default;
+  }
+  /* The linked PR chip (ds-wd2.17). Reads as a control — the base chip's navy
+     ink, not `--q`'s faint grey, which at 11.5px was quiet enough to scan past
+     even before it was clickable.
+     `text-decoration: none` because the border already carries the affordance,
+     exactly as the sibling Adopt chip does; the two never appear on one row
+     (a row either has an open PR or is offerable for adoption), so matching
+     their weight creates no competition for the eye.
+     No `display` declaration: the chip is a direct child of the row's grid, so
+     it is blockified whatever it asks for — an `inline-block` here computes to
+     `block` and states a reason ("otherwise the border would overlap the row
+     above") for a situation a grid item cannot be in. It read as load-bearing,
+     which is worse than absent.
+     No `:focus-visible` rule either: base.css's zero-specificity
+     `:where(a, button, …)` already rings it, and a local copy would be a second
+     definition to keep in step. */
+  .estate-view__chip--pr {
+    cursor: pointer;
+    text-decoration: none;
+  }
+  /* The house hover for a bordered control (`.ds-btn:hover`, base.css) — a
+     quiet surface fill, not an inversion. Navy ink is unchanged, so the hover
+     costs no contrast; an inverted navy fill would make this the loudest thing
+     on a card whose whole job is to read calmly. */
+  .estate-view__chip--pr:hover {
+    background: var(--ds-surface-2);
   }
 
   .estate-view__more {

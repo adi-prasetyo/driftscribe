@@ -27,7 +27,7 @@
    */
   import { t, locale, type TranslateFn } from '../lib/i18n';
   import { ledgerRows, ledgerTotal, type LedgerRow, type LedgerState } from '../lib/ledger';
-  import { fmtClock, fmtPreview, decisionActionLabel } from '../lib/format';
+  import { fmtClock, fmtStamp, sameDay, fmtPreview, decisionActionLabel } from '../lib/format';
   import { isReplayableTraceId } from '../lib/deeplink';
   import type { TraceCache } from '../lib/traceCache';
   import type { Decision, EnvDiff } from '../lib/types';
@@ -65,6 +65,36 @@
       keepTraceId: recordTraceId,
     }),
   );
+
+  /** The row's visible time. The first row of each calendar-day run carries the
+   *  date ('Aug 5, 10:28'); the rest of that run carry the clock alone
+   *  ('14:13'). Identical rule, and now the identical helpers, as a
+   *  conversation thread's turns (ConversationThread.turnTime) — see
+   *  `sameDay`'s note in lib/format.ts.
+   *
+   *  This strip is newest-first and spans days routinely: ledger.ts documents
+   *  one `event_key` carrying a no_op on 07-29 and a rollback on 07-31, and an
+   *  `iac-apply-32` key carrying two applied+merged records 27 days apart. A
+   *  live operator record on 2026-08-08 ran 21:47 → 00:31 → 11:18 → 14:13 →
+   *  00:17 → 23:19 over ~25 rows, which — correctly sorted, and with nothing
+   *  marking a day boundary — reads as a shuffled list.
+   *
+   *  Relative to the PREVIOUS RENDERED ROW, not to the current clock. So the
+   *  rule survives the cap and "show all" (`rows` is already the capped,
+   *  collapsed list), does not shift under the reader at midnight, and needs no
+   *  injected `now` to test.
+   *
+   *  A row whose `created_at` is absent or unparseable sorts LAST in
+   *  `ledgerRows` and still renders exactly what it renders today — `''` for
+   *  absent, the raw value for unparseable — because `fmtStamp` and `fmtClock`
+   *  share those two fallbacks. It does reset the run, so the row after it can
+   *  carry a redundant date; that is the same trade `sameDay` documents, taken
+   *  in the same direction. */
+  function rowTime(index: number): string {
+    const iso = rows[index].decision.created_at ?? '';
+    const prev = index > 0 ? rows[index - 1].decision.created_at : undefined;
+    return sameDay(prev, iso) ? fmtClock(iso, $locale) : fmtStamp(iso, $locale);
+  }
 
   /** The trace this row can open a record for, or null for no affordance at all.
    *
@@ -308,8 +338,8 @@
 <!-- The row's four cells, written once and rendered into either shell below.
      Which shell a row gets is the whole affordance decision, so the cells must
      not be able to differ between them. -->
-{#snippet cells(row: LedgerRow)}
-  <span class="ledger-strip__time">{fmtClock(row.decision.created_at ?? '', $locale)}</span>
+{#snippet cells(row: LedgerRow, time: string)}
+  <span class="ledger-strip__time">{time}</span>
   <span class="ledger-strip__glyph ledger-strip__glyph--{row.state}" aria-hidden="true"
     >{GLYPH[row.state]}</span
   >
@@ -341,6 +371,7 @@
     <div class="ledger-strip__rows">
       {#each rows as row, i (row.decision.decision_id)}
         {@const traceId = openableTrace(row, i)}
+        {@const time = rowTime(i)}
         {#if traceId !== null}
           <button
             type="button"
@@ -351,11 +382,11 @@
             aria-controls={recordDomId(traceId)}
             onclick={() => toggle(traceId)}
           >
-            {@render cells(row)}
+            {@render cells(row, time)}
           </button>
         {:else}
           <div class="ledger-strip__row" data-testid="ledger-strip-row" data-state={row.state}>
-            {@render cells(row)}
+            {@render cells(row, time)}
           </div>
         {/if}
         {#if traceId !== null && traceId === recordTraceId && cache !== null}
@@ -420,9 +451,28 @@
     padding: 0 40px 26px;
   }
 
+  /* First column widened from 58px for ds-wd2.18: it used to hold `14:05` and
+     now holds `Aug 5, 10:28` / `8月5日 10:28` on the first row of each day's
+     run.
+     Sized from a measurement, in Chromium at this exact stack/size/variant,
+     and the SHORT sample is the trap — `Aug 5, 10:28` is 82.8px (ja 79.2px)
+     but the widest date each locale can produce is `Dec 25, 23:59` at 89.7px
+     and `12月25日 23:59` at 93.0px. A column fitted to an August fixture would
+     have started clipping in December, and the ja worst case is the wider of
+     the two even though the ja sample is the narrower. 104px clears the real
+     worst case by 11px, which is the margin for the stack resolving to a
+     different mono on another platform.
+     Fixed rather than `max-content`: this column exists to keep the glyph and
+     title columns aligned down the strip, and a content-sized track would
+     resize the whole grid the moment "show all" revealed a row that crosses a
+     day boundary. The other three tracks are unchanged; the `1fr` title absorbs
+     the 46px — but ONLY because `.ledger-strip__title` below sets `min-width: 0`
+     and `overflow-wrap: anywhere`. Without that pair a `1fr` track floors at
+     min-content and this width overflowed the card at phone sizes; see there
+     for the measurements. */
   .ledger-strip__row {
     display: grid;
-    grid-template-columns: 58px 18px 1fr auto;
+    grid-template-columns: 104px 18px 1fr auto;
     gap: 14px;
     padding: 10px 0;
     border-bottom: 1px solid var(--ds-border);
@@ -520,8 +570,31 @@
     color: var(--ds-faint);
   }
 
+  /* `min-width: 0` + `overflow-wrap: anywhere` are what let the `1fr` track
+     actually be 1fr. A grid track sized `1fr` is really `minmax(auto, 1fr)`, so
+     it floors at this cell's MIN-CONTENT — and the strip's narrowest subjects
+     are single unbreakable tokens (`FEATURE_NEW_CHECKOUT` from rollbackSubject,
+     a branch or revision name), which offer no break opportunity at all. Once
+     that floor is hit the row stops shrinking and overflows the card, where
+     `.ledger-strip`'s `overflow: hidden` CLIPS it rather than scrolling — the
+     same trap EstateView documents at its own `@media (max-width: 460px)`
+     restack, and the reason a document-level `scrollWidth === clientWidth`
+     check calls the page clean while a cell sits off the card.
+     `anywhere` rather than `break-word` because only `anywhere` also shrinks
+     min-content, which is the half that moves the floor; `break-word` alone
+     would keep the track wide and change nothing. Same pair, same reason, as
+     `.estate-view__name`.
+     Measured against the card (never the document) with a 3-row fixture ending
+     in an `applied` row, so the SealStamp's 30px fourth track is in play:
+     without these two declarations the widened 104px time column overflowed by
+     2px at 390 and 72px at 320; with them, 0px at 460/430/390/320. The 58px
+     column this replaced was clean at 390 and already overflowed 26px at 320,
+     so this fixes a pre-existing narrow-width bug as well as the one the wider
+     column would have introduced. */
   .ledger-strip__title {
     color: var(--ds-fg);
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .ledger-strip__title small {
     display: block;
