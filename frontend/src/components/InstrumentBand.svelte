@@ -69,6 +69,7 @@
    * `Math.max(0, …)` below only guards against a negative/non-finite input
    * ever reaching the CSS `flex` shorthand, which a negative number breaks.
    */
+  import { untrack } from 'svelte';
   import { t, type TranslateFn } from '../lib/i18n';
 
   /** Which numeral was activated. The consumer owns what that means. */
@@ -179,6 +180,74 @@
   const value = $derived<Record<BandStat, number | null>>({ managed, drift, awaiting });
   const stats = $derived(STATS.map((spec) => ({ spec, value: value[spec.key] })));
 
+  // ── The numeral tick (ds-wd2.13) ─────────────────────────────────────────
+  // Mockup `@keyframes pop` (1.14 → 1 scale, .3s): a numeral pops when its
+  // value CHANGES. The mockup produced that by swapping which of three
+  // pre-rendered <i> elements was displayed per `data-state`; that machinery
+  // exists so one static page can fake three states, and porting it would be
+  // mockup-artifact-as-architecture. A live component animates on value change
+  // instead, which is a different mechanism entirely.
+  //
+  // `popN` counts qualifying changes per stat and KEYS the numeral's {#key}
+  // block, so each change builds a fresh <span>. A brand-new element with the
+  // animation class restarts the animation by construction — no
+  // remove/force-reflow/re-add dance, and no Web Animations API (which
+  // `motion.ts` would have to gate in JS, and which every unit test would see
+  // as disabled, since tests/unit/setup.ts mocks matchMedia to report
+  // prefers-reduced-motion: reduce).
+  //
+  // The guard is `prev !== null && next !== null && prev !== next`. `null` is
+  // NOT YET KNOWN (see the props doc above), so:
+  //   · null → 9  is the first reading landing, i.e. every page load. Popping
+  //     there is noise, not news — which is the failure mode this bead's design
+  //     note names explicitly.
+  //   · 7 → null  would pop an em dash. It doesn't.
+  //   · 6 → 6     is what most of the 45s poll cycles deliver. Only a real
+  //     change is news.
+  // The accepted consequence: a change SPANNING a degraded cycle does not pop.
+  // 6 → null → 7 is reachable — a soft-failed /infra/graph is a well-formed 200
+  // carrying degraded:true, so it replaces the good graph, and ApprovalDesk
+  // nulls the band off `graphUsable` (and nulls `awaiting` on any degraded
+  // cycle). That missed tick is deliberate: it can only happen while the hero
+  // directly below is announcing that the snapshot is incomplete, and a
+  // celebratory pop under that headline would be the wrong emphasis.
+  //
+  // $effect.pre, not $effect: pre runs BEFORE the DOM update in the same flush,
+  // so the new count and the new numeral text land together. A post-update
+  // effect would need a second flush and start the animation a frame late.
+  // untrack, because the effect both reads and writes popN; without it the
+  // write re-triggers the effect (it would converge, but only by wasting a pass).
+  //
+  // Derived from STATS, not a second hand-typed literal: STATS is this file's
+  // own source of truth for "what stats exist" (see the header comment). A
+  // literal list here would be a second, unenforced copy of BandStat's members
+  // — the Record<BandStat, …> literals below DO force a compile error if
+  // BandStat grows a key, but a stray array literal doesn't, so a new stat
+  // would silently never pop instead of failing to build.
+  const BAND_KEYS = STATS.map((s) => s.key);
+
+  let popN = $state<Record<BandStat, number>>({ managed: 0, drift: 0, awaiting: 0 });
+  // Seeded to null (NOT the current prop values — reading `managed`/`drift`/
+  // `awaiting` directly here would only capture their initial value anyway,
+  // which is exactly what trips Svelte's state_referenced_locally warning).
+  // Either seed produces the same first pass: the guard's `prev !== null`
+  // already skips seen→now on mount, so a null seed reaches that same "no pop"
+  // outcome without reading a prop outside a derived/effect. Deliberately NOT
+  // $state — nothing renders it.
+  let seen: Record<BandStat, number | null> = { managed: null, drift: null, awaiting: null };
+
+  $effect.pre(() => {
+    const next = value; // registers the dependency on all three props
+    untrack(() => {
+      for (const k of BAND_KEYS) {
+        const prev = seen[k];
+        const now = next[k];
+        if (prev !== null && now !== null && prev !== now) popN[k] += 1;
+      }
+      seen = next;
+    });
+  });
+
   // Defensive clamp for the meter only: scopeTotals() guarantees non-negative
   // finite sums, but this component doesn't re-derive or trust that upstream
   // invariant blindly — a negative flex value is invalid CSS and a non-finite
@@ -216,7 +285,18 @@
         data-unknown={n === null ? 'true' : null}
         onclick={spec.interactive ? () => onStat(spec.key) : undefined}
       >
-        <span class="instrument-band__num">{statText(n)}</span>
+        <!-- {#key} rebuilds this span on every qualifying change, which is what
+             restarts the pop animation; `data-pop` is the same counter, exposed
+             so tests and the visual rig can assert the tick happened without
+             depending on layout or timing. The class is absent until the first
+             pop, so a freshly mounted band is still. -->
+        {#key popN[spec.key]}
+          <span
+            class="instrument-band__num"
+            class:instrument-band__num--pop={popN[spec.key] > 0}
+            data-pop={popN[spec.key]}
+          >{statText(n)}</span>
+        {/key}
         <!-- The label and its hint share one positioned box so the hint lands
              exactly on the label rather than at the stat's padding edge (an
              abspos child is placed against the PADDING box, and stats 2-3 carry
@@ -330,6 +410,48 @@
   }
   .instrument-band__stat--wait .instrument-band__num {
     color: var(--ds-stream);
+  }
+
+  /* The tick (ds-wd2.13) — the mockup's `pop`, ported verbatim. `.3s ease` and
+     the 1.14 overshoot are the numbers the demo beat was designed against; like
+     SealStamp's stampIn curve, don't "clean up" them into the --ds-dur-* /
+     --ds-ease tokens.
+     The end frame is scale(1) — the element's own base state — so a finished
+     animation leaves no residue, a reduced-motion user lands on the correct
+     resting picture, and Playwright's `animations: 'disabled'` (which
+     fast-forwards to the end frame) leaves every existing visual baseline
+     unmoved.
+     Restart comes from the {#key} block in the markup rebuilding this span, not
+     from re-adding the class — see the pop-counter comment in the script.
+     `transform-origin: left center` overrides the default centre origin the
+     mockup used. This numeral is `align-items: flex-start` / `text-align: left`
+     with its label pinned directly beneath, so scaling about the centre moves
+     the LEFT EDGE against that fixed label — measured on the live app (the
+     ds-wd2.13 visual rig's rAF probe) at 531.28px at the scale(1.14) peak vs
+     533.33px at rest, a ~2px lateral creep. Against a static label that reads
+     as the numeral drifting sideways, not pulsing. Left-centre origin makes
+     the growth purely rightward/vertical, so the left edge — and the label
+     under it — never move. */
+  .instrument-band__num--pop {
+    transform-origin: left center;
+    animation: instrument-band-pop 0.3s ease;
+  }
+  @keyframes instrument-band-pop {
+    from {
+      transform: scale(1.14);
+    }
+    to {
+      transform: scale(1);
+    }
+  }
+  /* base.css's global prefers-reduced-motion reset already collapses this to
+     0.001ms; this local `none` is the belt-and-suspenders convention SealStamp,
+     CrewGlyph and ReasoningDisclosure all follow, and it is what the mockup
+     itself wrote. */
+  @media (prefers-reduced-motion: reduce) {
+    .instrument-band__num--pop {
+      animation: none;
+    }
   }
 
   /* Positioned box shared by the label and its hover hint (see the markup). */
