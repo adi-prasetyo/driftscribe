@@ -675,13 +675,15 @@
      exactly as the sibling Adopt chip does; the two never appear on one row
      (a row either has an open PR or is offerable for adoption), so matching
      their weight creates no competition for the eye.
-     `display: inline-block` so the anchor takes the chip's vertical padding —
-     an inline anchor would let the border overlap the row above.
-     No `:focus-visible` rule: base.css's zero-specificity
+     No `display` declaration: the chip is a direct child of the row's grid, so
+     it is blockified whatever it asks for — an `inline-block` here computes to
+     `block` and states a reason ("otherwise the border would overlap the row
+     above") for a situation a grid item cannot be in. It read as load-bearing,
+     which is worse than absent.
+     No `:focus-visible` rule either: base.css's zero-specificity
      `:where(a, button, …)` already rings it, and a local copy would be a second
      definition to keep in step. */
   .estate-view__chip--pr {
-    display: inline-block;
     cursor: pointer;
     text-decoration: none;
   }

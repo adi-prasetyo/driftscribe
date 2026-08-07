@@ -466,7 +466,10 @@
      title columns aligned down the strip, and a content-sized track would
      resize the whole grid the moment "show all" revealed a row that crosses a
      day boundary. The other three tracks are unchanged; the `1fr` title absorbs
-     the 46px and wraps rather than overflowing, including at phone widths. */
+     the 46px — but ONLY because `.ledger-strip__title` below sets `min-width: 0`
+     and `overflow-wrap: anywhere`. Without that pair a `1fr` track floors at
+     min-content and this width overflowed the card at phone sizes; see there
+     for the measurements. */
   .ledger-strip__row {
     display: grid;
     grid-template-columns: 104px 18px 1fr auto;
@@ -567,8 +570,31 @@
     color: var(--ds-faint);
   }
 
+  /* `min-width: 0` + `overflow-wrap: anywhere` are what let the `1fr` track
+     actually be 1fr. A grid track sized `1fr` is really `minmax(auto, 1fr)`, so
+     it floors at this cell's MIN-CONTENT — and the strip's narrowest subjects
+     are single unbreakable tokens (`FEATURE_NEW_CHECKOUT` from rollbackSubject,
+     a branch or revision name), which offer no break opportunity at all. Once
+     that floor is hit the row stops shrinking and overflows the card, where
+     `.ledger-strip`'s `overflow: hidden` CLIPS it rather than scrolling — the
+     same trap EstateView documents at its own `@media (max-width: 460px)`
+     restack, and the reason a document-level `scrollWidth === clientWidth`
+     check calls the page clean while a cell sits off the card.
+     `anywhere` rather than `break-word` because only `anywhere` also shrinks
+     min-content, which is the half that moves the floor; `break-word` alone
+     would keep the track wide and change nothing. Same pair, same reason, as
+     `.estate-view__name`.
+     Measured against the card (never the document) with a 3-row fixture ending
+     in an `applied` row, so the SealStamp's 30px fourth track is in play:
+     without these two declarations the widened 104px time column overflowed by
+     2px at 390 and 72px at 320; with them, 0px at 460/430/390/320. The 58px
+     column this replaced was clean at 390 and already overflowed 26px at 320,
+     so this fixes a pre-existing narrow-width bug as well as the one the wider
+     column would have introduced. */
   .ledger-strip__title {
     color: var(--ds-fg);
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .ledger-strip__title small {
     display: block;

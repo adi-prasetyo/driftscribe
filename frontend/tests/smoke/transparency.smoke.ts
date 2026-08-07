@@ -303,6 +303,134 @@ test.describe('transparency UI (mock smoke)', () => {
     });
   }
 
+  // The ledger card, same width, same reason, and it had no pin of its own until
+  // ds-wd2.18 widened its time column from 58px to 104px to fit a date. That
+  // column is the row's FIRST grid track and the title's is `1fr` — which is
+  // really `minmax(auto, 1fr)`, so it floors at the title's min-content. The
+  // strip's narrowest subjects are single unbreakable tokens (a revision or
+  // branch name from `rollbackSubject`), which offer no break opportunity, so
+  // past that floor the row stops shrinking and runs off a card that is
+  // `overflow: hidden` — clipped, never scrolled to.
+  //
+  // Measured before the fix, with the fixture's `applied` row putting the
+  // SealStamp's 30px fourth track in play: 2px over the card at 390 and 72px at
+  // 320, against a 58px column that was clean at 390 and already 26px over at
+  // 320. `min-width: 0` + `overflow-wrap: anywhere` on the title takes all four
+  // widths to 0.
+  //
+  // Deliberately measures each CELL against the card rather than the document,
+  // for the reason the estate test above spells out: the document-level check is
+  // blind to a cell sitting off the edge of an overflow-hidden card. Both checks
+  // are here; only the first can see that failure.
+  test('at phone width the ledger row stays inside its card', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+    // The default decisions fixture CANNOT see this failure, and that is the
+    // whole reason for the override: every subject it produces is prose with
+    // spaces in it, so the title's min-content is already a single short word
+    // and the `1fr` floor is never reached. Verified — with the shared fixture
+    // this test passes with the fix reverted.
+    // What reaches the floor is an unbreakable token, which is exactly what
+    // `rollbackSubject` yields: it names the env VARIABLES a rollback concerns,
+    // and prod holds `PAYMENT_MODE` rows today. Paired with an `applied` row so
+    // the SealStamp's 30px fourth track is in play — without it the fourth
+    // track is 0px and the row has 30px of slack that hides the overflow.
+    // Routes registered later win, so this supersedes mockData's.
+    await page.route('**/decisions**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          decisions: [
+            {
+              decision_id: 'ln-1',
+              action: 'iac_apply',
+              apply_status: 'applied',
+              merge_state: 'merged',
+              pr_number: 308,
+              pr_title: 'FEATURE_NEW_CHECKOUT_ROLLOUT',
+              created_at: '2026-08-08T01:09:00Z',
+            },
+            {
+              decision_id: 'ln-2',
+              action: 'rollback',
+              created_at: '2026-08-07T22:56:00Z',
+              diffs: [
+                {
+                  name: 'FEATURE_NEW_CHECKOUT',
+                  expected: 'off',
+                  live: 'on',
+                  contract_status: 'present_disallow_manual',
+                },
+              ],
+            },
+          ],
+        }),
+      }),
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+
+    const ledger = page.getByTestId('ledger-strip');
+    await expect(ledger).toBeVisible();
+
+    const rows = ledger.locator('.ledger-strip__row');
+    // The fixture's own premise, stated so a decisions fixture that stopped
+    // producing rows cannot leave this passing on an empty set.
+    await expect(rows.first()).toBeVisible();
+
+    // Rect geometry, measured with descendant TRANSFORMS NEUTRALISED, then
+    // restored. The SealStamp on an applied row is `transform: rotate(-11deg)`
+    // (SealStamp.svelte) and a client rect is the TRANSFORMED box: a 30px square
+    // at 11° measures 35.17px, so the seal's rect reads 2.59px past its own cell
+    // on each side while sitting ~37px inside the card border. Measured, not
+    // assumed — a naive rect sweep fails on a perfectly correct layout, and
+    // `offsetLeft` is no escape either, since it is relative to the offsetParent
+    // rather than to the padding box this compares against. Suppressing the
+    // rotation for the duration of the measurement leaves the layout box, which
+    // is the thing the invariant is about.
+    const escapes = await ledger.evaluate((card) => {
+      const wrap = card.querySelector('.ledger-strip__rows') as HTMLElement;
+      const transformed = Array.from(card.querySelectorAll<HTMLElement>('*')).filter(
+        (el) => getComputedStyle(el).transform !== 'none',
+      );
+      const saved = transformed.map((el) => el.style.transform);
+      transformed.forEach((el) => (el.style.transform = 'none'));
+      try {
+        const wrapBox = wrap.getBoundingClientRect();
+        const padRight = parseFloat(getComputedStyle(wrap).paddingRight);
+        const limit = wrapBox.right - padRight;
+        const out: string[] = [];
+        Array.from(card.querySelectorAll<HTMLElement>('.ledger-strip__row')).forEach((row, i) => {
+          Array.from(row.children).forEach((cell, c) => {
+            const box = (cell as HTMLElement).getBoundingClientRect();
+            if (box.width === 0) return; // the empty 4th-column placeholder
+            if (box.right > limit + 0.5)
+              out.push(`row ${i} cell ${c}: ${box.right.toFixed(1)} > ${limit.toFixed(1)}`);
+          });
+        });
+        return out;
+      } finally {
+        transformed.forEach((el, i) => (el.style.transform = saved[i]));
+      }
+    });
+    expect(escapes, 'a ledger cell escapes its card').toEqual([]);
+
+    // And the card itself does not become horizontally scrollable — the check
+    // that catches an overflow the per-cell sweep could miss.
+    const card = await ledger.evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+    }));
+    expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
+
+    const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(scrollWidth).toBe(clientWidth);
+  });
+
   // The slim hero is a TYPOGRAPHY change, and typography is the one thing none
   // of the other gates can see: jsdom does not run the cascade, so a unit test
   // asserting the --slim class passes whether or not the rule inside it applies,

@@ -359,9 +359,12 @@ export function decisionActionHelp(action: string | null | undefined, t: Transla
  *
  * `hourCycle: 'h23'` is pinned regardless of locale: `localeTag('en')` is
  * `'en-US'`, whose default hour cycle is 12-hour with an AM/PM suffix
- * ("09:15 AM") — eight characters into the ledger row's `58px` monospace
- * time column, sized for a 24-hour reading (the mockup's own times are all
- * `14:05` / `09:15` / `08:40` / `06:00`). This is purely a same-instant
+ * ("09:15 AM") — eight characters into the ledger row's monospace time column,
+ * sized for a 24-hour reading (the mockup's own times are all `14:05` /
+ * `09:15` / `08:40` / `06:00`). That column is 104px since ds-wd2.18, which
+ * widened it for `fmtStamp`'s dated first-row-of-the-day form; the pin still
+ * matters, because an AM/PM suffix would land on top of THAT budget too. This
+ * is purely a same-instant
  * formatting choice, not a second timezone pin: it does not change what
  * moment is displayed, only how many characters it takes.
  */
@@ -466,7 +469,8 @@ export function sameDay(a: string | undefined, b: string | undefined): boolean {
  * directly above the ledger's "15:06" row FOR THE SAME DECISION — one event,
  * two clock conventions, ~90px apart (caught by the Task 3.6 visual gate; JA
  * was always 24h and unaffected). Pinning here rather than un-pinning
- * `fmtClock` keeps the ledger's 58px time column narrow. This also settles the
+ * `fmtClock` keeps the ledger's time column narrow (58px at the time; 104px
+ * since ds-wd2.18, still sized for h23). This also settles the
  * hour cycle for locale-less callers, who previously followed the host.
  */
 export function fmtWhen(iso: string, l?: Locale): string {

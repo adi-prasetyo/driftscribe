@@ -108,6 +108,27 @@ row would be a new row type in a grid whose four columns are load-bearing
   parameter so both shells (button and div) cannot diverge.
 - Widen `.ledger-strip__time` from `58px`. Must fit `Aug 5, 10:28` and
   `8月5日 10:28` at 11.5px mono. Measure, don't guess.
+  - **Shipped at 104px, and the first measurement was the wrong one.** Sizing
+    off an August sample (82.8px en / 79.2px ja) would have clipped in
+    December: the widest date each locale can produce is `Dec 25, 23:59` at
+    89.7px and `12月25日 23:59` at 93.0px — and ja is the wider worst case
+    despite being the narrower sample.
+  - **Review caught a layout regression this created.** A `1fr` track is
+    `minmax(auto, 1fr)`, so it floors at min-content, and the strip's narrowest
+    subjects are unbreakable tokens from `rollbackSubject` (`PAYMENT_MODE`).
+    Past that floor the row overflows a card that is `overflow: hidden`, so it
+    clips rather than scrolls. Measured with an `applied` row in play (the
+    SealStamp's 30px fourth track): 2px over at 390 and 72px at 320, against a
+    58px column that was clean at 390 and already 26px over at 320.
+    `min-width: 0` + `overflow-wrap: anywhere` on `.ledger-strip__title` takes
+    all four widths to 0, fixing the pre-existing 320px case too.
+  - Pinned in `transparency.smoke.ts` at 390px, beside the estate's own phone
+    pin. Two traps, both hit and both documented in the test: the shared
+    decisions fixture is all prose-with-spaces and **cannot** reach the
+    min-content floor (the first version of the pin passed with the fix
+    reverted), and the SealStamp is `rotate(-11deg)` so a client rect reads
+    2.59px past its cell on a correct layout — the sweep neutralises transforms
+    for the measurement.
 - A row with absent/unparseable `created_at` still renders `''` — `fmtStamp`
   returns `''` for absent and the raw string for unparseable, same as today's
   `fmtClock`. A null-ts row resets the run, so the row after it may carry a
