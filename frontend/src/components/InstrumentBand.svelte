@@ -217,7 +217,14 @@
   // effect would need a second flush and start the animation a frame late.
   // untrack, because the effect both reads and writes popN; without it the
   // write re-triggers the effect (it would converge, but only by wasting a pass).
-  const BAND_KEYS = ['managed', 'drift', 'awaiting'] as const;
+  //
+  // Derived from STATS, not a second hand-typed literal: STATS is this file's
+  // own source of truth for "what stats exist" (see the header comment). A
+  // literal list here would be a second, unenforced copy of BandStat's members
+  // — the Record<BandStat, …> literals below DO force a compile error if
+  // BandStat grows a key, but a stray array literal doesn't, so a new stat
+  // would silently never pop instead of failing to build.
+  const BAND_KEYS = STATS.map((s) => s.key);
 
   let popN = $state<Record<BandStat, number>>({ managed: 0, drift: 0, awaiting: 0 });
   // Seeded to null (NOT the current prop values — reading `managed`/`drift`/

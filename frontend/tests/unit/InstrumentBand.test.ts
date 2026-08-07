@@ -366,4 +366,21 @@ describe('InstrumentBand — numeral pop (ds-wd2.13)', () => {
     await rerender(props({ managed: 9, drift: 7, awaiting: 0 }));
     expect(numeral(getByTestId('instrument-band-drift')).className).toContain('--pop');
   });
+
+  // The {#key} block is the whole mechanism: a pop restarts the CSS animation
+  // because the span is REBUILT, not because a class was toggled. Without this
+  // test, dropping {#key} for a reactive class binding would keep all the
+  // assertions above green while silently removing the restart.
+  it('rebuilds the numeral node on a pop, which is what restarts the animation', async () => {
+    const { getByTestId, rerender } = render(InstrumentBand, {
+      props: props({ managed: 9, drift: 6, awaiting: 0 }),
+    });
+    const before = numeral(getByTestId('instrument-band-drift'));
+    await rerender(props({ managed: 9, drift: 7, awaiting: 0 }));
+    expect(numeral(getByTestId('instrument-band-drift'))).not.toBe(before);
+
+    const same = numeral(getByTestId('instrument-band-managed'));
+    await rerender(props({ managed: 9, drift: 6, awaiting: 0 }));
+    expect(numeral(getByTestId('instrument-band-managed'))).toBe(same);
+  });
 });
