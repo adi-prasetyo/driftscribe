@@ -388,21 +388,24 @@ describe('ApprovalDesk — awaiting band stat is a figure, not a control', () =>
 });
 
 describe('ApprovalDesk — pending state, rollback source', () => {
-  it('renders the Anchor who-line, the diff table, and both CTAs pointing at the safe href', () => {
+  it('renders the Anchor who-line, the diff table, and one CTA pointing at the safe href', () => {
     const d = rollbackDecision();
-    const { getByTestId, getByText } = render(ApprovalDesk, {
+    const { getByTestId, queryByTestId, getByText } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
     });
     const pending = getByTestId('approval-desk-pending');
     expect(pending.getAttribute('data-source')).toBe('rollback');
     expect(getByText('Anchor is proposing a fix')).toBeTruthy();
     expect(getByTestId('drift-diff-card')).toBeTruthy();
-    const approve = getByTestId('approval-desk-approve') as HTMLAnchorElement;
-    const reject = getByTestId('approval-desk-reject') as HTMLAnchorElement;
-    expect(approve.getAttribute('href')).toBe('/approvals/rb-1?t=abc');
-    expect(reject.getAttribute('href')).toBe('/approvals/rb-1?t=abc');
-    expect(approve.getAttribute('target')).toBe('_blank');
-    expect(approve.getAttribute('rel')).toBe('noopener');
+    const review = getByTestId('approval-desk-review') as HTMLAnchorElement;
+    expect(review.getAttribute('href')).toBe('/approvals/rb-1?t=abc');
+    expect(review.getAttribute('target')).toBe('_blank');
+    expect(review.getAttribute('rel')).toBe('noopener');
+    // The rollback lane took the SAME collapse as the IaC lane: its old Reject
+    // anchor carried this identical href and could not reject anything either.
+    // Counting the controls is the guard that survives — querying the deleted
+    // testid would pass no matter what this arm rendered.
+    expect(getByTestId('approval-desk-acts').children).toHaveLength(1);
   });
 
   // ds-hnn: the diff card's STATUS column rendered `contract_status` verbatim,
@@ -606,8 +609,10 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
   // ds-22k. The byline fix left a card that said "approved" directly above a
   // button saying "Approve this proposal" and a Reject that could not un-merge
   // a merged PR — a control whose label is a promise it cannot keep, on the
-  // human-in-the-loop surface of all places.
-  it('an already-approved change offers the APPLY, and no Reject at all', () => {
+  // human-in-the-loop surface of all places. The Reject anchor is now gone from
+  // EVERY arm (it only ever navigated), so asserting its absence here would be
+  // vacuous; the live guard is that this arm shows the apply and nothing else.
+  it('an already-approved change offers the APPLY, and solicits nothing', () => {
     const d = iacDecision({ pr_number: 99, pr_title: undefined, merge_state: 'merged' });
     const { getByTestId, queryByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn() },
@@ -620,11 +625,10 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(apply.getAttribute('href')).toContain('/iac-approvals/99');
     expect(apply.getAttribute('target')).toBe('_blank');
     expect(apply.getAttribute('rel')).toBe('noopener');
-    expect(queryByTestId('approval-desk-reject')).toBeNull();
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
+    expect(getByTestId('approval-desk-acts').children).toHaveLength(1);
     const pending = queryByTestId('approval-desk-pending')?.textContent ?? '';
-    expect(pending).not.toContain('Approve this proposal');
-    expect(pending).not.toContain('Reject');
+    expect(pending).not.toContain('Review this proposal');
   });
 
   it('an approved pre-merge change offers CONTINUE, never Apply or a second approval', () => {
@@ -641,14 +645,15 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
       'Continue this change',
     );
     expect(queryByTestId('approval-desk-apply')).toBeNull();
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
-    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
+    expect(getByTestId('approval-desk-acts').children).toHaveLength(1);
   });
 
   // The CTA must key off the SAME discriminator as the byline. This is the
   // stale-cache frame again (the listing arm wins for up to 60s after the
-  // approve click): a card whose byline reads "approved" over a button reading
-  // "Approve this proposal" is the two-surfaces-disagree bug ds-db0 was.
+  // approve click): a card whose byline reads "approved" over a button that
+  // still opens the first-approval gate is the two-surfaces-disagree bug ds-db0
+  // was.
   it('stale cached listing + proof of approval: the CTA follows the byline', () => {
     const approval = pendingIac({ title: undefined }); // PR #7, still "open" per cache
     const approved = iacDecision({
@@ -666,21 +671,24 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
       },
     });
     expect(getByTestId('approval-desk-apply')).toBeTruthy();
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
-    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
   });
 
   // The other direction, and the one that would matter most if it broke: a
-  // genuinely unapproved change must keep its full Approve/Reject path. Losing
-  // the gate is far worse than labelling it awkwardly.
-  it('a genuinely unapproved listing row keeps Approve AND Reject', () => {
+  // genuinely unapproved change must keep its full approval path. Losing the
+  // gate is far worse than labelling it awkwardly. What "the full path" means
+  // is now ONE link to the HMAC-gated page — that page owns both Approve and
+  // Reject, and the desk never did.
+  it('a genuinely unapproved listing row keeps the gate, as one review link', () => {
     const approval = pendingIac({ title: 'Adopt orders-sub into IaC' });
     const { getByTestId, queryByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [], pendingApprovals: [approval], onShowEstate: vi.fn() },
     });
-    expect(getByTestId('approval-desk-approve').textContent?.trim()).toBe('Approve this proposal');
-    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+    expect(getByTestId('approval-desk-review').textContent?.trim()).toBe('Review this proposal');
     expect(queryByTestId('approval-desk-apply')).toBeNull();
+    // The anti-regression guard: a second control here could only be a second
+    // DESTINATION, never a second verb against the same href.
+    expect(getByTestId('approval-desk-acts').children).toHaveLength(1);
   });
 
   // ds-22k's acceptance criterion, and the reason it was filed as one bead
@@ -698,7 +706,10 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     const text = container.textContent ?? '';
     expect(text).not.toMatch(/awaiting your approval/i);
     expect(text).not.toMatch(/waiting for your (approval|review)/i);
-    expect(text).not.toMatch(/approve this proposal/i);
+    // Tracks the CURRENT first-approval copy. It used to read "approve this
+    // proposal"; that string left the codebase with `approveCta`, and a regex
+    // for text no render path can emit is a tooth this net no longer has.
+    expect(text).not.toMatch(/review this proposal/i);
     // The aria layer too — a screen reader must not hear the solicitation the
     // visible layer stopped making.
     for (const el of Array.from(container.querySelectorAll('[aria-label]'))) {
@@ -743,8 +754,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(getByTestId('approval-desk-view-failure').textContent?.trim()).toBe(
       'View failure details',
     );
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
-    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
     expect(queryByTestId('approval-desk-apply')).toBeNull();
     expect(queryByTestId('approval-desk-continue')).toBeNull();
   });
@@ -833,7 +843,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
         onShowEstate: vi.fn(),
       },
     });
-    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(getByTestId('approval-desk-review')).toBeTruthy();
     expect(queryByTestId('approval-desk-apply')).toBeNull();
   });
 
@@ -867,7 +877,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
         onShowEstate: vi.fn(),
       },
     });
-    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(getByTestId('approval-desk-review')).toBeTruthy();
     expect(queryByTestId('approval-desk-view-failure')).toBeNull();
   });
 
@@ -899,8 +909,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
           onShowEstate: vi.fn(),
         },
       });
-      expect(getByTestId('approval-desk-approve')).toBeTruthy();
-      expect(getByTestId('approval-desk-reject')).toBeTruthy();
+      expect(getByTestId('approval-desk-review')).toBeTruthy();
       expect(queryByTestId('approval-desk-view-failure')).toBeNull();
     },
   );
@@ -926,7 +935,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
         onShowEstate: vi.fn(),
       },
     });
-    expect(getByTestId('approval-desk-approve')).toBeTruthy();
+    expect(getByTestId('approval-desk-review')).toBeTruthy();
     expect(queryByTestId('approval-desk-view')).toBeNull();
   });
 
@@ -952,8 +961,7 @@ describe('ApprovalDesk — pending state, iac source, both provenance arms', () 
     expect(getByTestId('approval-desk-view').textContent?.trim()).toBe(
       'View approval details',
     );
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
-    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
     expect(queryByTestId('approval-desk-apply')).toBeNull();
     expect(queryByTestId('approval-desk-continue')).toBeNull();
   });
@@ -1235,7 +1243,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     const { getByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn(), refresh },
     });
-    await fireEvent.click(getByTestId('approval-desk-approve'));
+    await fireEvent.click(getByTestId('approval-desk-review'));
     expect(refresh).not.toHaveBeenCalled(); // arming alone does nothing yet
 
     window.dispatchEvent(new Event('focus'));
@@ -1289,7 +1297,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     const { getByTestId } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn(), refresh },
     });
-    await fireEvent.click(getByTestId('approval-desk-approve'));
+    await fireEvent.click(getByTestId('approval-desk-review'));
     window.dispatchEvent(new Event('focus')); // starts the ladder
     await vi.advanceTimersByTimeAsync(0);
     const afterFirstRung = refresh.mock.calls.length;
@@ -1326,7 +1334,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
         refresh,
       },
     });
-    await fireEvent.click(getByTestId('approval-desk-approve'));
+    await fireEvent.click(getByTestId('approval-desk-review'));
     window.dispatchEvent(new Event('focus'));
 
     await vi.advanceTimersByTimeAsync(0);
@@ -1360,14 +1368,14 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
       },
     });
 
-    await fireEvent.click(getByTestId('approval-desk-approve'));
+    await fireEvent.click(getByTestId('approval-desk-review'));
     window.dispatchEvent(new Event('focus'));
     await vi.advanceTimersByTimeAsync(20_000); // drain the first ladder fully
     const afterFirst = refresh.mock.calls.length;
     expect(afterFirst).toBe(3);
 
     // A fresh CTA click + return focus — the operator approving a second thing.
-    await fireEvent.click(getByTestId('approval-desk-approve'));
+    await fireEvent.click(getByTestId('approval-desk-review'));
     window.dispatchEvent(new Event('focus'));
     await vi.advanceTimersByTimeAsync(20_000);
     expect(refresh.mock.calls.length).toBe(afterFirst * 2);
@@ -1379,7 +1387,7 @@ describe('ApprovalDesk — fast convergence after an approval (bead ds-wd2.2)', 
     const { getByTestId, unmount } = render(ApprovalDesk, {
       props: { graph: GRAPH, decisions: [d], pendingApprovals: [], onShowEstate: vi.fn(), refresh },
     });
-    await fireEvent.click(getByTestId('approval-desk-approve'));
+    await fireEvent.click(getByTestId('approval-desk-review'));
     window.dispatchEvent(new Event('focus'));
     await vi.advanceTimersByTimeAsync(0);
     const before = refresh.mock.calls.length;
@@ -1773,10 +1781,9 @@ describe('ApprovalDesk — undelivered-notification notice (ds-hdt)', () => {
       'No notification could be sent',
     );
     // The proposal itself is UNAFFECTED — the notice is a footnote on a card
-    // that still carries its full Approve/Reject path. That is the whole point
-    // of ds-hdt: delivery is advisory, the row is the surface.
-    expect(getByTestId('approval-desk-approve')).toBeTruthy();
-    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+    // that still carries its full approval path. That is the whole point of
+    // ds-hdt: delivery is advisory, the row is the surface.
+    expect(getByTestId('approval-desk-review')).toBeTruthy();
   });
 
   it.each([
@@ -1838,8 +1845,7 @@ describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds
     expect(card.getAttribute('data-source')).toBe('rollback');
     expect(card.textContent).toContain('LOG_LEVEL');
     // Verdict: gone.
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
-    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
     expect(getByTestId('approval-desk-view-stale')).toBeTruthy();
     expect(getByTestId('approval-desk-stale-notice')).toBeTruthy();
     // The rollback byline reaches the template through its OWN ternary, not
@@ -1862,7 +1868,7 @@ describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds
     // Identity: the PR title and number are facts about WHICH item this is.
     expect(card.textContent).toContain('Adopt orders-sub into IaC');
     expect(card.textContent).toContain('PR #7');
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
     expect(getByTestId('approval-desk-view-stale')).toBeTruthy();
   });
 
@@ -1926,8 +1932,7 @@ describe('ApprovalDesk — a stale lane keeps identity and drops the verdict (ds
     const { getByTestId, queryByTestId } = render(ApprovalDesk, {
       props: { ...base, decisions: [rollbackDecision()], pendingApprovals: [] },
     });
-    expect(getByTestId('approval-desk-approve')).toBeTruthy();
-    expect(getByTestId('approval-desk-reject')).toBeTruthy();
+    expect(getByTestId('approval-desk-review')).toBeTruthy();
     expect(queryByTestId('approval-desk-view-stale')).toBeNull();
     expect(queryByTestId('approval-desk-stale-notice')).toBeNull();
     expect(getByTestId('approval-desk-pending').textContent).toContain('Anchor is proposing a fix');

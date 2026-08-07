@@ -623,10 +623,13 @@
              the approval page. Only a fresh/ambiguous listing keeps the full
              first-approval gate. Recorded approval gets one honest remaining
              action (continue merge or apply); terminal/superseded states get a
-             view-only link because their page deliberately renders no form. -->
-        <div class="approval-desk__acts">
+             view-only link because their page deliberately renders no form.
+             Every arm is EXACTLY ONE link — the desk navigates, it never
+             decides — so a second button here would have to be a second
+             destination, not a second verb. -->
+        <div class="approval-desk__acts" data-testid="approval-desk-acts">
           {#if model.stale}
-            <!-- ds-jk9. One neutral link, never Continue/Apply/Approve/Reject.
+            <!-- ds-jk9. One neutral link, never Continue/Apply/Review.
                  The operator loses no capability: the HMAC-gated approval page
                  is authoritative, re-reads live state, and renders either the
                  real form or a spent-token banner. What they stop getting is
@@ -658,21 +661,23 @@
               onclick={armReturnLadder}>{$t('desk.pending.applyCta')}</a
             >
           {:else if pendingCta.kind === 'approve'}
+            <!-- ONE link, not an Approve/Reject pair. Both anchors used to
+                 carry the SAME href, because the desk cannot approve or reject
+                 anything: the decision is a POST on the HMAC-gated page
+                 (agent/templates/approval.html, decision=approve|reject), whose
+                 GET deliberately re-reads live state and may render a
+                 spent-token, paused or autonomy-blocked form instead. So a
+                 "Reject" here was a label promising an action its control could
+                 not perform — ds-22k's defect class, one surface over. The desk
+                 names the NAVIGATION (matching its `continue`/`apply`/`view`
+                 siblings) and lets that page own both verbs. -->
             <a
               class="approval-desk__btn approval-desk__btn--primary"
-              data-testid="approval-desk-approve"
+              data-testid="approval-desk-review"
               href={model.href}
               target="_blank"
               rel="noopener"
-              onclick={armReturnLadder}>{$t('desk.pending.approveCta')}</a
-            >
-            <a
-              class="approval-desk__btn approval-desk__btn--ghost"
-              data-testid="approval-desk-reject"
-              href={model.href}
-              target="_blank"
-              rel="noopener"
-              onclick={armReturnLadder}>{$t('desk.pending.rejectCta')}</a
+              onclick={armReturnLadder}>{$t('desk.pending.reviewCta')}</a
             >
           {:else}
             <a
@@ -975,11 +980,6 @@
   .approval-desk__btn--primary {
     background: var(--ds-navy);
     color: #fff;
-  }
-  .approval-desk__btn--ghost {
-    background: transparent;
-    color: var(--ds-fg-soft);
-    border: 1px solid var(--ds-border);
   }
 
   .approval-desk__aud {

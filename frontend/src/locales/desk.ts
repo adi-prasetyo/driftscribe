@@ -174,18 +174,20 @@ export const desk = {
       'Review the details for infrastructure change PR #{pr}.',
     'desk.pending.prMeta': 'PR #{pr}',
     'desk.pending.subtitleProposedAt': 'Proposed {time}',
-    // Both anchors point at the SAME href (deskModel's `href`) — the actual
-    // Approve/Reject controls live on that HMAC-gated page (agent/main.py's
-    // approval_post decision=approve|reject), never in-app. See the
-    // iac_reject_nonbinding_semantics note: Reject there persists nothing.
     // ds-hdt. States the fact (no notification went out) and its
     // consequence (you are seeing this because you looked), without
     // alarming: the proposal itself is unaffected and still actionable.
     'desk.pending.notifyFailed':
       'No notification could be sent for this proposal, so it has been waiting here unannounced.',
-    'desk.pending.approveCta': 'Approve this proposal',
-    'desk.pending.rejectCta': 'Reject',
-    // Shown INSTEAD of the pair above once the first approval is recorded
+    // A NAVIGATION verb, deliberately. This was an Approve/Reject pair whose
+    // two anchors carried the SAME href (deskModel's `href`): the real controls
+    // live on that HMAC-gated page (agent/main.py's approval_post,
+    // decision=approve|reject) and never in-app, so "Reject" named an action
+    // the desk could not take. See the iac_reject_nonbinding_semantics note —
+    // Reject there persists nothing either. Keep this a navigation verb like
+    // its continue/apply/view siblings; the approval page owns both outcomes.
+    'desk.pending.reviewCta': 'Review this proposal',
+    // Shown INSTEAD of the review link above once the first approval is recorded
     // (ds-22k). A merge that has not landed must be continued before it can be
     // applied; after merge confirmation the remaining step is the apply.
     'desk.pending.continueCta': 'Continue this change',
@@ -459,9 +461,8 @@ export const desk = {
     'desk.pending.subtitleProposedAt': '提案 {time}',
     'desk.pending.notifyFailed':
       'この提案の通知は送信できませんでした。お知らせのないまま、ここでお待ちしていました。',
-    'desk.pending.approveCta': 'この提案を承認する',
-    'desk.pending.rejectCta': '却下する',
-    // 初回承認済みの場合は上記2つに代えて状態に合う操作を1つだけ表示する（ds-22k）。
+    'desk.pending.reviewCta': 'この提案を確認する',
+    // 初回承認済みの場合は上記に代えて状態に合う操作を1つだけ表示する（ds-22k）。
     'desk.pending.continueCta': 'この変更を続行する',
     'desk.pending.applyCta': 'この変更を適用する',
     'desk.pending.viewDetailsCta': '承認の詳細を見る',
