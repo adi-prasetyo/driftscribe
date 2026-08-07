@@ -422,8 +422,18 @@
      fast-forwards to the end frame) leaves every existing visual baseline
      unmoved.
      Restart comes from the {#key} block in the markup rebuilding this span, not
-     from re-adding the class — see the pop-counter comment in the script. */
+     from re-adding the class — see the pop-counter comment in the script.
+     `transform-origin: left center` overrides the default centre origin the
+     mockup used. This numeral is `align-items: flex-start` / `text-align: left`
+     with its label pinned directly beneath, so scaling about the centre moves
+     the LEFT EDGE against that fixed label — measured on the live app (the
+     ds-wd2.13 visual rig's rAF probe) at 531.28px at the scale(1.14) peak vs
+     533.33px at rest, a ~2px lateral creep. Against a static label that reads
+     as the numeral drifting sideways, not pulsing. Left-centre origin makes
+     the growth purely rightward/vertical, so the left edge — and the label
+     under it — never move. */
   .instrument-band__num--pop {
+    transform-origin: left center;
     animation: instrument-band-pop 0.3s ease;
   }
   @keyframes instrument-band-pop {
