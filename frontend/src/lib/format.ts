@@ -422,6 +422,37 @@ export function fmtStamp(iso: string | undefined, l?: Locale): string {
 }
 
 /**
+ * Do two ISO timestamps fall on the same calendar day, in the READER's own
+ * timezone? The pairing predicate for `fmtStamp`/`fmtClock`: a surface that
+ * lists rows newest-first shows the fuller stamp on the first row of each day's
+ * run and the bare clock for the rest of it, so a multi-day list does not read
+ * as a shuffled one.
+ *
+ * Either side missing or unparseable => `false`, which downgrades to the fuller
+ * stamp. The asymmetry is deliberate: over-labelling one row's time is
+ * recoverable, silently implying two rows share a day is not.
+ *
+ * Reader-timezone rather than a pinned zone, matching every formatter in this
+ * module — a day boundary computed in JST while the clock beside it renders in
+ * the host zone would put the date change on the wrong row.
+ *
+ * Lifted here from ConversationThread (ds-wd2.18), which had it as a private
+ * helper, when LedgerStrip needed the same rule. See `fmtStamp` above for what
+ * four uncoordinated copies of a timestamp helper cost the last time.
+ */
+export function sameDay(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const x = new Date(a);
+  const y = new Date(b);
+  if (Number.isNaN(x.getTime()) || Number.isNaN(y.getTime())) return false;
+  return (
+    x.getFullYear() === y.getFullYear() &&
+    x.getMonth() === y.getMonth() &&
+    x.getDate() === y.getDate()
+  );
+}
+
+/**
  * Render an ISO timestamp as a readable absolute wall-clock string with the
  * year (used by the DecisionSummary card — a historical decision can be from
  * any date, so unlike the rail's compact no-year form we include the year).
