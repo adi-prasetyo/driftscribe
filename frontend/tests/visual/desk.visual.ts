@@ -465,3 +465,54 @@ for (const locale of ['en', 'ja'] as Locale[]) {
     });
   }
 }
+
+// ── ds-wd2.13: watch a band numeral tick ────────────────────────────────────
+// The pop is 300ms of scale on a leaf <span>. jsdom has neither layout nor
+// animation, so the unit tests can only prove the counter; this proves the
+// counter increments in the REAL app through the REAL data path, and gives the
+// operator something to actually look at.
+//
+// The change is delivered the way prod delivers it: mutate the fixture (the
+// mockDesk routes read it per request), then fire `visibilitychange`, which
+// overviewStore listens on (overviewStore.ts:358) so a returning operator sees a
+// new proposal without waiting out the 45s poll.
+test('band — a numeral ticks when a proposal lands (ds-wd2.13)', async ({ page }) => {
+  // Starts as `resting` but with drift already at 6, so the beat is a change
+  // rather than a first reading: 6 → 7 drift, 0 → 1 awaiting.
+  const fx: DeskFixture = {
+    decisions: ledgerHistory(),
+    pendingApprovals: [],
+    generatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    drift: 6,
+  };
+
+  await seed(page, 'en');
+  await mockDesk(page, fx);
+  await page.setViewportSize(VIEWPORT);
+  await page.goto(DESK_URL);
+
+  const num = (stat: string) =>
+    page.locator(`[data-testid="instrument-band-${stat}"] .instrument-band__num`);
+
+  // Still on arrival. This is the "must not fire on first mount" rule asserted
+  // against the real app, including the null → 6 transition as the first refresh
+  // cycle replaces the em dashes.
+  await expect(num('drift')).toHaveText('6');
+  await expect(num('drift')).toHaveAttribute('data-pop', '0');
+  await expect(num('awaiting')).toHaveAttribute('data-pop', '0');
+  await page.screenshot({ path: resolve(SHOTS, 'band-pop-1-before.png') });
+
+  // Drift lands and Anchor proposes a rollback.
+  fx.drift = 7;
+  fx.decisions = [rollbackPending(), ...fx.decisions];
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
+  await expect(num('drift')).toHaveText('7');
+  await expect(num('drift')).toHaveAttribute('data-pop', '1');
+  await expect(num('awaiting')).toHaveText('1');
+  await expect(num('awaiting')).toHaveAttribute('data-pop', '1');
+  // graphBody pins totals.managed at 9, so managed did not move — and a numeral
+  // that did not move must not have popped.
+  await expect(num('managed')).toHaveAttribute('data-pop', '0');
+  await page.screenshot({ path: resolve(SHOTS, 'band-pop-2-after.png') });
+});
