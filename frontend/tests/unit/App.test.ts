@@ -1739,7 +1739,7 @@ describe('App — lane freshness reaches the desk (ds-jk9)', () => {
     history.replaceState(null, '', '/');
     const { findByTestId, queryByTestId } = render(App);
 
-    expect(await findByTestId('approval-desk-approve')).toBeTruthy();
+    expect(await findByTestId('approval-desk-review')).toBeTruthy();
     expect(queryByTestId('approval-desk-stale-notice')).toBeNull();
 
     approvalsOk = false;
@@ -1749,7 +1749,6 @@ describe('App — lane freshness reaches the desk (ds-jk9)', () => {
     expect(queryByTestId('approval-desk-pending')?.textContent).toContain(
       'Adopt orders-sub into IaC',
     );
-    expect(queryByTestId('approval-desk-approve')).toBeNull();
-    expect(queryByTestId('approval-desk-reject')).toBeNull();
+    expect(queryByTestId('approval-desk-review')).toBeNull();
   });
 });
