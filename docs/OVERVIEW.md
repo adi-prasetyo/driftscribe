@@ -122,12 +122,12 @@ one of them.
 
 - **Adoptable resources (the Infrastructure map's job).** Real resources anywhere in the GCP
   project that are not described in `iac/`. Nothing diverged here, because nothing was ever
-  declared, so the UI calls these **adoptable** (`取り込み対象`) and not drift. They are found by a
-  completely different path: the **`infra-reader`** worker inventories the whole project through
-  **Cloud Asset Inventory (CAI)**, and the Infrastructure panel flags the undeclared resources
-  DriftScribe can actually import. You resolve these by **adopting** them (Provision opens an
-  import PR), not through Anchor. Anchor never sees them, and its Eventarc trigger never fires for
-  them.
+  declared, so the map does not call any of this drift. The ones DriftScribe can actually import
+  are labeled **adoptable** (`取り込み対象`); the rest, which are most of them, stay visible as
+  undeclared but not adoptable. They are found by a completely different path: the
+  **`infra-reader`** worker inventories the whole project through **Cloud Asset Inventory (CAI)**.
+  You resolve an adoptable one by **adopting** it (Provision opens an import PR), not through
+  Anchor. Anchor never sees them, and its Eventarc trigger never fires for them.
 
 One consequence worth knowing: CAI is an **eventually-consistent index**, and the resource map is
 cached on top of it. Create a resource by hand and it takes a few minutes before CAI has indexed it

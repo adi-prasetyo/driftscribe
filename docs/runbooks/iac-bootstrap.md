@@ -195,7 +195,7 @@ into state, so the plan should show an **import** of
 > - Service account: `projects/<P>/serviceAccounts/<acct>@<P>.iam.gserviceaccount.com`
 >
 > An alternate spelling still imports correctly into state, but the resource will
-> show as **drift (not-in-IaC)** in the infra graph — a false negative that lands
+> show as **adoptable (not declared in IaC)** in the infra graph — a false negative that lands
 > in `declared_not_found` with a `format_mismatch` cause. Resources DriftScribe
 > authors itself go through the resolver's derived path and are unaffected; this
 > contract applies only to hand-written `import {}` blocks.

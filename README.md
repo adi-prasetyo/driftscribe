@@ -269,9 +269,10 @@ single-tenant coupling map and the productization paths are written up in
 [`docs/plans/2026-06-24-multi-tenant-productization-scope.md`](docs/plans/2026-06-24-multi-tenant-productization-scope.md).
 
 **Deeper drift detection.** The infra map today catches what is *absent*: a
-resource that exists in the project but is not declared in IaC, which the UI
-calls adoptable rather than drift, because nothing diverged from a declaration
-that was never written. What it cannot see yet is real, attribute-level drift,
+resource that exists in the project but is not declared in IaC, labeled
+adoptable rather than drift when it is a type we can import, because nothing
+diverged from a declaration that was never written. What it cannot see yet is
+real, attribute-level drift,
 where a managed resource still matches its declaration by identity while its
 live configuration has quietly diverged (a console edit to a lifecycle rule, a
 changed env var). The designed next step is a periodic, non-mutating check that
