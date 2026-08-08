@@ -1,7 +1,12 @@
 # DriftScribe — agent instructions
 
-An AI DevOps agent that watches a Google Cloud estate and **proposes** fixes but
-never applies a risky change on its own.
+The system that makes it safe to point an AI agent at a Google Cloud estate. Its
+crews **propose** fixes but never apply a risky change on their own.
+
+**DriftScribe is the harness, not the agent.** Describe it as a system, a harness,
+or 「仕組み」 — never as "an AI agent" / 「AI エージェント」. The *crews*
+(Anchor/Patch/Provision/Explore) and the Gemini model are the agents; DriftScribe is
+what bounds them. This applies to docs, the deck, video copy, and UI strings.
 
 **Start with [`docs/OVERVIEW.md`](docs/OVERVIEW.md).** Four dedicated skills exist —
 invoke them when the work touches their area:

@@ -7,11 +7,11 @@
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
-**An AI DevOps agent that watches your Google Cloud estate and proposes fixes,
-but never applies a risky change on its own.** Four crews ship today, each one a
-workload with its own prompt and its own short list of tools. Each reads
-everything in its lane, proposes rather than applies, and is held to the safety
-boundary in the last column:
+**The system that makes it safe to point an AI agent at your Google Cloud estate:
+it proposes fixes, and nothing risky is applied without a human.** Four crews ship
+today, each one a workload with its own prompt and its own short list of tools.
+Each reads everything in its lane, proposes rather than applies, and is held to
+the safety boundary in the last column:
 
 | Crew | Trigger | Scope | Safety boundary |
 | --- | --- | --- | --- |

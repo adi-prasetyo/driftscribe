@@ -7,8 +7,8 @@
 [![CI](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml/badge.svg)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/ci.yml)
 [![E2E](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml/badge.svg?event=workflow_dispatch)](https://github.com/adi-prasetyo/driftscribe/actions/workflows/e2e.yml)
 
-**Google Cloud 上のインフラを監視し、修正を提案する AI DevOps エージェント。
-ただし、リスクのある変更を自分の判断だけで適用することは決してありません。**
+**AI エージェントに Google Cloud のインフラを任せるための仕組み。
+クルーが修正を提案し、リスクのある変更が人間の承認なしに適用されることはありません。**
 Anchor、Patch、Provision、Explore の 4 つのエージェントチームが動いています。
 それぞれが 1 つのワークロード（独自のプロンプトと専用のツール一式）を持ち、
 自分の担当範囲ではすべてを読み取れますが、変更を適用するのではなく提案に
