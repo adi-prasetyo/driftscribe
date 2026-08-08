@@ -21,7 +21,7 @@
   } from '../lib/timeline';
   import type { TraceCacheEntry } from '../lib/traceCache';
   import { workerLabel } from '../lib/labels';
-  import { fmtPreview, fmtTokens } from '../lib/format';
+  import { fmtLatencyMs, fmtPreview, fmtTokens } from '../lib/format';
   import { t, locale, fmtNumber } from '../lib/i18n';
   import type { Decision } from '../lib/types';
   import DriftDiffCard from './DriftDiffCard.svelte';
@@ -173,7 +173,11 @@
           </li>
         {:else if row.kind === 'tool'}
           {@const ok = row.result ? row.result.result_ok !== false : null}
-          {@const toolLat = num(row.result?.latency_ms ?? row.call?.latency_ms)}
+          {@const toolLat = fmtLatencyMs(
+            row.result?.latency_ms ?? row.call?.latency_ms,
+            $t,
+            $locale,
+          )}
           <li class="trace-row trace-row--tool" data-testid="trace-row-tool">
             <details class="event" data-insert-id={eventKey((row.call ?? row.result)!)}>
               <summary class="event__summary">
@@ -195,9 +199,8 @@
                      without a result is exactly the row where the number is
                      most wanted, and reading the result alone left it blank
                      there (Codex review round 3). -->
-                {#if toolLat != null}
-                  <span class="event__lat" data-testid="trace-row-tool-latency"
-                    >{$t('timeline.latencyMs', { ms: toolLat })}</span>
+                {#if toolLat}
+                  <span class="event__lat" data-testid="trace-row-tool-latency">{toolLat}</span>
                 {/if}
               </summary>
               {#if row.call}
@@ -228,7 +231,7 @@
             </details>
           </li>
         {:else}
-          {@const lat = num(row.event.latency_ms)}
+          {@const lat = fmtLatencyMs(row.event.latency_ms, $t, $locale)}
           {@const docs = num(row.event.doc_count)}
           <li class="trace-row trace-row--mcp" data-testid="trace-row-mcp">
             <span class="ds-label mcp__kind">{$t('disclosure.mcpLabel')}</span>
@@ -244,8 +247,8 @@
               <span class="mcp__lat" data-testid="trace-row-mcp-docs"
                 >{$t('disclosure.docs', { n: docs })}</span>
             {/if}
-            {#if lat != null}
-              <span class="mcp__lat">{$t('timeline.latencyMs', { ms: lat })}</span>
+            {#if lat}
+              <span class="mcp__lat">{lat}</span>
             {/if}
           </li>
         {/if}
