@@ -715,12 +715,22 @@ test.describe('transparency UI (mock smoke)', () => {
     // placed under the paragraph claiming otherwise is a footnote on something
     // the operator has already believed. Measured, not inferred from DOM order:
     // this is exactly the kind of claim jsdom cannot make.
-    const [caveatBottom, proseTop] = await Promise.all([
-      record.getByTestId('decision-dry-run').evaluate((el) => el.getBoundingClientRect().bottom),
-      record
-        .getByTestId('decision-record-prose')
-        .evaluate((el) => el.getBoundingClientRect().top),
-    ]);
+    //
+    // ONE evaluate, not two under Promise.all — this was the suite's long-lived
+    // ~1-in-6 flake (2026-08-08, CI on ds-wd2.21: caveat bottom 484.09 against a
+    // prose top of 469.09, exactly one line apart). Two evaluates are two round
+    // trips to the page, and the record's own content is still settling between
+    // them: anything that reflows the region — a headline rewrapping as a web
+    // font swaps in, the trace timeline arriving — moves BOTH boxes, and reading
+    // one before that shift and the other after compares two different layouts.
+    // Inside a single synchronous block no reflow can land between the two
+    // reads, so the pair is always from one layout. The invariant under test
+    // never changed; only whether the measurement could see it.
+    const [caveatBottom, proseTop] = await record.evaluate((el) => {
+      const caveat = el.querySelector('[data-testid="decision-dry-run"]') as HTMLElement;
+      const prose = el.querySelector('[data-testid="decision-record-prose"]') as HTMLElement;
+      return [caveat.getBoundingClientRect().bottom, prose.getBoundingClientRect().top];
+    });
     expect(caveatBottom).toBeLessThanOrEqual(proseTop);
   });
 
