@@ -406,7 +406,39 @@ describe('TraceDetail — what the run spent and what it consulted', () => {
         ],
       }),
     );
-    expect(getByTestId('trace-row-tool-latency').textContent).toContain('1840');
+    expect(getByTestId('trace-row-tool-latency').textContent).toBe('1,840 ms');
+  });
+
+  it('rounds a float latency instead of printing the raw measurement', () => {
+    // `latency_ms` is a perf_counter delta, so the payload carries full float
+    // precision. It was reaching the screen intact: a real Explore turn's MCP
+    // rows read `301.05241399996885 ms`, four of them stacked, on the surface
+    // a judge opens to check the agent's work (ds-90d, found filming S3).
+    const { getByTestId, container } = mount(
+      entry({
+        events: [
+          ev({ event: 'tool_call', tool_name: 't', latency_ms: 1839.6, insert_id: 'c1' }),
+          ev({
+            event: 'mcp_call',
+            mcp_server: 'developer_knowledge',
+            latency_ms: 301.05241399996885,
+            insert_id: 'm1',
+          }),
+        ],
+      }),
+    );
+    expect(getByTestId('trace-row-tool-latency').textContent).toBe('1,840 ms');
+    expect(getByTestId('trace-row-mcp').textContent).toContain('301 ms');
+    // No fractional digit survives anywhere in the rows.
+    expect(container.textContent).not.toMatch(/\d\.\d+\s*ms/);
+  });
+
+  it('renders no latency token at all for a non-finite measurement', () => {
+    // A NaN would otherwise have printed "NaN ms" on camera.
+    const { queryByTestId } = mount(
+      entry({ events: [ev({ event: 'tool_call', tool_name: 't', latency_ms: NaN, insert_id: 'c1' })] }),
+    );
+    expect(queryByTestId('trace-row-tool-latency')).toBeNull();
   });
 
   it('prefers the RESULT\'s latency once one arrives', () => {
@@ -421,8 +453,7 @@ describe('TraceDetail — what the run spent and what it consulted', () => {
       }),
     );
     const lat = getByTestId('trace-row-tool-latency').textContent ?? '';
-    expect(lat).toContain('990');
-    expect(lat).not.toContain('10 ');
+    expect(lat).toBe('990 ms');
   });
 
   it('says how many documents an MCP call came back with, and omits an empty one', () => {

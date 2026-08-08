@@ -47,6 +47,27 @@ export function fmtTokens(
 }
 
 /**
+ * Render a call latency as an operator-facing string, e.g. `"301 ms"`.
+ * Returns `""` when the input is absent or not a finite number, so the caller
+ * simply renders no latency token.
+ *
+ * ROUNDED, because the source is a float and was reaching the screen at full
+ * precision: `latency_ms` is written by the coordinator from a
+ * `time.perf_counter()` delta, so a real MCP row in the inline trace read
+ * `301.05241399996885 ms` — four of them stacked, on the one surface a judge
+ * opens to check the agent's work. Sub-millisecond precision is meaningless
+ * for a network round-trip and there is no reader who wants seventeen
+ * significant digits of it.
+ *
+ * Grouped through `fmtNumber` for the same reason `fmtTokens` is: a four-digit
+ * tool latency renders directly beside `1,234 tok` on the same card.
+ */
+export function fmtLatencyMs(ms: unknown, t: TranslateFn, l: Locale): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
+  return t('timeline.latencyMs', { ms: fmtNumber(Math.round(ms), l) });
+}
+
+/**
  * First 8 characters of a trace id (for the trace pill). Safe on short,
  * empty, or null/undefined input.
  */
