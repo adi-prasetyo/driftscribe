@@ -23,7 +23,12 @@ export const desk = {
     // accessible name pairs the figure with its meaning explicitly rather
     // than relying on visible-text concatenation order.
     'desk.band.managedLabel': 'Declared in IaC',
-    'desk.band.driftLabel': 'Drift detected',
+    // ds-ej6: this figure is Σ actionableDrift (infra_graph.ts) — unmanaged
+    // resources of an adoptable type. Nothing about them diverged, so no form
+    // of "drift" here: it names the same axis as managedLabel, making the
+    // managed/unmanaged pair legible at a glance. The aria variants below take
+    // the fuller "not declared in IaC", matching desk.estate.driftGroup.
+    'desk.band.driftLabel': 'Not in IaC',
     // "decision", not "approval" (ds-22k). `awaitingCount` unions two lanes: an
     // unspent rollback approval, AND an iac row whose remaining operator step is
     // the post-merge apply. Both need the operator, but only the first is
@@ -47,7 +52,7 @@ export const desk = {
     // keys keep their names because renaming them across every locale buys
     // nothing an operator can see.
     'desk.band.managedAriaDesk': '{n} declared in IaC — view infrastructure map',
-    'desk.band.driftAriaDesk': '{n} drift detected — view infrastructure map',
+    'desk.band.driftAriaDesk': '{n} not declared in IaC — view infrastructure map',
     // The VISIBLE hover/focus hint on an interactive numeral (plan Task 3). The
     // numerals read as figures, so nothing said a click went anywhere. Keyed by
     // DESTINATION so the string's wording and its key agree. (Two siblings are
@@ -63,7 +68,8 @@ export const desk = {
     // the destination as well.
     'desk.band.managedUnknownAriaDesk':
       'Declared in IaC: not yet known — view infrastructure map',
-    'desk.band.driftUnknownAriaDesk': 'Drift detected: not yet known — view infrastructure map',
+    'desk.band.driftUnknownAriaDesk':
+      'Not declared in IaC: not yet known — view infrastructure map',
     // LedgerStrip (Task 3.4) — the "Recent record" strip beneath the desk
     // hero. `openTitle`/`appliedTitle` cover the two states this module
     // classifies with fixed copy; `noted` rows fall back to
@@ -311,7 +317,14 @@ export const desk = {
       'Part of the record could not be read just now, so a waiting proposal may not be shown here. This retries on its own.',
     // Only shown when scope.drift === 0 — a true "nothing new" claim, not a
     // fixed decoration (see ApprovalDesk: this segment is conditional).
-    'desk.resting.noNewDrift': 'no new drift',
+    // ds-ej6 TRAP — do NOT "fix" this to "all declared in IaC": the gate is
+    // the ACTIONABLE sum (drift_adoptable excludes control-plane,
+    // service-managed and non-adoptable types), so actionable-zero is fully
+    // compatible with unmanaged resources sitting outside IaC. Claim only the
+    // absence of adoptable work — the one thing the gate establishes.
+    // 取り込み is the operator's established verb for this action (the Adopt
+    // chip, infra.legend.drift).
+    'desk.resting.noNewDrift': 'nothing new to adopt',
 
     // EstateView (Task 4.1, mockup "SCREEN 2 — 推定図"). Rows are grouped by
     // STATUS (drift first, then managed) and flattened across resource types
@@ -398,7 +411,11 @@ export const desk = {
     // count so a screen reader announces "9件、IaC に定義済み" rather than a bare
     // label with no number.
     'desk.band.managedLabel': 'IaC に定義済み',
-    'desk.band.driftLabel': 'ドリフト検出',
+    // ds-ej6: 実体は Σ actionableDrift（IaC 未定義の取り込み対象）で、何も
+    // 逸脱していないため「ドリフト」とは呼ばない。managedLabel と同じ軸で対に
+    // する。見える側は幅の都合で「に」を省く短形、aria は estate.driftGroup と
+    // 同じ「IaC に未定義」の完全形（意図的な使い分け）。
+    'desk.band.driftLabel': 'IaC 未定義',
     // 「承認」ではなく「判断」（ds-22k）。awaitingCount はロールバックの未使用承認と、
     // マージ後の適用を待つ IaC 行の両方を数える。後者に必要なのは承認ではなく適用で、
     // すぐ下のカードも「この変更を適用する」と表示するため、合計を「承認待ち」と
@@ -409,11 +426,11 @@ export const desk = {
     // ds-7ag.2 — 操作できる数値だけが遷移先を名乗る（EN 側の命名規則コメント参照）。
     // `Desk` サフィックスは名残：2026-07-31 の統合前は文脈を表していた。
     'desk.band.managedAriaDesk': '{n}件、IaC に定義済み — インフラを見る',
-    'desk.band.driftAriaDesk': '{n}件、ドリフト検出 — インフラを見る',
+    'desk.band.driftAriaDesk': '{n}件、IaC に未定義 — インフラを見る',
     'desk.band.statHintEstate': 'インフラを見る →',
     'desk.band.awaitingUnknownAria': 'あなたの判断待ち：未取得',
     'desk.band.managedUnknownAriaDesk': 'IaC に定義済み：未取得 — インフラを見る',
-    'desk.band.driftUnknownAriaDesk': 'ドリフト検出：未取得 — インフラを見る',
+    'desk.band.driftUnknownAriaDesk': 'IaC に未定義：未取得 — インフラを見る',
     'desk.ledger.heading': '最近の記録',
     // 記録欄は体言止め（「ロールバック」「エスカレーション」と同じ調子）。
     // 承認記録に actor は残らないため「あなたが」とは書けない。openTitle だけは
@@ -514,7 +531,9 @@ export const desk = {
     'desk.unknown.degraded.headline': '判断が必要な提案があるか、確認できませんでした。',
     'desk.unknown.degraded.body':
       '記録の一部を取得できなかったため、承認をお待ちしている提案がここに表示されていない可能性があります。自動的に再試行します。',
-    'desk.resting.noNewDrift': '新規ドリフトなし',
+    // ds-ej6: ゲートは actionable ゼロなので、主張できるのは「取り込み対象が
+    // ない」ことだけ（EN 側の TRAP コメント参照）。
+    'desk.resting.noNewDrift': '新規の取り込み対象なし',
 
     // The mockup called this 推定図, but 推定 reads as "estimation/inference"
     // — closer to "estimation diagram" than to "your infrastructure". Operator

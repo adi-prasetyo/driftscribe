@@ -172,7 +172,7 @@ describe('InstrumentBand — accessible names name their destination', () => {
       '9 declared in IaC — view infrastructure map',
     );
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
-      '6 drift detected — view infrastructure map',
+      '6 not declared in IaC — view infrastructure map',
     );
     // Plain wording, no destination clause: an aria-label that named one would
     // promise a screen-reader user a jump that no longer exists (ds-s61).
@@ -241,7 +241,7 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
       'Declared in IaC: not yet known — view infrastructure map',
     );
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
-      'Drift detected: not yet known — view infrastructure map',
+      'Not declared in IaC: not yet known — view infrastructure map',
     );
     // awaiting is inert whenever it is unknown, so it promises nothing.
     expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
