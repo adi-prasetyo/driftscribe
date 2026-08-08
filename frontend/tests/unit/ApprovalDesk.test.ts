@@ -128,7 +128,7 @@ describe('ApprovalDesk — resting state', () => {
     expect(resting.textContent).toContain('Nothing needs your decision right now.');
     const watch = getByTestId('approval-desk-watch');
     expect(watch.textContent).toContain('735 resources');
-    expect(watch.textContent).toContain('no new drift'); // scope.drift === 0 here
+    expect(watch.textContent).toContain('nothing new to adopt'); // scope.drift === 0 here
   });
 
   it('falls back to "scan time pending" (never a fabricated time) when generated_at is null', () => {
@@ -146,7 +146,7 @@ describe('ApprovalDesk — resting state', () => {
     expect(queryByText(/last scan/)).toBeNull();
   });
 
-  it('omits the "no new drift" claim when there IS unresolved drift (never claims a false negative)', () => {
+  it('omits the "nothing new to adopt" claim when there IS adoptable drift (never claims a false negative)', () => {
     const { getByTestId } = render(ApprovalDesk, {
       props: {
         graph: graphWithGroup(9, 6),
@@ -155,7 +155,7 @@ describe('ApprovalDesk — resting state', () => {
         onShowEstate: vi.fn(),
       },
     });
-    expect(getByTestId('approval-desk-watch').textContent).not.toContain('no new drift');
+    expect(getByTestId('approval-desk-watch').textContent).not.toContain('nothing new to adopt');
   });
 
   it('a null graph still renders resting with the scan-pending fallback, not a crash', () => {
@@ -1668,7 +1668,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
     expect(getByTestId('instrument-band-drift').textContent).toContain('—');
   });
 
-  it('the resting footer drops the resource count and the "no new drift" claim', () => {
+  it('the resting footer drops the resource count and the "nothing new to adopt" claim', () => {
     // zero-because-unread is indistinguishable from zero-because-clean once it
     // reaches the copy, so neither segment may render without a usable graph.
     const { getByTestId } = render(ApprovalDesk, {
@@ -1682,7 +1682,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
     });
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
     expect(watch).not.toContain('resources');
-    expect(watch).not.toContain('no new drift');
+    expect(watch).not.toContain('nothing new to adopt');
     expect(watch).toContain('scan time unavailable'); // never a fresh-looking scan time
   });
 
@@ -1698,7 +1698,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
     });
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
     expect(watch).not.toContain('resources');
-    expect(watch).not.toContain('no new drift');
+    expect(watch).not.toContain('nothing new to adopt');
   });
 
   it('a healthy graph still renders both', () => {
@@ -1713,7 +1713,7 @@ describe('ApprovalDesk — a degraded graph is not a read graph (ds-eh6)', () =>
     });
     const watch = getByTestId('approval-desk-watch').textContent ?? '';
     expect(watch).toContain('resources');
-    expect(watch).toContain('no new drift');
+    expect(watch).toContain('nothing new to adopt');
   });
 
   it('awaiting reads "—" while degraded, not an exact 0', () => {

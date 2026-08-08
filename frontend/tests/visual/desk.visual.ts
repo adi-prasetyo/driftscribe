@@ -326,7 +326,7 @@ async function mockDesk(page: Page, fx: DeskFixture) {
 
 const FIXTURES: Record<string, DeskFixture> = {
   // Nothing pending, nothing recently resolved: the product's promise kept.
-  // `drift: 0` so the resting line's conditional 「新規ドリフトなし」 segment is
+  // `drift: 0` so the resting line's conditional 「新規の取り込み対象なし」 segment is
   // exercised — it renders ONLY when scope.drift === 0.
   resting: {
     decisions: ledgerHistory(),

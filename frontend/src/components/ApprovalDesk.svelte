@@ -512,7 +512,7 @@
           {/if}
           <!-- Both segments are GRAPH-derived, so both need a usable graph.
                Without this gate an absent or degraded graph rendered
-               "・0 resources ・no new drift" — two confident claims about an
+               "・0 resources ・nothing new to adopt" — two confident claims about an
                estate nothing had successfully read, sitting inside the calm
                state. `scope.drift === 0` is especially deceptive there,
                because zero-because-unread is indistinguishable from
