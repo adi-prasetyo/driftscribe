@@ -9,8 +9,10 @@
 
 ## 1. What it is, in one paragraph
 
-DriftScribe is an **AI DevOps agent that watches your cloud infrastructure and proposes safe
-fixes, but never applies a risky one on its own.** It runs entirely on Google Cloud Run. You
+DriftScribe is **the system that makes it safe to point an AI agent at real cloud
+infrastructure.** Its crews propose safe fixes and never apply a risky one on their own. It is
+not itself the agent: the agents are the crews and the Gemini model underneath, and everything
+around them exists to bound what they can do. It runs entirely on Google Cloud Run. You
 talk to it like a chatbot ("did anything drift?", "is this dependency safe to bump?"), it
 reasons with an LLM (Gemini, via Google's Agent Development Kit), and when it wants to *change*
 something it doesn't do it directly. It hands the job to a small, locked-down worker service,
