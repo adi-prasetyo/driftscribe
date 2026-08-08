@@ -96,13 +96,15 @@ On demand, from chat only (`/recheck` refuses it too).
 - It is also the crew that explains DriftScribe itself: its prompt carries the whole-system overview, so a newcomer can get oriented in chat without reading the docs first. The other three crews redirect "how does DriftScribe work" questions here.
 - Explore lists zero mutation tools. It can read everything and change nothing, a guarantee pinned by a test that asserts its tools are disjoint from the mutation set.
 
-The operator UI renders a live infra resource map (managed vs. drift) alongside the decisions timeline.
+The operator UI renders a live infra resource map (declared in IaC vs. adoptable) alongside the decisions timeline.
 
-**Two things are called "drift."** Anchor's drift is config drift: the live env on the one
-`payment-demo` service vs the ops contract, watched by Eventarc and caught within seconds. The
-resource map's drift is different: real resources anywhere in the project that are not in `iac/`,
-discovered by the `infra-reader` worker through Cloud Asset Inventory and resolved by adopting them
-(Provision opens an import PR), not by Anchor. Because Cloud Asset Inventory is an
+**"Drift" means config drift, and only that.** Anchor's drift is the live env on the one
+`payment-demo` service vs the ops contract, watched by Eventarc and caught within seconds: something
+that was declared really did diverge. The resource map answers a different question and uses a
+different word. Real resources anywhere in the project that are not in `iac/` were never declared, so
+nothing diverged, and the UI labels the ones we can import **adoptable** (`取り込み対象`) rather than
+drift. They are discovered by the `infra-reader` worker through Cloud Asset Inventory and resolved by
+adopting them (Provision opens an import PR), not by Anchor. Because Cloud Asset Inventory is an
 eventually-consistent index and the map is cached on top of it, a newly created resource takes a
 few minutes to appear on the map. That is discovery latency, not a fault.
 
@@ -140,7 +142,7 @@ other Explore tool is backed by a read-only credential.
 ## Demo
 
 The demo is the live operator UI at <https://driftscribe.adp-app.com>. It shows
-the infra resource map (managed vs. drift), the decisions timeline, and the
+the infra resource map (declared in IaC vs. adoptable), the decisions timeline, and the
 reasoning trace behind every decision, so you can watch a drift detection, a
 docs PR, an upgrade proposal, and the rollback approval gate from the browser
 without touching a terminal.
@@ -250,9 +252,9 @@ for the verification step and a sample query.
 
 **Current scope.** DriftScribe runs single-tenant, bound to one GitHub repo and
 one Google Cloud project. This is a deliberate choice: we shipped a fully
-working, secure, end-to-end agent loop (detect drift → propose IaC PR → human
-approves → apply) rather than a thin multi-tenant shell. Single-tenancy is what
-lets us enforce strong guarantees. Every infra change passes a human approval
+working, secure, end-to-end agent loop (spot an undeclared resource → propose an
+IaC PR → human approves → apply) rather than a thin multi-tenant shell.
+Single-tenancy is what lets us enforce strong guarantees. Every infra change passes a human approval
 gate, workers authorize each other by service-account identity, and the
 `tofu-apply` worker only runs plans whose IaC matches a hash baked into its own
 image.
@@ -266,16 +268,19 @@ so we could keep the core agent loop solid and fully working end-to-end. The ful
 single-tenant coupling map and the productization paths are written up in
 [`docs/plans/2026-06-24-multi-tenant-productization-scope.md`](docs/plans/2026-06-24-multi-tenant-productization-scope.md).
 
-**Deeper drift detection.** The infra map today catches existence-level drift:
-a resource that exists in the project but is not declared in IaC. What it
-cannot see yet is attribute-level drift, where a managed resource still matches
-its declaration by identity while its live configuration has quietly diverged
-(a console edit to a lifecycle rule, a changed env var). The designed next step
-is a periodic, non-mutating check that reuses the `tofu plan -refresh-only`
-gate the `tofu-apply` worker already runs before every apply, with findings
-surfaced in the Infrastructure panel as evidence for the Provision crew to
-investigate. Detection only, never auto-remediation: the human approval gate
-stays where it is. Design decisions and phasing are written up in
+**Deeper drift detection.** The infra map today catches what is *absent*: a
+resource that exists in the project but is not declared in IaC, labeled
+adoptable rather than drift when it is one DriftScribe can actually import,
+because nothing diverged from a declaration that was never written. What it cannot see yet is
+real, attribute-level drift,
+where a managed resource still matches its declaration by identity while its
+live configuration has quietly diverged (a console edit to a lifecycle rule, a
+changed env var). The designed next step is a periodic, non-mutating check that
+reuses the `tofu plan -refresh-only` gate the `tofu-apply` worker already runs
+before every apply, with findings surfaced in the Infrastructure panel as
+evidence for the Provision crew to investigate. Detection only, never
+auto-remediation: the human approval gate stays where it is. Design decisions
+and phasing are written up in
 [`docs/plans/2026-07-12-periodic-tofu-plan-drift-check.md`](docs/plans/2026-07-12-periodic-tofu-plan-drift-check.md).
 
 ## Status
@@ -291,7 +296,7 @@ multi-agent framework:
   apply) to provision its own checkout demo (`storefront` + `orders-worker`).
 - **Operator UI:** rebuilt as a Svelte + Vite SPA, now served at the site root
   `/` (operator token required), with a live infra resource-map panel
-  (managed vs. drift) and a per-decision trace + env-diff view.
+  (declared in IaC vs. adoptable) and a per-decision trace + env-diff view.
 - **Multi-turn chat + team memory:** operator chats with each crew are persisted
   and resumable from a history rail in the operator UI. Crews can also read each
   other's recent conversations as shared, read-only "team memory" (turn text is

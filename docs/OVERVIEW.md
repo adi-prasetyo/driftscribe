@@ -109,22 +109,25 @@ once; Anchor keeps watch after the handoff.
    So the shape is the same as everywhere else: **the agent proposes (a PR), a human approves, and
    one isolated worker applies. The agent itself can never apply.**
 
-### Two different things are called "drift"
+### "Drift" means one thing here: config drift
 
-This trips people up, so it's worth stating plainly. DriftScribe uses the word "drift" for two
-separate things, found two separate ways:
+Two separate findings get confused, so it's worth stating plainly. The word "drift" belongs to only
+one of them.
 
 - **Config drift (Anchor's job).** The live env vars on the one `payment-demo` Cloud Run service,
-  compared to the written ops contract. This is what the **Eventarc** trigger watches: a config
+  compared to the written ops contract. Something that was declared really did diverge, which is
+  drift in the ordinary Terraform sense. This is what the **Eventarc** trigger watches: a config
   change on that service fires the trigger and wakes Anchor within seconds. It is event-driven and
   near-instant, and it only ever concerns that one service.
 
-- **Untracked resources (the Infrastructure map's job).** Real resources anywhere in the GCP
-  project that are not described in `iac/`. These are found by a completely different path: the
-  **`infra-reader`** worker inventories the whole project through **Cloud Asset Inventory (CAI)**,
-  and the Infrastructure panel flags anything missing from IaC as adoptable drift. You resolve
-  these by **adopting** them (Provision opens an import PR), not through Anchor. Anchor never sees
-  them, and its Eventarc trigger never fires for them.
+- **Adoptable resources (the Infrastructure map's job).** Real resources anywhere in the GCP
+  project that are not described in `iac/`. Nothing diverged here, because nothing was ever
+  declared, so the map does not call any of this drift. The ones DriftScribe can actually import
+  are labeled **adoptable** (`取り込み対象`); the rest, which are most of them, stay visible as
+  undeclared but not adoptable. They are found by a completely different path: the
+  **`infra-reader`** worker inventories the whole project through **Cloud Asset Inventory (CAI)**.
+  You resolve an adoptable one by **adopting** it (Provision opens an import PR), not through
+  Anchor. Anchor never sees them, and its Eventarc trigger never fires for them.
 
 One consequence worth knowing: CAI is an **eventually-consistent index**, and the resource map is
 cached on top of it. Create a resource by hand and it takes a few minutes before CAI has indexed it

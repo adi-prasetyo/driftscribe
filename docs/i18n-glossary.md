@@ -23,7 +23,8 @@ enum, or code value — in prose, `apply` → `適用`.
 
 | EN | JA (canonical) | Notes |
 |----|----------------|-------|
-| drift | ドリフト | Katakana (standard in JP infra-ops). First/anchor use: `ドリフト（IaC の定義と実環境のずれ）`. |
+| drift (config drift) | ドリフト | Katakana (standard in JP infra-ops). **Config drift only**: something that *was* declared and whose live state diverged (Anchor's job). First/anchor use: `設定ドリフト（ops コントラクトと実環境のずれ）`. Never use it for a resource that is merely absent from IaC — that is `adoptable` below. |
+| adoptable | 取り込み対象 | An unmanaged live resource of a type DriftScribe can import. **Not ドリフト**: nothing diverged, because nothing was ever declared. Note it is the *actionable subset*, far smaller than "everything not in IaC", so the label must never read as a claim over the whole estate (ds-ej6). On-screen antonym: `未定義（取り込み対象外）`. |
 | adopt / adoption | IaC 管理に取り込む / IaC 管理への取り込み | Generate config + import an untracked live resource. NOT 採用, NOT インポート (broader than `terraform import`). Compact Adopt button may read `取り込む` with the full phrase in its aria-label. |
 | approve / approval | 承認 / 承認する | |
 | approver | 承認者 | |
