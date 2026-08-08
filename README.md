@@ -270,8 +270,8 @@ single-tenant coupling map and the productization paths are written up in
 
 **Deeper drift detection.** The infra map today catches what is *absent*: a
 resource that exists in the project but is not declared in IaC, labeled
-adoptable rather than drift when it is a type we can import, because nothing
-diverged from a declaration that was never written. What it cannot see yet is
+adoptable rather than drift when it is one DriftScribe can actually import,
+because nothing diverged from a declaration that was never written. What it cannot see yet is
 real, attribute-level drift,
 where a managed resource still matches its declaration by identity while its
 live configuration has quietly diverged (a console edit to a lifecycle rule, a
