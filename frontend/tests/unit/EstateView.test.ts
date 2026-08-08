@@ -147,6 +147,30 @@ describe('EstateView — rows', () => {
     expect(rows.some((r) => r.textContent?.includes('checkout'))).toBe(true);
   });
 
+  // ds-ej6 r3 — the VISIBLE copy of the band's destination, pinned exactly.
+  // The band labels this figure "Adoptable" (InstrumentBand.test.ts pins that);
+  // an operator who clicks it has to land on a heading that uses the same word,
+  // and until r3 this said "Drift" over resources that never diverged — they
+  // were never declared. The count assertions above pass either way, so only a
+  // copy pin can hold the vocabulary. No form of "drift" in either string.
+  it('the drift group and its legend key name the population the band names', () => {
+    const g = graph({
+      groups: [
+        group({
+          asset_type: RUN, label: 'Cloud Run', count: 1, managed: 0, drift: 1, adoptable: true,
+          nodes: [node({ id: 'r1', label: 'storefront', asset_type: RUN, managed: false })],
+        }),
+      ],
+    });
+    const { getByTestId } = render(EstateView, { props: baseProps({ graph: g }) });
+    expect(getByTestId('estate-group-drift').textContent?.trim()).toBe(
+      'Adoptable — not declared in IaC (1)',
+    );
+    expect(getByTestId('estate-legend').textContent).toContain('Not declared in IaC · adoptable');
+    // Lookahead exempts the brand name (see InfraDiagram.test.ts's legend help).
+    expect(getByTestId('estate-legend').textContent).not.toMatch(/drift(?!scribe)/i);
+  });
+
   // ds-3em. The managed group's 9 rows are pure inventory — nothing on them is
   // actionable, so the COUNT is the information and the names are
   // detail-on-demand, exactly like the untracked and system-managed folds it

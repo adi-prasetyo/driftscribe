@@ -1028,9 +1028,9 @@ describe('InfraDiagram — scope split (adoptable vs. other)', () => {
     const { getByTestId } = render(InfraDiagram, {
       props: { call: callWith(scopeSplitGraph()), onAdopt: () => {} },
     });
-    // scope: 2 managed of 3 in-scope resources (67%), 1 drift — NOT 2/23 or 21 drift.
+    // scope: 2 managed of 3 in-scope resources (67%), 1 adoptable — NOT 2/23 or 21.
     await waitFor(() => expect(getByTestId('infra-coverage-count').textContent).toBe('2/3 declared · 67%'));
-    expect(getByTestId('infra-drift-badge').textContent).toBe('1 drift');
+    expect(getByTestId('infra-drift-badge').textContent).toBe('1 adoptable');
     expect(getByTestId('coverage-pct').textContent).toBe('67%');
   });
 
@@ -1139,7 +1139,7 @@ describe('InfraDiagram — scope split (adoptable vs. other)', () => {
 describe('InfraDiagram — actionable-drift honesty (badge + neutral non-adoptable)', () => {
   it('shows ACTIONABLE drift on an adoptable card that also holds control-plane members', async () => {
     // 11 unmanaged Cloud Run services, 10 of them DriftScribe's own control plane
-    // → the badge must read "1 drift", not "11 drift".
+    // → the badge must read "1 adoptable", not "11 adoptable".
     const graph: InfraGraph = {
       generated_at: null, project: 'demo', caveat: 'test caveat',
       degraded: false, degraded_reason: null,
@@ -1158,7 +1158,7 @@ describe('InfraDiagram — actionable-drift honesty (badge + neutral non-adoptab
     };
     const { getByTestId } = render(InfraDiagram, { props: { call: callWith(graph), onAdopt: () => {} } });
     await waitFor(() => expect(getByTestId('infra-cards')).toBeTruthy());
-    expect(norm(getByTestId('infra-card-badge').textContent)).toBe('1 drift');
+    expect(norm(getByTestId('infra-card-badge').textContent)).toBe('1 adoptable');
     // Exactly one Adopt button (the probe); the control-plane row is system-managed.
     expect(getByTestId('card-adopt-btn')).toBeTruthy();
     expect(getByTestId('card-control-plane').textContent).toContain('system-managed');
@@ -1548,7 +1548,7 @@ describe('InfraDiagram — hero band (zone 1)', () => {
 });
 
 describe('InfraDiagram — legend help (zone 2)', () => {
-  it('reveals the managed/drift/counts-only explanation when the legend help is clicked', async () => {
+  it('reveals the managed/adoptable/counts-only explanation when the legend help is clicked', async () => {
     const { getByTestId, queryByTestId } = render(InfraDiagram, {
       props: { call: callWith(graphWith({ resources: 9, managed: 7, drift: 2 })) },
     });
@@ -1558,7 +1558,13 @@ describe('InfraDiagram — legend help (zone 2)', () => {
     await fireEvent.click(getByTestId('legend-help'));
     const panel = getByTestId('legend-help-panel');
     expect(panel.textContent).toContain('declared in IaC');
-    expect(panel.textContent).toContain('drift');
+    // ds-ej6 r3 — the amber category is "adoptable", never "drift": these
+    // resources were never declared, so nothing about them diverged.
+    expect(panel.textContent).toContain('adoptable');
+    // The lookahead exempts the BRAND — this prose names DriftScribe five
+    // times, and a bare /drift/i would fail on the product's own name rather
+    // than on the vocabulary defect it is here to catch.
+    expect(panel.textContent).not.toMatch(/drift(?!scribe)/i);
     expect(panel.textContent).toContain('counts-only');
     // The system-managed-tag reasoning relocated here from the per-row note.
     expect(panel.textContent).toContain('system-managed');
