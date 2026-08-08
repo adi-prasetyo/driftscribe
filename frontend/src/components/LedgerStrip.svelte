@@ -546,12 +546,35 @@
   /* The timestamp is the ledger's whole point — WHEN each decision happened —
      so it is meaningful text and reads through ink-2 (6.47:1), not the lightest
      grey (3.08:1) it shared with the eyebrow heading (ds-qbo). At 11.5px mono
-     it needed the contrast more than anything else on the strip. */
+     it needed the contrast more than anything else on the strip.
+
+     Right-aligned since ds-wd2.21, and the alignment is the point of the cell,
+     not decoration. After ds-wd2.18 this column holds two shapes — `May 30,
+     19:52` on the first row of a day's run, `01:09` on the rest — and
+     left-aligned they shared a left edge, so the CLOCK jumped ~48px sideways
+     row to row and the column read as noise. Ragged on one side either way; the
+     only choice is WHICH side, and the clock is what a reader scans down.
+
+     Anchoring on the right works in both locales for a reason that lives in
+     lib/format.ts, not here: `fmtStamp` and `fmtClock` both pin `hour`/`minute`
+     to '2-digit' with `hourCycle: 'h23'`, so the clock is ALWAYS exactly five
+     characters and always ends the string. A 1- vs 2-digit day (`Aug 8` vs
+     `May 30`) or a 1- vs 2-digit CJK month therefore moves the left edge and
+     never the clock. Measured at 1280px: clock left 291/339.4 before, 360.4 for
+     every row after, en and ja alike.
+
+     The 11px of slack `.ledger-strip__row` leaves in the 104px track becomes a
+     left indent here rather than trailing space, which is the visible cost, and
+     it is also why that track must not be trimmed to fit: right-aligned text
+     overflows to the LEFT, and `.ledger-strip`'s `overflow: hidden` would clip
+     it against the card edge — a worse failure than the left-aligned version,
+     which merely eats into the 14px gap before the glyph. */
   .ledger-strip__time {
     font-family: var(--ds-font-mono);
     font-size: 11.5px;
     color: var(--ds-fg-soft);
     font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
   .ledger-strip__glyph {

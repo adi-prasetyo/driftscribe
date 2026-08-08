@@ -431,6 +431,85 @@ test.describe('transparency UI (mock smoke)', () => {
     expect(scrollWidth).toBe(clientWidth);
   });
 
+  // ds-wd2.21: the other half of the same column. ds-wd2.18 gave the strip two
+  // time shapes — `May 30, 19:52` on the first row of a day's run and `01:09` on
+  // the rest — and left-aligned they shared a LEFT edge, so the clock itself
+  // moved ~48px sideways between consecutive rows. `.ledger-strip__time` is
+  // right-aligned to put every clock on one x.
+  //
+  // Only a browser can see this: jsdom runs no cascade and has no layout, so the
+  // unit suite would pass with the declaration deleted.
+  //
+  // Measured with a RANGE over each cell's text, never the cell's own box. The
+  // cell is a grid item in a fixed 104px track and `justify-self` defaults to
+  // stretch, so its rect is 104px wide with or without the fix — an element-rect
+  // version of this test is vacuous by construction. Verified both ways: the
+  // range form fails on the reverted CSS, the element-rect form does not.
+  test('the ledger clocks share one right edge, dated row or not', async ({ page }) => {
+    await seedToken(page);
+    await mockData(page, freshState());
+
+    // Built from the RUNNER's own wall clock rather than written as literal `Z`
+    // strings, because `sameDay` compares calendar days in the reader's zone: a
+    // pair two hours apart in UTC lands on two different local days somewhere in
+    // [-12, +14], and the fixture's whole premise is that rows 1-2 share a day
+    // and row 3 does not. Anchored on YESTERDAY noon so every row is in the past
+    // whatever time the suite runs, and noon ± 2h cannot cross a local midnight
+    // even across a DST shift.
+    const anchor = new Date();
+    anchor.setDate(anchor.getDate() - 1);
+    anchor.setHours(12, 0, 0, 0);
+    const at = (hoursBack: number) =>
+      new Date(anchor.getTime() - hoursBack * 3_600_000).toISOString();
+
+    await page.route('**/decisions**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          decisions: [
+            { decision_id: 'lc-1', action: 'no_op', created_at: at(0) },
+            { decision_id: 'lc-2', action: 'no_op', created_at: at(2) },
+            { decision_id: 'lc-3', action: 'no_op', created_at: at(26) },
+          ],
+        }),
+      }),
+    );
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/');
+
+    const ledger = page.getByTestId('ledger-strip');
+    await expect(ledger).toBeVisible();
+
+    const runs = await ledger.evaluate((card) =>
+      Array.from(card.querySelectorAll('.ledger-strip__time')).map((cell) => {
+        const r = document.createRange();
+        r.selectNodeContents(cell);
+        const box = r.getBoundingClientRect();
+        return { text: (cell.textContent ?? '').trim(), left: box.left, right: box.right };
+      }),
+    );
+
+    // The fixture's premise, asserted rather than assumed: a build whose
+    // day-boundary rule stopped firing would render three identical shapes and
+    // pass an alignment check trivially.
+    const bare = runs.filter((r) => /^\d{1,2}:\d{2}$/.test(r.text));
+    const dated = runs.filter((r) => !/^\d{1,2}:\d{2}$/.test(r.text));
+    expect(bare.length, `no bare-clock row: ${runs.map((r) => r.text).join(' | ')}`).toBe(1);
+    expect(dated.length, `no dated row: ${runs.map((r) => r.text).join(' | ')}`).toBe(2);
+
+    // The invariant. Sub-pixel tolerance only — these are the same five glyphs
+    // in the same tabular-nums mono, so anything past a rounding hair means the
+    // column is anchored on the wrong side.
+    const rights = runs.map((r) => r.right);
+    const spread = Math.max(...rights) - Math.min(...rights);
+    expect(spread, `clocks do not share a right edge: ${JSON.stringify(runs)}`).toBeLessThan(0.5);
+
+    // And the visible consequence the operator asked for: the dateless row is
+    // INDENTED to the clock, not flush with the dates above it.
+    expect(bare[0].left).toBeGreaterThan(Math.max(...dated.map((r) => r.left)) + 8);
+  });
+
   // The slim hero is a TYPOGRAPHY change, and typography is the one thing none
   // of the other gates can see: jsdom does not run the cascade, so a unit test
   // asserting the --slim class passes whether or not the rule inside it applies,

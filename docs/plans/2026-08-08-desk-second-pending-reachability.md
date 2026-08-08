@@ -175,3 +175,70 @@ row would be a new row type in a grid whose four columns are load-bearing
   give adopt PRs ledger rows and is arguably the deeper fix, but it changes what
   `/decisions` means and what every `awaitingCount`/`deskModel` rule reasons
   over. Not on a pitch-week branch.
+
+---
+
+## Amendment — ds-wd2.21: the clock column (shipped separately)
+
+Filed the same day, after the operator read the shipped ds-wd2.18 column on
+prod. Dating the first row of each day gave the track two shapes, and
+left-aligned they shared a LEFT edge:
+
+```
+May 30, 19:52
+01:09
+```
+
+so the clock itself moved ~48px sideways between consecutive rows — measured at
+1280px, clock left 291 on a bare row against 339.4 on a dated one. The column a
+reader scans down is the clock, and it was the one that wandered.
+
+**Fix:** `text-align: right` on `.ledger-strip__time`. One declaration; nothing
+about the track, the fixture or the markup changes.
+
+Ragged on one side either way — the only question is which side, and the answer
+is not a preference. `fmtStamp` and `fmtClock` both pin `hour`/`minute` to
+`'2-digit'` with `hourCycle: 'h23'` (lib/format.ts), so the clock is ALWAYS
+exactly five characters and always ENDS the string. A 1- vs 2-digit day
+(`Aug 8` vs `May 30`) or a 1- vs 2-digit CJK month therefore moves the left edge
+and never the right. Verified in both locales: clock left 360.4 on every row,
+en and ja alike, against 291/339.4 before.
+
+The 11px of slack in the 104px track becomes a left indent rather than trailing
+space. That is the visible cost, and it is also why the track must NOT be
+trimmed to fit now that it is right-aligned: right-aligned text overflows to the
+LEFT, where `.ledger-strip`'s `overflow: hidden` clips it against the card edge.
+Left-aligned, an overflow merely ate into the 14px gap before the glyph. The
+cross-platform font margin the 104px was chosen for is load-bearing in a
+stricter way than it was.
+
+### The pin, and why it is a browser test
+
+`the ledger clocks share one right edge, dated row or not`
+(transparency.smoke.ts). jsdom runs no cascade and has no layout, so a unit test
+passes with the declaration deleted.
+
+Two traps, both checked rather than assumed — the same discipline the
+phone-width pin above needed:
+
+- **Measure a RANGE over the cell's text, never the cell's box.** The cell is a
+  grid item in a fixed 104px track and `justify-self` defaults to `stretch`, so
+  its rect is 291→395 with or without the fix. Confirmed by running the reverted
+  build with both numbers returned: `elemRight` was 395 on all three rows while
+  the range rights were 374.1 / 325.6 / 374.1. An element-rect version of this
+  test is vacuous by construction.
+- **Build the fixture's timestamps from the runner's wall clock.** `sameDay`
+  compares calendar days in the READER's zone, so a pair two hours apart written
+  as literal `Z` strings lands on two different local days somewhere in
+  [-12, +14] and the fixture's premise (rows 1-2 share a day, row 3 does not)
+  quietly dissolves. Anchored on yesterday's local noon: every row is in the
+  past whatever time CI runs, and noon ± 2h cannot cross a local midnight even
+  across a DST shift.
+
+The test also asserts the fixture produced both shapes (one bare, two dated)
+before asserting anything about alignment — a build whose day-boundary rule
+stopped firing would render three identical shapes and satisfy an alignment
+check trivially.
+
+Gates: 2015 unit, 683 files 0/0, smoke 57/57, and the pin verified to FAIL on
+the reverted CSS.
