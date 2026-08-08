@@ -172,13 +172,29 @@ describe('InstrumentBand — accessible names name their destination', () => {
       '9 declared in IaC — view infrastructure map',
     );
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
-      '6 not declared in IaC — view infrastructure map',
+      '6 adoptable resources not yet declared in IaC — view infrastructure map',
     );
     // Plain wording, no destination clause: an aria-label that named one would
     // promise a screen-reader user a jump that no longer exists (ds-s61).
     expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
       '1 needing your decision',
     );
+  });
+
+  // ds-ej6 — the VISIBLE labels, pinned exactly (the aria pins above cannot
+  // catch a visible-copy regression because aria-label REPLACES descendant
+  // text). "Adoptable", never a bare "Not in IaC": the figure is the
+  // actionable subset, and an unqualified not-in-IaC label beside "Declared
+  // in IaC" would read as an exhaustive claim over a population this number
+  // does not count (Codex review of #311). No form of "drift" either — the
+  // counted resources were never declared, so nothing diverged.
+  it('the visible labels name what the figures actually count', () => {
+    const { getByTestId } = render(InstrumentBand, { props: props() });
+    const label = (key: string) =>
+      getByTestId(`instrument-band-${key}`).querySelector('.instrument-band__label')?.textContent;
+    expect(label('managed')).toBe('Declared in IaC');
+    expect(label('drift')).toBe('Adoptable');
+    expect(label('awaiting')).toBe('Needs your decision');
   });
 
   // No stat names the estate as a place you NAVIGATE to any more — it is a
@@ -241,7 +257,7 @@ describe('InstrumentBand — unknown figures (ds-eh6)', () => {
       'Declared in IaC: not yet known — view infrastructure map',
     );
     expect(getByTestId('instrument-band-drift').getAttribute('aria-label')).toBe(
-      'Not declared in IaC: not yet known — view infrastructure map',
+      'Adoptable resources: not yet known — view infrastructure map',
     );
     // awaiting is inert whenever it is unknown, so it promises nothing.
     expect(getByTestId('instrument-band-awaiting').getAttribute('aria-label')).toBe(
