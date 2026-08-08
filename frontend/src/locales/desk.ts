@@ -351,8 +351,16 @@ export const desk = {
     // exists to remove.
     'desk.estate.snapshotUnverified':
       'This deployment could not confirm which iac/ snapshot the list below was read from, so what it calls declared may be out of date. Adoption is paused until it can.',
-    'desk.estate.driftGroup': 'Drift — not declared in IaC ({n})',
-    // The drift group's mirror image: declared in IaC, no live resource. The
+    // ds-ej6 r3 — the band's destination. `model.drift` is the SAME population
+    // the band counts (estate.ts: actionable-drift rows, adoptable + not
+    // control-plane), so this heading takes the band's word: an operator who
+    // clicks "Adoptable 5" must land on a heading they recognize, and until now
+    // it said "Drift" over resources that never diverged. The "— not declared
+    // in IaC" qualifier stays: unlike the band, a group heading has the width
+    // for it, and it is what distinguishes this group from `untrackedGroup`
+    // below (the same not-declared population, minus adoptability).
+    'desk.estate.driftGroup': 'Adoptable — not declared in IaC ({n})',
+    // The adoptable group's mirror image: declared in IaC, no live resource. The
     // heading carries the TRUE server-side count, which can exceed the rows
     // shown (the trailer below reports the difference). Its lead line and
     // Investigate button reuse the `infra.unmatched.*` copy this group was
@@ -385,8 +393,12 @@ export const desk = {
     // freshness assurance one lane over — a retained value may keep its
     // identity and must not keep its verdict.
     'desk.estate.prPendingUnrefreshed': 'PR #{pr} · status not refreshed',
-    'desk.estate.driftMore': '…{n} more drift',
-    // ds-3em. The drift group shows its first three rows; these work the
+    // ds-ej6 r3 — safe to call these adoptable: `driftHidden` is Σ
+    // card.hiddenUnmanaged, which infra_graph.ts documents as the hidden
+    // ACTIONABLE-drift delta only (managed and control-plane rows never enter
+    // that subtraction), so the trailer cannot over-promise adoptable work.
+    'desk.estate.driftMore': '…{n} more adoptable',
+    // ds-3em. The adoptable group shows its first three rows; these work the
     // toggle. TWO-WAY, unlike the ledger's one-way show-more one card up — drift
     // rows hold no open-record state, so re-capping can hide nothing.
     // `n` is the TOTAL, matching desk.ledger.showMore's rule: "Show all 6" says
@@ -405,7 +417,8 @@ export const desk = {
     'desk.estate.otherResources.other':
       "{other} more resources across {types} types DriftScribe doesn't manage",
     'desk.estate.legendManaged': 'Declared in IaC',
-    'desk.estate.legendDrift': 'Not declared in IaC · drift',
+    // ds-ej6 r3 — the amber key. Same swap as the group heading it explains.
+    'desk.estate.legendDrift': 'Not declared in IaC · adoptable',
   },
   ja: {
     'desk.nav.ariaLabel': 'メインナビゲーション',
@@ -557,7 +570,10 @@ export const desk = {
       'この一覧は、稼働中のデプロイとは異なる iac/ スナップショットから読み取られています。定義済みかどうかの判定が最新でない可能性があるため、該当の行では取り込みを一時停止しています。',
     'desk.estate.snapshotUnverified':
       'この一覧がどの iac/ スナップショットから読み取られたかを、稼働中のデプロイでは確認できませんでした。定義済みかどうかの判定が最新でない可能性があるため、取り込みを一時停止しています。',
-    'desk.estate.driftGroup': 'ドリフト — IaC に未定義 {n} 件',
+    // ds-ej6 r3 — バンドの遷移先。数える母集団はバンドと同一（actionable な
+    // 取り込み対象行）なので、見出しもバンドと同じ語を使う。すぐ下の
+    // untrackedGroup「未定義（取り込み対象外）」と対になる。
+    'desk.estate.driftGroup': '取り込み対象 — IaC に未定義 {n} 件',
     'desk.estate.unmatchedGroup': 'IaC に定義済み・実環境で未検出 {n} 件',
     'desk.estate.managedGroup': 'IaC に定義済み — {n} 件',
     'desk.estate.untrackedGroup': '未定義（取り込み対象外） {n} 件',
@@ -567,7 +583,7 @@ export const desk = {
     'desk.estate.adoptSnapshotUnverified': '一時停止 ・ スナップショット未確認',
     'desk.estate.prPending': 'PR #{pr} レビュー待ち',
     'desk.estate.prPendingUnrefreshed': 'PR #{pr} ・ 状態は未更新',
-    'desk.estate.driftMore': '…ほか {n} 件のドリフト',
+    'desk.estate.driftMore': '…ほか {n} 件の取り込み対象',
     // ds-3em。残りの件数ではなく総数を出す（desk.ledger.showMore と同じ規則）。
     // 上の driftMore はサーバー側で打ち切られた分なので、足し合わせないこと。
     'desk.estate.driftShowAll': '{n}件すべて表示',
@@ -579,6 +595,6 @@ export const desk = {
     'desk.estate.otherResources.other':
       '他に DriftScribe が管理しない {types} 種類、{other} 件のリソースがあります',
     'desk.estate.legendManaged': 'IaC に定義済み',
-    'desk.estate.legendDrift': 'IaC に未定義 ・ ドリフト',
+    'desk.estate.legendDrift': 'IaC に未定義 ・ 取り込み対象',
   },
 };

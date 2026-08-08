@@ -14,12 +14,18 @@ export const infra = {
     'infra.panel.title': 'Infrastructure',
     'infra.badge.loading': 'loading…',
     'infra.badge.unavailable': 'unavailable',
-    'infra.badge.driftTitle': 'Drift in supported resource types',
+    // ds-ej6 r3 — this badge shows `scope.drift` = Σ actionableDrift, the same
+    // figure and the same population the desk band labels "Adoptable". Nothing
+    // about these resources diverged; they were never declared. A tooltip has
+    // no width limit, so it carries the full qualifier the pill cannot.
+    'infra.badge.driftTitle': 'Adoptable resources, not declared in IaC',
     'infra.badge.inSyncTitle': 'In supported resource types',
     'infra.badge.outOfScopeTitle': "These resources are in types DriftScribe doesn't manage",
     'infra.badge.outOfScope': 'out of scope',
 
-    'infra.count.drift': '{n} drift',
+    // Serves BOTH the scope pill (scope.drift) and the per-card badge
+    // (card.actionableDrift) — both actionable-only, so one word covers both.
+    'infra.count.drift': '{n} adoptable',
     'infra.label.inSync': 'in sync',
     'infra.label.notTracked': 'not tracked',
     'infra.label.countsOnly': 'counts-only',
@@ -47,7 +53,10 @@ export const infra = {
 
     'infra.legend.title': 'Legend',
     'infra.legend.managed': 'declared in IaC',
-    'infra.legend.drift': 'adoptable drift',
+    // Legend keys sit in one horizontal row, so this one stays SHORT and lets
+    // the help text beside it carry the qualifier — it is also strictly
+    // narrower than the "adoptable drift" it replaces.
+    'infra.legend.drift': 'adoptable',
     'infra.legend.openPr': 'Open PR',
     'infra.legend.ghostCreate': 'will be created',
     'infra.legend.ghostUpdate': 'will be modified',
@@ -56,7 +65,7 @@ export const infra = {
     'infra.legend.help':
       'Every box is a real resource in your project. Green means declared in IaC: ' +
       'it is defined in OpenTofu, so DriftScribe tracks it and can change it through ' +
-      'the approval flow. Yellow means adoptable drift: the resource exists, is not ' +
+      'the approval flow. Yellow means adoptable: the resource exists, is not ' +
       'in any .tf file, and is a type DriftScribe can import, so it has an Adopt ' +
       'button. Grey is neutral: counts-only rows hide sensitive names such as ' +
       'secrets and show only a number; named rows tagged system-managed are ' +
@@ -65,7 +74,7 @@ export const infra = {
       'buckets and the Pub/Sub pairs Eventarc uses to deliver trigger events: ' +
       'the denylist blocks changing or adopting them); and rows in a type ' +
       'DriftScribe cannot import are marked ' +
-      'not an adoptable type. Those grey rows are real but not counted as drift.' +
+      'not an adoptable type. Those grey rows are real but not counted as adoptable.' +
       ' A blue marker means an adoption PR is already open for that resource: open ' +
       'it from the card or the band at the top to review and approve, instead of ' +
       'adopting it again.',
@@ -228,12 +237,12 @@ export const infra = {
     'infra.panel.title': 'インフラ',
     'infra.badge.loading': '読み込み中…',
     'infra.badge.unavailable': '利用不可',
-    'infra.badge.driftTitle': '対象リソース内のドリフト',
+    'infra.badge.driftTitle': 'IaC 未定義の取り込み対象',
     'infra.badge.inSyncTitle': '対象リソース内で同期済み',
     'infra.badge.outOfScopeTitle': 'DriftScribe の管理対象外のリソース種別です',
     'infra.badge.outOfScope': '対象外',
 
-    'infra.count.drift': '{n}件のドリフト',
+    'infra.count.drift': '{n}件の取り込み対象',
     'infra.label.inSync': '同期済み',
     'infra.label.notTracked': '未追跡',
     'infra.label.countsOnly': '件数のみ',
@@ -262,7 +271,7 @@ export const infra = {
 
     'infra.legend.title': '凡例',
     'infra.legend.managed': 'IaC に定義済み',
-    'infra.legend.drift': 'IaC 管理に取り込み可能なドリフト',
+    'infra.legend.drift': '取り込み対象',
     'infra.legend.openPr': '開いている PR',
     'infra.legend.ghostCreate': '作成予定',
     'infra.legend.ghostUpdate': '変更予定',
@@ -271,7 +280,7 @@ export const infra = {
     'infra.legend.help':
       'すべてのボックスは、プロジェクト内の実際のリソースです。緑は IaC に定義済みを意味します。' +
       'OpenTofu で定義されているため、DriftScribe がそのリソースを追跡し、承認フローを通じて' +
-      '変更できます。黄色は IaC 管理に取り込み可能なドリフトを意味します。そのリソースは存在しますが、' +
+      '変更できます。黄色は IaC 管理への取り込み対象を意味します。そのリソースは存在しますが、' +
       'どの .tf ファイルにも定義されておらず、DriftScribe が IaC 管理に取り込める種類のため、取り込むボタンが' +
       '表示されます。グレーは中立的な状態です。件数のみの行は、シークレットなどの機密性の高い名前を' +
       '隠して件数のみを表示します。「システム管理」タグの付いた名前付きの行は保護されています' +
@@ -279,8 +288,8 @@ export const infra = {
       'サービスが自動的に作成するリソースです。例えば Cloud Build のバケットや、Eventarc が' +
       'トリガーイベントの配信に使う Pub/Sub のペアです。これらは拒否リストにより変更や IaC 管理への取り込みが' +
       'ブロックされています）。また、DriftScribe が取り込めない種類のリソースの行には' +
-      '「IaC 管理への取り込み対象外」と表示されます。これらのグレーの行は実在しますが、ドリフトとしては' +
-      '数えられません。青いマーカーは、そのリソースの取り込み用プルリクエストがすでに開いている' +
+      '「IaC 管理への取り込み対象外」と表示されます。これらのグレーの行は実在しますが、取り込み対象' +
+      'としては数えられません。青いマーカーは、そのリソースの取り込み用プルリクエストがすでに開いている' +
       'ことを意味します。再度取り込むのではなく、カードまたは上部のバンドから開いて確認・承認して' +
       'ください。',
 
